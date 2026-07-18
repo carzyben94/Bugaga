@@ -18,7 +18,7 @@ sys.path.insert(0, "browser-harness/src")
 
 try:
     from browser_harness.helpers import *
-    from browser_harness.admin import ensure_daemon, daemon_alive
+    from browser_harness.admin import ensure_daemon, daemon_alive, restart_daemon
     print("✅ Импорт успешен!")
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
@@ -55,7 +55,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ping - проверка\n"
         "/info - информация о странице\n"
         "/screenshot - скриншот google.com\n"
-        "/reset - восстановить сессию"
+        "/reset - восстановить сессию\n"
+        "/restart - перезапустить браузер"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,6 +64,9 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # Сброс сессии перед действием
+        ensure_real_tab()
+        
         new_tab("https://httpbin.org/html")
         wait_for_load()
         info = page_info()
@@ -72,17 +76,28 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• URL: {info.get('url', 'нет')}"
         )
     except Exception as e:
+        logger.error(f"Ошибка /info: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📸 Делаю скриншот...")
     try:
-        # 1. Открываем страницу
+        # 1. СБРАСЫВАЕМ СЕССИЮ ПЕРЕД ВСЕМ
+        logger.info("Сброс сессии...")
+        ensure_real_tab()
+        
+        # 2. Открываем страницу
+        logger.info("Открываем google.com...")
         new_tab("https://google.com")
         wait_for_load()
         time.sleep(2)
         
-        # 2. Устанавливаем разрешение 1280x720 через CDP
+        # 3. Снова проверяем сессию
+        logger.info("Проверка сессии...")
+        ensure_real_tab()
+        
+        # 4. Устанавливаем разрешение 1280x720
+        logger.info("Установка разрешения...")
         cdp("Emulation.setDeviceMetricsOverride", {
             "width": 1280,
             "height": 720,
@@ -91,7 +106,8 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         time.sleep(1)
         
-        # 3. Делаем скриншот (captureBeyondViewport: False)
+        # 5. Делаем скриншот
+        logger.info("Делаем скриншот...")
         result = cdp("Page.captureScreenshot", {
             "format": "png",
             "quality": 80,
@@ -124,8 +140,10 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Ошибка скриншота: {e}")
+        # Пытаемся восстановить сессию
         try:
             ensure_real_tab()
+            logger.info("Сессия восстановлена после ошибки")
         except:
             pass
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -137,6 +155,17 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Сессия восстановлена!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка сброса: {str(e)[:200]}")
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапуск браузера"""
+    status_msg = await update.message.reply_text("🔄 Перезапускаю браузер...")
+    try:
+        restart_daemon()
+        time.sleep(2)
+        ensure_daemon()
+        await status_msg.edit_text("✅ Браузер перезапущен!")
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
 # 5. ЗАПУСК
@@ -158,6 +187,7 @@ def main():
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("screenshot", screenshot))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("restart", restart))
     
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
