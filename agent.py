@@ -204,13 +204,7 @@ def get_harness_instruction() -> str:
         domain_examples.append(f"  • {domain_name}: {', '.join(methods)}...")
     
     return f"""
-=== ВСЕ 652 МЕТОДА CDP ДОСТУПНЫ ===
-У тебя есть доступ ко всем {total_methods} методам CDP через 56 доменов.
-
-Основные домены:
-{chr(10).join(domain_examples)}
-
-Ты можешь использовать ЛЮБОЙ CDP-метод напрямую.
+Доступны все {total_methods} методов CDP через 56 доменов. Используй ЛЮБОЙ метод.
 """
 
 async def get_response(user_msg: str, error_context: str = None) -> str:
@@ -222,58 +216,50 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_harness_instruction()
 
-    system_prompt = """Ты агент для CDP браузера. Создавай xBRIEF планы.
+    system_prompt = """Ты агент для CDP браузера. Отвечай в TRON-формате xBRIEF (без кавычек вокруг ключей).
 
-=== СТРУКТУРА ПЛАНА ===
-{
-  "xBRIEFInfo": {"version": "0.8", "author": "agent", "created": "2026-07-17T00:00:00Z"},
-  "plan": {
-    "title": "...",
-    "status": "running",
-    "items": [{"id": "step1", "title": "Page.navigate", "params": {"url": "..."}}],
-    "edges": [{"from": "step1", "to": "step2", "type": "blocks"}],
-    "narratives": {"Outcome": "Результат: {{step2.result.count}}"}
-  }
+=== TRON-ФОРМАТ ===
+xBRIEFInfo: {version: "0.8", author: "agent"}
+plan: {
+  title: "...",
+  items: [
+    {id: "step1", title: "Page.navigate", params: {url: "..."}},
+    {id: "step2", title: "Runtime.evaluate", params: {expression: "..."}}
+  ],
+  edges: [{from: "step1", to: "step2", type: "blocks"}],
+  narratives: {Outcome: "{{step2.result.count}}"}
 }
 
 === ПРАВИЛА ===
-1. ТОЛЬКО JSON, без пояснений
-2. Для списков: Array.from(...).slice(0,20)
-3. ВСЕГДА return {count: N, items: [...]}
-4. После Page.navigate → добавь wait (selector: body, timeout: 15)
-5. В Outcome: {{stepX.result.count}}
+1. ТОЛЬКО TRON-формат, без пояснений
+2. ВСЕГДА return в expression
+3. ВСЕГДА Array.from() и slice(0,20)
+4. После Page.navigate → добавь wait с selector: body
+5. В Outcome используй {{stepX.result.count}}
 
-=== ГОТОВЫЕ ВЫРАЖЕНИЯ ===
+=== ВЫРАЖЕНИЯ ===
 // ССЫЛКИ
 const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0,20)};
-
-// ТВИТЫ X.COM
-const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(t => ({text: t.querySelector('[data-testid="tweetText"]')?.innerText || '', author: t.querySelector('[data-testid="User-Name"] span')?.innerText || '', likes: t.querySelector('[data-testid="like"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0,10)};
 
 // КНОПКИ
 const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).map(b => ({text: b.innerText?.trim() || '', type: b.type || 'button'})); return {count: buttons.length, buttons: buttons.slice(0,20)};
 
-// ПОЛЯ
-const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea')).map(i => ({name: i.name || '', type: i.type || '', placeholder: i.placeholder || ''})); return {count: inputs.length, inputs: inputs.slice(0,20)};
-
-// ТЕКСТ СТРАНИЦЫ
-return document.body?.innerText || '';
-
-// ЗАГОЛОВОК
-return document.title || '';
+// ТВИТЫ X.COM
+const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(t => ({text: t.querySelector('[data-testid="tweetText"]')?.innerText || '', author: t.querySelector('[data-testid="User-Name"] span')?.innerText || '', likes: t.querySelector('[data-testid="like"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0,10)};
 
 === ПРИМЕР ===
-{
-  "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
-    {"id": "step2", "title": "wait", "params": {"selector": "body", "timeout": 15}},
-    {"id": "step3", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0,20)};"}}
+xBRIEFInfo: {version: "0.8", author: "agent"}
+plan: {
+  title: "Поиск ссылок",
+  items: [
+    {id: "step1", title: "Page.navigate", params: {url: "https://example.com"}},
+    {id: "step2", title: "wait", params: {selector: "body", timeout: 15}},
+    {id: "step3", title: "Runtime.evaluate", params: {expression: "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0,20)};"}}
   ],
-  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}, {"from": "step2", "to": "step3", "type": "blocks"}],
-  "narratives": {"Outcome": "Найдено ссылок: {{step3.result.count}}"}
+  edges: [{from: "step1", to: "step2", type: "blocks"}, {from: "step2", to: "step3", type: "blocks"}],
+  narratives: {Outcome: "Найдено ссылок: {{step3.result.count}}"}
 }
-
-""" + harness_instruction
+"""
 
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
@@ -290,15 +276,9 @@ return document.title || '';
             # ===== СОХРАНЯЕМ ПЛАН =====
             try:
                 os.makedirs("logs", exist_ok=True)
-                parsed = parse_response(result)
-                if parsed:
-                    with open("logs/last_plan.json", "w", encoding="utf-8") as f:
-                        json.dump(parsed, f, indent=2, ensure_ascii=False)
-                    print(f"📋 План сохранён")
-                else:
-                    with open("logs/last_plan_raw.json", "w", encoding="utf-8") as f:
-                        json.dump({"raw": result[:1000]}, f, indent=2, ensure_ascii=False)
-                    print(f"📋 Сырой ответ сохранён")
+                with open("logs/last_plan_raw.json", "w", encoding="utf-8") as f:
+                    json.dump({"raw": result[:2000]}, f, indent=2, ensure_ascii=False)
+                print(f"📋 Ответ сохранён в logs/last_plan_raw.json")
             except Exception as e:
                 print(f"⚠️ Ошибка сохранения: {e}")
             # ===== КОНЕЦ =====
@@ -309,6 +289,22 @@ return document.title || '';
         return f"❌ Ошибка API: {str(e)}"
 
 def parse_response(response: str) -> Optional[Dict]:
+    # Сначала пробуем TRON → JSON
+    try:
+        import re
+        # TRON → JSON конвертация
+        tron_str = response
+        # Добавляем кавычки для ключей
+        tron_str = re.sub(r'(\w+):', r'"\1":', tron_str)
+        # Добавляем кавычки для строковых значений
+        tron_str = re.sub(r':\s*([^"{\[\]\d][^,}\n]*[^,\s])', r': "\1"', tron_str)
+        data = json.loads(tron_str)
+        if "xBRIEFInfo" in data and "plan" in data:
+            return {"type": "xbrief", "data": data}
+    except:
+        pass
+    
+    # Если TRON не распарсился — пробуем JSON
     try:
         if "```json" in response:
             start = response.find("```json") + 7
@@ -318,27 +314,15 @@ def parse_response(response: str) -> Optional[Dict]:
         if "{" in response:
             start = response.find("{")
             end = response.rfind("}") + 1
-            
             json_str = response[start:end].strip()
-            
-            open_braces = json_str.count('{')
-            close_braces = json_str.count('}')
-            
-            if open_braces > close_braces:
-                json_str += '}' * (open_braces - close_braces)
-            
-            if json_str.count('"') % 2 != 0:
-                json_str += '"'
-            
             data = json.loads(json_str)
-            
             if "xBRIEFInfo" in data and "plan" in data:
                 return {"type": "xbrief", "data": data}
             elif "method" in data:
                 return {"type": "command", "data": data}
     except Exception as e:
         add_log("parse_error", str(e), "error")
-        add_log("parse_debug", response[:300], "info")
+    
     return None
 
 def parse_command(response: str) -> Optional[Dict]:
