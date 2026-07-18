@@ -539,11 +539,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''
-
-# Write to file
-with open('/mnt/agents/output/selenium_x_agent_fixed.py', 'w') as f:
-    f.write(code)
-
-print("File written successfully")
-print(f"Length: {len(code)} chars")
