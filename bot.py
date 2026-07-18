@@ -56,7 +56,8 @@ async def start(update: Update, context):
         "/logs_clear_cdp — очистить CDP логи\n"
         "/cdp_stats — статистика CDP команд\n"
         "/logs_eval — показать последние eval логи\n"
-        "/last_plan — показать последний xBRIEF план"
+        "/last_plan — показать последний xBRIEF план\n"
+        "/debug_logs — показать отладочные логи"
     )
 
 async def status(update: Update, context):
@@ -98,7 +99,8 @@ async def status(update: Update, context):
         f"  • Команды: /logs_cdp — посмотреть\n"
         f"  • Скачать: /logs_cdp_full\n"
         f"  • Eval: /logs_eval\n"
-        f"  • План: /last_plan"
+        f"  • План: /last_plan\n"
+        f"  • Отладка: /debug_logs"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -304,6 +306,18 @@ async def format_runtime_result(value) -> str:
         return f"📊 {escape_markdown(str(value))}"
 
 async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
+    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open("logs/debug.log", "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\n")
+            f.write(f"TIMESTAMP: {datetime.now().isoformat()}\n")
+            f.write(f"ПЛАН:\n{json.dumps(plan, indent=2, ensure_ascii=False)[:2000]}\n")
+            f.write(f"{'='*60}\n")
+    except Exception as e:
+        print(f"⚠️ Ошибка записи debug лога: {e}")
+    # ===== КОНЕЦ =====
+    
     items = plan.get("plan", {}).get("items", [])
     edges = plan.get("plan", {}).get("edges", [])
     
@@ -353,6 +367,14 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 await update.message.reply_text(formatted, parse_mode="Markdown")
                 item["status"] = "done"
                 results[item_id] = {"result": result}
+                
+                # ===== ЗАПИСЬ РЕЗУЛЬТАТА В DEBUG ЛОГ =====
+                try:
+                    with open("logs/debug.log", "a", encoding="utf-8") as f:
+                        f.write(f"STEP {item_id} RESULT: {json.dumps(result, ensure_ascii=False)[:500]}\n")
+                except:
+                    pass
+                # ===== КОНЕЦ =====
                 continue
             
             elif method == "extract_all":
@@ -385,6 +407,16 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 
                 # Отладочный вывод в консоль
                 print(f"🔍 Runtime.evaluate результат: {value}")
+                
+                # ===== ЗАПИСЬ В DEBUG ЛОГ =====
+                try:
+                    with open("logs/debug.log", "a", encoding="utf-8") as f:
+                        f.write(f"STEP {item_id} (Runtime.evaluate):\n")
+                        f.write(f"  expression: {params.get('expression', '')[:200]}\n")
+                        f.write(f"  result: {json.dumps(value, ensure_ascii=False)[:500]}\n")
+                except:
+                    pass
+                # ===== КОНЕЦ =====
                 
                 try:
                     os.makedirs("logs", exist_ok=True)
@@ -420,6 +452,15 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
         except Exception as e:
             item["status"] = "failed"
             await update.message.reply_text(f"❌ Ошибка в шаге {item_id}: {str(e)}")
+            
+            # ===== ЗАПИСЬ ОШИБКИ В DEBUG ЛОГ =====
+            try:
+                with open("logs/debug.log", "a", encoding="utf-8") as f:
+                    f.write(f"STEP {item_id} ERROR: {str(e)}\n")
+            except:
+                pass
+            # ===== КОНЕЦ =====
+            
             if browser and not keep_browser:
                 await browser.disconnect()
                 browser.close()
@@ -435,6 +476,15 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     
     print(f"📋 Исходный Outcome: {outcome}")
     print(f"📋 Результаты шагов: {json.dumps(results, indent=2, ensure_ascii=False)[:500]}")
+    
+    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
+    try:
+        with open("logs/debug.log", "a", encoding="utf-8") as f:
+            f.write(f"RESULTS: {json.dumps(results, indent=2, ensure_ascii=False)[:1000]}\n")
+            f.write(f"OUTCOME BEFORE: {outcome}\n")
+    except:
+        pass
+    # ===== КОНЕЦ =====
     
     def replace_vars(match):
         var_path = match.group(1).strip()
@@ -462,6 +512,15 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
     outcome = re.sub(r'{{(.*?)}}', replace_vars, outcome)
     
     print(f"📋 Итоговый Outcome: {outcome}")
+    
+    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
+    try:
+        with open("logs/debug.log", "a", encoding="utf-8") as f:
+            f.write(f"OUTCOME AFTER: {outcome}\n")
+            f.write(f"{'='*60}\n\n")
+    except:
+        pass
+    # ===== КОНЕЦ =====
     
     if outcome:
         await update.message.reply_text(f"📋 **Итог:** {outcome}")
@@ -729,20 +788,19 @@ async def show_last_plan(update: Update, context):
         await update.message.reply_text(f"❌ {str(e)}")
 
 async def show_debug_logs(update: Update, context):
-    """Показать последние отладочные логи из консоли"""
+    """Показать последние отладочные логи"""
     try:
-        # Читаем последние строки из лога выполнения
         if os.path.exists("logs/debug.log"):
             with open("logs/debug.log", "r", encoding="utf-8") as f:
-                lines = f.readlines()[-30:]
+                lines = f.readlines()[-50:]
             
             if lines:
-                text = "🐞 **Отладочные логи:**\n\n```\n" + "".join(lines[-20:]) + "\n```"
+                text = "🐞 **Отладочные логи (последние 50 строк):**\n\n```\n" + "".join(lines[-40:]) + "\n```"
                 await update.message.reply_text(text[:4000], parse_mode="Markdown")
             else:
-                await update.message.reply_text("📭 Нет отладочных логов")
+                await update.message.reply_text("📭 Файл debug.log пуст")
         else:
-            await update.message.reply_text("❌ Файл logs/debug.log не найден")
+            await update.message.reply_text("❌ Файл logs/debug.log не найден. Сначала дай команду боту.")
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
