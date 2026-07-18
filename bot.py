@@ -49,24 +49,39 @@ logger.info("✅ Браузер готов")
 # 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-def get_session_id_by_url(url_part: str):
-    """Находит sessionId вкладки по части URL"""
+def attach_to_tab_by_url(url_part: str):
+    """Находит вкладку по URL и принудительно привязывается к ней"""
     try:
         resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
         pages = resp.json()
         
         for page in pages:
             if url_part in page.get("url", ""):
-                logger.info(f"✅ Найдена вкладка: {page.get('url')}")
-                return page["id"]
+                target_id = page["id"]
+                
+                # ПРИНУДИТЕЛЬНО ПРИВЯЗЫВАЕМСЯ К ВКЛАДКЕ
+                cdp("Target.attachToTarget", {
+                    "targetId": target_id,
+                    "flatten": True
+                })
+                
+                logger.info(f"✅ Привязались к вкладке: {target_id}")
+                logger.info(f"   URL: {page.get('url')}")
+                return target_id
         
         # Если не найдено — берём последнюю
         if pages:
-            logger.warning(f"⚠️ {url_part} не найдена, берём последнюю")
-            return pages[-1]["id"]
+            target_id = pages[-1]["id"]
+            cdp("Target.attachToTarget", {
+                "targetId": target_id,
+                "flatten": True
+            })
+            logger.warning(f"⚠️ {url_part} не найдена, привязались к последней: {target_id}")
+            return target_id
+        
         return None
     except Exception as e:
-        logger.error(f"Ошибка получения sessionId: {e}")
+        logger.error(f"Ошибка привязки: {e}")
         return None
 
 # ============================================================
@@ -109,11 +124,11 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wait_for_load()
         time.sleep(2)
         
-        # 2. Ищем вкладку с google.com
-        session_id = get_session_id_by_url("google.com")
+        # 2. Принудительно привязываемся к вкладке с google.com
+        session_id = attach_to_tab_by_url("google.com")
         
         if not session_id:
-            raise ValueError("Не удалось найти вкладку с google.com")
+            raise ValueError("Не удалось привязаться к вкладке")
         
         logger.info(f"Session ID: {session_id}")
         
