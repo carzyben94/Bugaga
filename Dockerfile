@@ -1,18 +1,10 @@
 FROM python:3.12-slim
 
-# Установка Chromium и системных зависимостей
+# Установка Chromium
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
-    xvfb \
     && rm -rf /var/lib/apt/lists/*
-
-# Установка uv (быстрый менеджер пакетов)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
-
-# Установка browser-harness через uv
-RUN uv tool install --python 3.12 --upgrade --force browser-harness
 
 ENV PYTHONUNBUFFERED=1 \
     DISPLAY=:99 \
@@ -20,7 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Установка Python-зависимостей
+# Установка зависимостей через pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -42,5 +34,5 @@ RUN mkdir -p /app/docs && \
 
 EXPOSE 9222 9223 8080
 
-# Простой запуск — без browser-harness в CMD, используем только Python
+# Запуск бота
 CMD ["python", "-u", "bot.py"]
