@@ -70,7 +70,7 @@ ensure_daemon()
 logger.info("✅ Браузер готов")
 
 # ============================================================
-# 3. ЗАПРОС К AGNES AI С ЛОГИРОВАНИЕМ
+# 3. ЗАПРОС К AGNES AI
 # ============================================================
 
 async def ask_agnes(messages):
@@ -175,11 +175,11 @@ async def start(update, context):
     logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
-        "/log — показать последние логи"
+        "/log — скачать файл логов"
     )
 
 async def log(update, context):
-    """Показывает последние 30 строк логов (без Markdown)"""
+    """Скачивает файл логов"""
     logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
@@ -187,15 +187,13 @@ async def log(update, context):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
         
-        with open(log_file, 'r') as f:
-            lines = f.readlines()
-            last_lines = lines[-30:] if len(lines) > 30 else lines
-            
-            msg = "📋 Последние логи:\n\n"
-            msg += ''.join(last_lines)
-            
-            # Отправляем БЕЗ parse_mode
-            await update.message.reply_text(msg[:4000])
+        # Отправляем файл
+        with open(log_file, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename='bot.log',
+                caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
