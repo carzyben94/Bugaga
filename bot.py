@@ -6,6 +6,7 @@ import base64
 import re
 import asyncio
 import io
+import json
 import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -69,11 +70,20 @@ ensure_daemon()
 logger.info("✅ Браузер готов")
 
 # ============================================================
-# 3. ЗАПРОС К AGNES AI
+# 3. ЗАПРОС К AGNES AI С ЛОГИРОВАНИЕМ
 # ============================================================
 
 async def ask_agnes(messages):
-    logger.info(f"📤 Запрос к Agnes AI: {messages[-1]['content'][:100]}...")
+    """Запрос к Agnes AI с полным логированием"""
+    # Логируем ВСЁ сообщение
+    logger.info("=" * 60)
+    logger.info("📤 ОТПРАВКА В AGNES AI:")
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        logger.info(f"  [{role}]: {content[:500]}..." if len(content) > 500 else f"  [{role}]: {content}")
+    logger.info("=" * 60)
+    
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
@@ -94,7 +104,13 @@ async def ask_agnes(messages):
             response.raise_for_status()
             data = response.json()
             content = data["choices"][0]["message"]["content"]
-            logger.info(f"📥 Ответ от Agnes AI получен, длина: {len(content)}")
+            
+            # Логируем ВЕСЬ ответ
+            logger.info("=" * 60)
+            logger.info("📥 ОТВЕТ ОТ AGNES AI:")
+            logger.info(f"  {content}")
+            logger.info("=" * 60)
+            
             return content
     except Exception as e:
         logger.error(f"❌ Ошибка Agnes AI: {e}")
@@ -106,7 +122,7 @@ async def ask_agnes(messages):
 
 def execute_code(code):
     """Выполняет код и перехватывает всё, что выводится через print()"""
-    logger.info(f"⚙️ Выполнение кода:\n{code[:500]}...")
+    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
     try:
         stdout_buffer = io.StringIO()
         old_stdout = sys.stdout
@@ -142,11 +158,11 @@ def execute_code(code):
         output = stdout_buffer.getvalue()
         
         if output:
-            logger.info(f"📤 Вывод кода:\n{output[:500]}...")
+            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
             return output.strip(), None
         elif 'result' in globals_dict:
             result = str(globals_dict['result'])
-            logger.info(f"📤 Результат: {result[:500]}...")
+            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
             return result, None
         
         logger.warning("⚠️ Код выполнен, но нет вывода")
@@ -167,7 +183,7 @@ async def start(update, context):
     )
 
 async def log(update, context):
-    """Показывает последние 20 строк логов"""
+    """Показывает последние 50 строк логов"""
     logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
@@ -177,7 +193,7 @@ async def log(update, context):
         
         with open(log_file, 'r') as f:
             lines = f.readlines()
-            last_lines = lines[-20:] if len(lines) > 20 else lines
+            last_lines = lines[-50:] if len(lines) > 50 else lines
             
             msg = "📋 **Последние логи:**\n\n```\n"
             msg += ''.join(last_lines)
