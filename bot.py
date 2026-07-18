@@ -1,17 +1,19 @@
 import os
 import subprocess
 import time
-import requests
+import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 def check_browser():
-    """Проверяет браузер через HTTP-запрос (без websockets)"""
+    """Проверяет браузер через HTTP-запрос (без requests)"""
     try:
-        response = requests.get("http://localhost:9222/json/version", timeout=3)
-        return response.status_code == 200
+        # httpx синхронный режим
+        with httpx.Client() as client:
+            response = client.get("http://localhost:9222/json/version", timeout=3.0)
+            return response.status_code == 200
     except:
         return False
 
