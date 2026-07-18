@@ -1,845 +1,252 @@
 import os
 import asyncio
 import json
-import base64
-import sys
-import re
-from typing import Dict
-from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from browser import ChromiumBrowser
-from agent import (
-    get_response,
-    parse_response,
-    parse_command,
-    clear_memory,
-    add_log,
-    get_logs,
-    clear_logs,
-    get_memory_stats,
-    flush_pending_saves,
-    get_protocols_stats,
-    parse_xbrief_plan,
-    parse_simple_command
-)
+
+# ===== ИМПОРТ BROWSER-HARNESS =====
+try:
+    from browser_harness import (
+        ensure_real_tab,
+        goto_url,
+        js,
+        wait_for_load,
+        wait_for_element,
+        page_info,
+        capture_screenshot,
+        click_at_xy,
+        type_text,
+        press_key,
+        scroll,
+        new_tab,
+        list_tabs,
+        close_tab
+    )
+    HARNESS_AVAILABLE = True
+    print("✅ browser-harness загружен")
+except ImportError as e:
+    HARNESS_AVAILABLE = False
+    print(f"⚠️ browser-harness не найден: {e}")
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     print("❌ TELEGRAM_BOT_TOKEN не задан")
     exit(1)
 
-keep_browser = False
-browser_instance = None
+# ===== ОБЁРТКА ДЛЯ БРАУЗЕРА =====
+class HarnessBrowser:
+    def __init__(self):
+        self.connected = False
+    
+    async def connect(self):
+        if not HARNESS_AVAILABLE:
+            return "❌ browser-harness не установлен"
+        try:
+            ensure_real_tab()
+            self.connected = True
+            print("✅ Браузер подключен")
+            return "✅ Браузер подключен"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    
+    async def navigate(self, url: str):
+        if not self.connected:
+            await self.connect()
+        try:
+            goto_url(url)
+            wait_for_load(15)
+            return {"success": True, "url": url}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def evaluate(self, expression: str):
+        if not self.connected:
+            await self.connect()
+        try:
+            return js(expression)
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def screenshot(self):
+        if not self.connected:
+            await self.connect()
+        try:
+            import tempfile
+            path = tempfile.mktemp(suffix=".png")
+            capture_screenshot(path)
+            with open(path, "rb") as f:
+                return f.read()
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def get_info(self):
+        if not self.connected:
+            await self.connect()
+        try:
+            return page_info()
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def wait_for(self, selector: str, timeout: int = 15):
+        if not self.connected:
+            await self.connect()
+        try:
+            return wait_for_element(selector, timeout=timeout)
+        except Exception as e:
+            return {"error": str(e)}
 
-def escape_markdown(text: str) -> str:
-    if not text:
-        return text
-    if not isinstance(text, str):
-        text = str(text)
-    special_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(special_chars)}])', r'\\\1', text)
+browser = HarnessBrowser()
 
+# ===== КОМАНДЫ БОТА =====
 async def start(update: Update, context):
     await update.message.reply_text(
-        "👋 Бот-агент с xBRIEF\n\n"
+        "👋 **Бот с browser-harness**\n\n"
+        "Команды:\n"
         "/start — справка\n"
-        "/clear — очистить память\n"
-        "/logai — логи\n"
-        "/logclear — очистить логи\n"
-        "/keep — удержание браузера\n"
-        "/close — закрыть браузер\n"
-        "/status — статус\n"
-        "/debug_x — диагностика X.com\n"
-        "/logs_cdp — показать CDP логи (200 записей)\n"
-        "/logs_cdp_full — скачать полный CDP лог файлом\n"
-        "/logs_clear_cdp — очистить CDP логи\n"
-        "/cdp_stats — статистика CDP команд\n"
-        "/logs_eval — показать последние eval логи\n"
-        "/last_plan — показать последний xBRIEF план\n"
-        "/debug_logs — показать отладочные логи"
+        "/status — статус браузера\n"
+        "/connect — подключиться к браузеру\n"
+        "/open <url> — открыть страницу\n"
+        "/js <код> — выполнить JS\n"
+        "/screenshot — скриншот\n"
+        "/info — информация о странице\n\n"
+        "Или просто напиши:\n"
+        "• `открой google.com`\n"
+        "• `выполни js: document.title`",
+        parse_mode="Markdown"
     )
 
 async def status(update: Update, context):
-    global keep_browser, browser_instance
-    stats = get_memory_stats()
-    logs = get_logs()
-    proto_stats = get_protocols_stats()
-    
-    cdp_size = 0
-    if os.path.exists("cdp_responses.log"):
-        cdp_size = os.path.getsize("cdp_responses.log")
-    
-    text = (
-        f"📊 **Статус бота**\n"
-        f"========================\n\n"
-        f"🧠 **Агент:**\n"
-        f"  • Память: {stats['history_count']}/{stats['max_history']}\n"
-        f"  • Ошибок: {'Есть ❌' if stats['last_error'] else 'Нет ✅'}\n"
-        f"  • Логов: {len(logs)}\n\n"
-        f"📁 **Протоколы:**\n"
-        f"  • CDP Browser: {'✅' if proto_stats['browser']['loaded'] else '❌'} "
-        f"({proto_stats['browser']['domains']} доменов, {proto_stats['browser']['commands']} команд)\n"
-        f"  • CDP JS: {'✅' if proto_stats['js']['loaded'] else '❌'} "
-        f"({proto_stats['js']['domains']} доменов, {proto_stats['js']['commands']} команд)\n"
-        f"  • xBRIEF: {'✅' if proto_stats['xbrief']['loaded'] else '❌'}\n"
-        f"  • browser-logic: {'✅' if proto_stats['browser_logic']['loaded'] else '❌'}\n"
-        f"  • browser-harness: {'✅' if proto_stats['browser_harness']['loaded'] else '❌'} "
-        f"({proto_stats['browser_harness']['total_methods']} методов, {proto_stats['browser_harness']['total_domains']} доменов)\n"
-        f"  • x-com-extraction: {'✅' if proto_stats['x_extraction']['loaded'] else '❌'}\n\n"
-        f"🌐 **Браузер:**\n"
-        f"  • Удержание: {'ВКЛ ✅' if keep_browser else 'ВЫКЛ ❌'}\n"
-        f"  • Экземпляр: {'Запущен ✅' if browser_instance else 'Не запущен ⚪'}\n\n"
-        f"📦 **Система:**\n"
-        f"  • Python: {sys.version.split()[0]}\n"
-        f"  • GitHub: {'✅' if os.environ.get('GITHUB_TOKEN') else '❌'}\n"
-        f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n\n"
-        f"📝 **CDP лог:**\n"
-        f"  • Размер: {cdp_size / 1024:.1f} КБ\n"
-        f"  • Команды: /logs_cdp — посмотреть\n"
-        f"  • Скачать: /logs_cdp_full\n"
-        f"  • Eval: /logs_eval\n"
-        f"  • План: /last_plan\n"
-        f"  • Отладка: /debug_logs"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def debug_x(update: Update, context):
-    global keep_browser, browser_instance
-    
-    await update.message.reply_text("🔍 Проверяю состояние X.com...")
-    
-    if not browser_instance or not browser_instance.websocket:
-        await update.message.reply_text("❌ Браузер не запущен. Используй /keep для запуска.")
-        return
-    
-    text = "📊 **ДИАГНОСТИКА X.COM**\n"
-    text += "========================\n\n"
-    
-    try:
-        cookies_result = await browser_instance.send_command("Network.getCookies")
-        all_cookies = cookies_result.get("cookies", [])
-        x_cookies = [c for c in all_cookies if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")]
-        
-        text += "🍪 **Куки для X.com:**\n"
-        text += f"  • Всего кук: {len(x_cookies)}\n"
-        
-        auth_cookie = next((c for c in x_cookies if c.get("name") == "auth_token"), None)
-        if auth_cookie:
-            text += f"  • auth_token: ✅ есть\n"
-            text += f"    ({auth_cookie.get('value')[:30]}...)\n"
-        else:
-            text += f"  • auth_token: ❌ НЕТ\n"
-        
-        ct0_cookie = next((c for c in x_cookies if c.get("name") == "ct0"), None)
-        if ct0_cookie:
-            text += f"  • ct0: ✅ есть\n"
-        else:
-            text += f"  • ct0: ❌ НЕТ\n"
-        
-        guest_cookie = next((c for c in x_cookies if c.get("name") == "guest_id"), None)
-        if guest_cookie:
-            text += f"  • guest_id: ✅ есть\n"
-        else:
-            text += f"  • guest_id: ❌ НЕТ\n"
-        
-        text += "\n"
-        
-        url = await browser_instance.evaluate("window.location.href")
-        title = await browser_instance.evaluate("document.title")
-        body_len = await browser_instance.evaluate("document.body?.innerText?.length || 0")
-        has_login = await browser_instance.evaluate("document.body?.innerText?.includes('Sign in') || document.body?.innerText?.includes('Войти') || false")
-        
-        text += "📄 **Текущая страница:**\n"
-        text += f"  • URL: {url}\n"
-        text += f"  • Заголовок: {title}\n"
-        text += f"  • Текст: {body_len:,} символов\n"
-        
-        if has_login:
-            text += "  • ⚠️ Страница требует ВХОДА!\n"
-        else:
-            text += "  • ✅ Страница загружена\n"
-        text += "\n"
-        
-        js = """
-        (function() {
-            return {
-                hasUserName: !!document.querySelector('[data-testid="User-Name"]'),
-                hasUserDescription: !!document.querySelector('[data-testid="UserDescription"]'),
-                hasFollowers: !!document.querySelector('a[href$="/followers"]'),
-                hasFollowing: !!document.querySelector('a[href$="/following"]'),
-                hasTweet: !!document.querySelector('article[data-testid="tweet"]'),
-                tweetCount: document.querySelectorAll('article[data-testid="tweet"]').length,
-                hasSearchInput: !!document.querySelector('[data-testid="SearchBox"]'),
-                hasProfileAvatar: !!document.querySelector('img[alt*="avatar"]'),
-                bodyText: document.body?.innerText?.slice(0, 200) || ''
-            };
-        })()
-        """
-        elements = await browser_instance.evaluate(js)
-        
-        text += "🔍 **Элементы X.com:**\n"
-        text += f"  • User-Name: {'✅' if elements.get('hasUserName') else '❌'}\n"
-        text += f"  • UserDescription: {'✅' if elements.get('hasUserDescription') else '❌'}\n"
-        text += f"  • Followers: {'✅' if elements.get('hasFollowers') else '❌'}\n"
-        text += f"  • Following: {'✅' if elements.get('hasFollowing') else '❌'}\n"
-        text += f"  • Tweet: {'✅' if elements.get('hasTweet') else '❌'} ({elements.get('tweetCount', 0)})\n"
-        text += f"  • SearchBox: {'✅' if elements.get('hasSearchInput') else '❌'}\n"
-        text += f"  • ProfileAvatar: {'✅' if elements.get('hasProfileAvatar') else '❌'}\n"
-        
-        body_preview = elements.get('bodyText', '')[:100]
-        if body_preview:
-            text += f"\n📝 **Текст страницы (первые 100 символов):**\n"
-            text += f"  {body_preview}...\n"
-        
-    except Exception as e:
-        text += f"\n❌ **Ошибка диагностики:**\n{str(e)}"
-    
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def toggle_keep_browser(update: Update, context):
-    global keep_browser
-    keep_browser = not keep_browser
-    await update.message.reply_text(f"🔄 Удержание: {'ВКЛ' if keep_browser else 'ВЫКЛ'}")
-
-async def close_browser_command(update: Update, context):
-    global browser_instance, keep_browser
-    if browser_instance:
-        await browser_instance.disconnect()
-        browser_instance.close()
-        browser_instance = None
-        keep_browser = False
-        add_log("browser_closed", "Закрыт", "info")
-        flush_pending_saves()
-        await update.message.reply_text("🛑 Браузер закрыт, данные сохранены")
-    else:
-        await update.message.reply_text("❌ Браузер не запущен")
-
-async def clear(update: Update, context):
-    clear_memory()
-    await update.message.reply_text("🧹 Память очищена")
-
-async def show_logs(update: Update, context):
-    logs = get_logs()
-    if not logs:
-        await update.message.reply_text("📭 Логов нет")
-        return
-    lines = []
-    for log in logs[-20:]:
-        timestamp = log.get("timestamp", "")[11:19]
-        action = log.get("action", "")
-        details = log.get("details", "")
-        status = log.get("status", "")
-        emoji = "✅" if status == "success" else "❌" if status == "error" else "ℹ️"
-        lines.append(f"{timestamp} {emoji} {action}: {details}")
-    await update.message.reply_text("\n".join(lines))
-
-async def clear_logs_command(update: Update, context):
-    clear_logs()
-    await update.message.reply_text("🧹 Логи очищены")
-
-async def get_browser():
-    global browser_instance
-    if keep_browser:
-        if browser_instance is None:
-            browser_instance = ChromiumBrowser()
-            browser_instance.launch(headless=True)
-            await browser_instance.connect()
-            add_log("browser_kept", "Удержан", "success")
-        return browser_instance
-    else:
-        browser = ChromiumBrowser()
-        browser.launch(headless=True)
-        await browser.connect()
-        return browser
-
-async def format_runtime_result(value) -> str:
-    if value is None:
-        return "📊 Результат: пусто"
-    
-    if isinstance(value, dict):
-        text = "📊 **Результат:**\n\n"
-        
-        if "count" in value:
-            text += f"📊 Количество: **{escape_markdown(str(value['count']))}**\n\n"
-        
-        if "error" in value:
-            text += f"❌ {escape_markdown(value['error'])}\n\n"
-        
-        for key, val in value.items():
-            if key in ["count", "error"]:
-                continue
-            if isinstance(val, (int, float)):
-                text += f"• **{escape_markdown(key)}**: {val:,}\n"
-            elif isinstance(val, list):
-                text += f"• **{escape_markdown(key)}**: {len(val)} элементов\n"
-                if val and len(val) <= 10:
-                    for i, item in enumerate(val[:10], 1):
-                        if isinstance(item, dict):
-                            item_str = json.dumps(item, ensure_ascii=False)[:100]
-                            text += f"  {i}. {escape_markdown(item_str)}\n"
-                        else:
-                            text += f"  {i}. {escape_markdown(str(item)[:100])}\n"
-                elif val:
-                    text += f"  (первые 10 из {len(val)})\n"
-            else:
-                text += f"• **{escape_markdown(key)}**: {escape_markdown(str(val)[:100])}\n"
-        return text
-    
-    elif isinstance(value, list):
-        if not value:
-            return "📊 Результат: пусто"
-        
-        text = "📊 **Результат:**\n\n"
-        for i, item in enumerate(value[:10], 1):
-            if isinstance(item, dict):
-                item_str = json.dumps(item, ensure_ascii=False)[:100]
-                text += f"{i}. {escape_markdown(item_str)}\n"
-            else:
-                text += f"{i}. {escape_markdown(str(item)[:100])}\n"
-        
-        if len(value) > 10:
-            text += f"\n... и ещё {len(value) - 10} результатов"
-        return text
-    
-    else:
-        return f"📊 {escape_markdown(str(value))}"
-
-async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
-    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-    try:
-        os.makedirs("logs", exist_ok=True)
-        with open("logs/debug.log", "a", encoding="utf-8") as f:
-            f.write(f"\n{'='*60}\n")
-            f.write(f"TIMESTAMP: {datetime.now().isoformat()}\n")
-            f.write(f"ПЛАН:\n{json.dumps(plan, indent=2, ensure_ascii=False)[:2000]}\n")
-            f.write(f"{'='*60}\n")
-    except Exception as e:
-        print(f"⚠️ Ошибка записи debug лога: {e}")
-    # ===== КОНЕЦ =====
-    
-    items = plan.get("plan", {}).get("items", [])
-    edges = plan.get("plan", {}).get("edges", [])
-    
-    # Логируем план в консоль для отладки
-    print(f"📋 Выполнение плана: {json.dumps(plan, indent=2, ensure_ascii=False)[:500]}")
-    
-    order = []
-    if edges:
-        for edge in edges:
-            if edge.get("type") == "blocks":
-                if edge["from"] not in order:
-                    order.append(edge["from"])
-                if edge["to"] not in order:
-                    order.append(edge["to"])
-    else:
-        order = [item["id"] for item in items]
-    
-    print(f"📋 Порядок выполнения: {order}")
-    
-    browser = None
-    results = {}
-    
-    for item_id in order:
-        item = next((i for i in items if i["id"] == item_id), None)
-        if not item:
-            print(f"⚠️ Шаг {item_id} не найден в items")
-            continue
-        
-        if item.get("status") == "done":
-            print(f"⏭️ Шаг {item_id} уже выполнен")
-            continue
-            
-        method = item.get("title")
-        params = item.get("params", {})
-        
-        await update.message.reply_text(f"⚡ {method} (шаг {order.index(item_id) + 1}/{len(order)})")
-        
+    status_text = f"🔗 **Статус:** {'✅ Подключен' if browser.connected else '❌ Не подключен'}\n"
+    status_text += f"📦 **browser-harness:** {'✅ Доступен' if HARNESS_AVAILABLE else '❌ Не установлен'}\n"
+    if browser.connected:
         try:
-            if not browser:
-                browser = await get_browser()
-            
-            if method == "extract":
-                model_name = params.get("model")
-                timeout = params.get("timeout", 10)
-                result = await browser.extract(model_name, timeout)
-                formatted = await format_runtime_result(result)
-                await update.message.reply_text(formatted, parse_mode="Markdown")
-                item["status"] = "done"
-                results[item_id] = {"result": result}
-                
-                # ===== ЗАПИСЬ РЕЗУЛЬТАТА В DEBUG ЛОГ =====
-                try:
-                    with open("logs/debug.log", "a", encoding="utf-8") as f:
-                        f.write(f"STEP {item_id} RESULT: {json.dumps(result, ensure_ascii=False)[:500]}\n")
-                except:
-                    pass
-                # ===== КОНЕЦ =====
-                continue
-            
-            elif method == "extract_all":
-                model_name = params.get("model")
-                limit = params.get("limit", 20)
-                timeout = params.get("timeout", 10)
-                result = await browser.extract_all(model_name, timeout, limit)
-                formatted = await format_runtime_result(result)
-                await update.message.reply_text(formatted, parse_mode="Markdown")
-                item["status"] = "done"
-                results[item_id] = {"result": result}
-                continue
-            
-            elif method == "wait":
-                selector = params.get("selector")
-                timeout = params.get("timeout", 10)
-                await browser.wait_for_element(selector, timeout)
-                await update.message.reply_text(f"⏳ Элемент найден: {selector}")
-                item["status"] = "done"
-                results[item_id] = {"result": True}
-                continue
-            
-            # ===== ВЫПОЛНЯЕМ КОМАНДУ =====
-            result = await browser.send_command(method, params)
-            item["status"] = "done"
-            
-            # ===== ОБРАБОТКА РЕЗУЛЬТАТА =====
-            if method == "Runtime.evaluate":
-                value = result.get("result", {}).get("result", {}).get("value")
-                results[item_id] = {"result": value}
-                
-                # Отладочный вывод в консоль
-                print(f"🔍 Runtime.evaluate результат: {value}")
-                
-                # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-                try:
-                    with open("logs/debug.log", "a", encoding="utf-8") as f:
-                        f.write(f"STEP {item_id} (Runtime.evaluate):\n")
-                        f.write(f"  expression: {params.get('expression', '')[:200]}\n")
-                        f.write(f"  result: {json.dumps(value, ensure_ascii=False)[:500]}\n")
-                except:
-                    pass
-                # ===== КОНЕЦ =====
-                
-                try:
-                    os.makedirs("logs", exist_ok=True)
-                    with open("logs/evaluate_results.log", "a", encoding="utf-8") as f:
-                        f.write(json.dumps({
-                            "timestamp": datetime.now().isoformat(),
-                            "step_id": item_id,
-                            "expression": params.get("expression", ""),
-                            "result": value
-                        }, ensure_ascii=False) + "\n")
-                except:
-                    pass
-            else:
-                results[item_id] = {"result": result}
-            
-            # ===== ОБРАБОТКА ОТВЕТОВ =====
-            if method == "Page.captureScreenshot":
-                if "result" in result and "data" in result["result"]:
-                    img_data = base64.b64decode(result["result"]["data"])
-                    await update.message.reply_photo(photo=img_data, caption="📸 Скриншот")
-                else:
-                    await update.message.reply_text("✅ Скриншот сделан")
-            elif method == "Page.navigate":
-                await asyncio.sleep(1)
-                title = await browser.evaluate("document.title")
-                await update.message.reply_text(f"✅ {params.get('url')}\n📄 {title}")
-            elif method == "Runtime.evaluate":
-                value = result.get("result", {}).get("result", {}).get("value")
-                formatted = await format_runtime_result(value)
-                await update.message.reply_text(formatted, parse_mode="Markdown")
-            else:
-                await update.message.reply_text("✅ Выполнено")
-                
-        except Exception as e:
-            item["status"] = "failed"
-            await update.message.reply_text(f"❌ Ошибка в шаге {item_id}: {str(e)}")
-            
-            # ===== ЗАПИСЬ ОШИБКИ В DEBUG ЛОГ =====
-            try:
-                with open("logs/debug.log", "a", encoding="utf-8") as f:
-                    f.write(f"STEP {item_id} ERROR: {str(e)}\n")
-            except:
-                pass
-            # ===== КОНЕЦ =====
-            
-            if browser and not keep_browser:
-                await browser.disconnect()
-                browser.close()
-            return False
-    
-    if browser and not keep_browser:
-        await browser.disconnect()
-        browser.close()
-    
-    # ===== ПОДСТАНОВКА ПЕРЕМЕННЫХ В OUTCOME =====
-    narratives = plan.get("plan", {}).get("narratives", {})
-    outcome = narratives.get("Outcome", "")
-    
-    print(f"📋 Исходный Outcome: {outcome}")
-    print(f"📋 Результаты шагов: {json.dumps(results, indent=2, ensure_ascii=False)[:500]}")
-    
-    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-    try:
-        with open("logs/debug.log", "a", encoding="utf-8") as f:
-            f.write(f"RESULTS: {json.dumps(results, indent=2, ensure_ascii=False)[:1000]}\n")
-            f.write(f"OUTCOME BEFORE: {outcome}\n")
-    except:
-        pass
-    # ===== КОНЕЦ =====
-    
-    def replace_vars(match):
-        var_path = match.group(1).strip()
-        parts = var_path.split('.')
-        
-        if len(parts) >= 2:
-            step_id = parts[0]
-            field = '.'.join(parts[1:])
-            
-            if step_id in results:
-                value = results[step_id]
-                for key in field.split('.'):
-                    if isinstance(value, dict) and key in value:
-                        value = value[key]
-                    else:
-                        print(f"⚠️ Не найден ключ {key} в {value}")
-                        return "не найдено"
-                if value is None:
-                    return "не найдено"
-                print(f"✅ Подстановка: {var_path} → {value}")
-                return str(value)
-        print(f"⚠️ Не удалось распарсить переменную: {var_path}")
-        return match.group(0)
-    
-    outcome = re.sub(r'{{(.*?)}}', replace_vars, outcome)
-    
-    print(f"📋 Итоговый Outcome: {outcome}")
-    
-    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-    try:
-        with open("logs/debug.log", "a", encoding="utf-8") as f:
-            f.write(f"OUTCOME AFTER: {outcome}\n")
-            f.write(f"{'='*60}\n\n")
-    except:
-        pass
-    # ===== КОНЕЦ =====
-    
-    if outcome:
-        await update.message.reply_text(f"📋 **Итог:** {outcome}")
-    
-    return True
+            info = await browser.get_info()
+            if isinstance(info, dict) and "error" not in info:
+                status_text += f"📄 **Страница:** {info.get('title', 'Нет')}\n"
+                status_text += f"🔗 **URL:** {info.get('url', 'Нет')}\n"
+                status_text += f"📐 **Размер:** {info.get('w', 0)}x{info.get('h', 0)}\n"
+        except:
+            pass
+    await update.message.reply_text(status_text, parse_mode="Markdown")
 
-async def execute_with_retry(update: Update, user_text: str, max_retries: int = 2) -> bool:
-    add_log("user_input", user_text, "info")
-    for attempt in range(max_retries + 1):
-        try:
-            agent_response = await get_response(user_text)
-            parsed = parse_response(agent_response)
-            
-            if not parsed:
-                add_log("agent_response", agent_response[:100], "info")
-                await update.message.reply_text(agent_response)
-                return True
-            
-            if parsed.get("type") == "xbrief":
-                add_log("xbrief_plan", "Получен xBRIEF план", "info")
-                return await execute_xbrief_plan(update, parsed["data"])
-            else:
-                cmd = parsed["data"]
-                method = cmd.get("method")
-                params = cmd.get("params", {})
-                
-                add_log("command", f"{method}", "info")
-                await update.message.reply_text(f"⚡ {method}")
-                
-                browser = await get_browser()
-                result = await browser.send_command(method, params)
-                add_log("success", method, "success")
-                
-                if method == "Page.captureScreenshot":
-                    if "result" in result and "data" in result["result"]:
-                        img_data = base64.b64decode(result["result"]["data"])
-                        await update.message.reply_photo(photo=img_data, caption="📸 Скриншот")
-                    else:
-                        await update.message.reply_text("✅ Скриншот сделан")
-                elif method == "Page.navigate":
-                    await asyncio.sleep(1)
-                    title = await browser.evaluate("document.title")
-                    await update.message.reply_text(f"✅ {params.get('url')}\n📄 {title}")
-                elif method == "Runtime.evaluate":
-                    value = result.get("result", {}).get("result", {}).get("value")
-                    formatted = await format_runtime_result(value)
-                    await update.message.reply_text(formatted, parse_mode="Markdown")
-                else:
-                    await update.message.reply_text("✅ Выполнено")
-                
-                if not keep_browser:
-                    await browser.disconnect()
-                    browser.close()
-                return True
-                
-        except Exception as e:
-            error_msg = str(e)
-            add_log("error", error_msg[:150], "error")
-            await update.message.reply_text(f"❌ {error_msg}")
-            if attempt < max_retries:
-                await update.message.reply_text(f"🔄 Попытка {attempt+2}/{max_retries+1}")
-            else:
-                await update.message.reply_text("❌ Не удалось выполнить")
-            continue
-    return False
+async def connect(update: Update, context):
+    msg = await browser.connect()
+    await update.message.reply_text(msg)
+
+async def open_url(update: Update, context):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи URL: `/open https://example.com`")
+        return
+    url = context.args[0]
+    if not url.startswith("http"):
+        url = "https://" + url
+    await update.message.reply_text(f"🌐 Открываю {url}...")
+    result = await browser.navigate(url)
+    if result.get("success"):
+        info = await browser.get_info()
+        title = info.get("title", "Без названия") if isinstance(info, dict) else ""
+        await update.message.reply_text(f"✅ {url}\n📄 {title}")
+    else:
+        await update.message.reply_text(f"❌ {result.get('error', 'Ошибка')}")
+
+async def execute_js(update: Update, context):
+    if not context.args:
+        await update.message.reply_text("❌ Укажи JS код: `/js document.title`")
+        return
+    expression = " ".join(context.args)
+    await update.message.reply_text(f"⚡ Выполняю JS...")
+    result = await browser.evaluate(expression)
+    if isinstance(result, dict) and "error" in result:
+        await update.message.reply_text(f"❌ {result['error']}")
+    else:
+        await update.message.reply_text(f"📊 Результат:\n```json\n{json.dumps(result, indent=2, ensure_ascii=False)[:4000]}\n```", parse_mode="Markdown")
+
+async def screenshot(update: Update, context):
+    await update.message.reply_text("📸 Делаю скриншот...")
+    result = await browser.screenshot()
+    if isinstance(result, dict) and "error" in result:
+        await update.message.reply_text(f"❌ {result['error']}")
+    else:
+        await update.message.reply_photo(photo=result, caption="📸 Скриншот")
+
+async def info(update: Update, context):
+    result = await browser.get_info()
+    if isinstance(result, dict) and "error" in result:
+        await update.message.reply_text(f"❌ {result['error']}")
+        return
+    text = "📄 **Информация о странице:**\n\n"
+    for key, value in result.items():
+        text += f"• **{key}**: {value}\n"
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def handle_message(update: Update, context):
-    user_text = update.message.text
-    await update.message.reply_text("🤔 Думаю...")
-    await execute_with_retry(update, user_text)
-
-# ===== КОМАНДЫ ДЛЯ ЛОГОВ =====
-
-async def download_cdp_logs(update: Update, context):
-    try:
-        if os.path.exists("cdp_responses.log"):
-            with open("cdp_responses.log", "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            if not content:
-                await update.message.reply_text("📭 CDP лог пуст")
-                return
-            
-            lines = content.strip().split('\n')
-            total_lines = len(lines)
-            
-            if total_lines > 200:
-                lines = lines[-200:]
-                content = '\n'.join(lines)
-                await update.message.reply_text(
-                    f"📡 **CDP логи (последние 200 из {total_lines} записей):**\n\n```json\n{content[:4000]}\n```",
-                    parse_mode="Markdown"
-                )
-            else:
-                await update.message.reply_text(
-                    f"📡 **CDP логи (все {total_lines} записей):**\n\n```json\n{content[:4000]}\n```",
-                    parse_mode="Markdown"
-                )
-        else:
-            await update.message.reply_text("❌ Файл cdp_responses.log не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def download_full_cdp_logs(update: Update, context):
-    try:
-        if os.path.exists("cdp_responses.log"):
-            with open("cdp_responses.log", "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            if not content:
-                await update.message.reply_text("📭 CDP лог пуст")
-                return
-            
-            await update.message.reply_document(
-                document=open("cdp_responses.log", "rb"),
-                filename="cdp_responses.log",
-                caption=f"📡 CDP логи ({len(content.strip().split(chr(10)))} записей)"
-            )
-        else:
-            await update.message.reply_text("❌ Файл cdp_responses.log не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def clear_cdp_logs(update: Update, context):
-    try:
-        files_deleted = []
-        if os.path.exists("cdp_responses.log"):
-            os.remove("cdp_responses.log")
-            files_deleted.append("cdp_responses.log")
-        if os.path.exists("cdp_logs.json"):
-            os.remove("cdp_logs.json")
-            files_deleted.append("cdp_logs.json")
-        if os.path.exists("cdp_errors.log"):
-            os.remove("cdp_errors.log")
-            files_deleted.append("cdp_errors.log")
-        
-        if os.path.exists("logs"):
-            for f in os.listdir("logs"):
-                os.remove(os.path.join("logs", f))
-            files_deleted.append("logs/*")
-        
-        if files_deleted:
-            await update.message.reply_text(f"🧹 CDP логи очищены: {', '.join(files_deleted)}")
-        else:
-            await update.message.reply_text("📭 CDP лог-файлы не найдены")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def cdp_stats(update: Update, context):
-    global browser_instance
+    text = update.message.text.lower()
     
-    if not browser_instance:
-        await update.message.reply_text("❌ Браузер не запущен")
+    # Простые команды без /
+    if text.startswith("открой "):
+        url = text[7:].strip()
+        if not url.startswith("http"):
+            url = "https://" + url
+        await update.message.reply_text(f"🌐 Открываю {url}...")
+        result = await browser.navigate(url)
+        if result.get("success"):
+            info = await browser.get_info()
+            title = info.get("title", "Без названия") if isinstance(info, dict) else ""
+            await update.message.reply_text(f"✅ {url}\n📄 {title}")
+        else:
+            await update.message.reply_text(f"❌ {result.get('error', 'Ошибка')}")
         return
     
-    try:
-        logs = browser_instance.get_logs(50) if hasattr(browser_instance, 'get_logs') else []
-        
-        if not logs:
-            await update.message.reply_text("📭 Нет CDP логов")
-            return
-        
-        methods = {}
-        total_duration = 0
-        errors = 0
-        
-        for log in logs:
-            method = log.get("method", "unknown")
-            duration = log.get("duration", 0)
-            success = log.get("success", True)
-            
-            if method not in methods:
-                methods[method] = {"count": 0, "total_time": 0, "errors": 0}
-            
-            methods[method]["count"] += 1
-            methods[method]["total_time"] += duration
-            total_duration += duration
-            if not success:
-                methods[method]["errors"] += 1
-                errors += 1
-        
-        text = "📊 **CDP Статистика:**\n"
-        text += "========================\n\n"
-        text += f"📝 Всего команд: {len(logs)}\n"
-        text += f"⏱️ Общее время: {total_duration:.2f}s\n"
-        text += f"❌ Ошибок: {errors}\n"
-        text += f"✅ Успешно: {len(logs) - errors}\n\n"
-        
-        text += "📋 **Команды:**\n"
-        for method, data in sorted(methods.items(), key=lambda x: x[1]["count"], reverse=True)[:10]:
-            avg_time = data["total_time"] / data["count"] if data["count"] > 0 else 0
-            status = "✅" if data["errors"] == 0 else f"⚠️ {data['errors']} ошиб."
-            text += f"  {status} `{method}`: {data['count']} раз, ø {avg_time:.2f}s\n"
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def show_eval_logs(update: Update, context):
-    """Показать последние eval логи"""
-    try:
-        if os.path.exists("logs/evaluate.log"):
-            with open("logs/evaluate.log", "r", encoding="utf-8") as f:
-                lines = f.readlines()[-20:]
-            
-            if not lines:
-                await update.message.reply_text("📭 Нет eval логов")
-                return
-            
-            text = "🧠 **Последние eval логи:**\n\n"
-            count = 0
-            for line in lines[-10:]:
-                try:
-                    entry = json.loads(line.strip())
-                    expr = entry.get("expression", "")[:100]
-                    value = str(entry.get("value", ""))[:100]
-                    duration = entry.get("duration", 0)
-                    timestamp = entry.get("timestamp", "")[11:19]
-                    text += f"• `{timestamp}` `{duration:.2f}s`\n"
-                    text += f"  📋 {expr}\n"
-                    if value and value != "None":
-                        text += f"  📊 {value}\n"
-                    text += "\n"
-                    count += 1
-                except:
-                    pass
-            
-            if count == 0:
-                await update.message.reply_text("📭 Нет eval логов")
-            else:
-                await update.message.reply_text(text[:4000], parse_mode="Markdown")
+    if text.startswith("выполни js:") or text.startswith("js:"):
+        expression = text.split(":", 1)[1].strip()
+        await update.message.reply_text(f"⚡ Выполняю JS...")
+        result = await browser.evaluate(expression)
+        if isinstance(result, dict) and "error" in result:
+            await update.message.reply_text(f"❌ {result['error']}")
         else:
-            await update.message.reply_text("❌ Файл logs/evaluate.log не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
+            await update.message.reply_text(f"📊 Результат:\n```json\n{json.dumps(result, indent=2, ensure_ascii=False)[:4000]}\n```", parse_mode="Markdown")
+        return
+    
+    if text.startswith("скриншот") or text == "screenshot":
+        await screenshot(update, context)
+        return
+    
+    await update.message.reply_text(
+        "❓ Не понял команду.\n\n"
+        "Попробуй:\n"
+        "• `открой google.com`\n"
+        "• `js: document.title`\n"
+        "• `скриншот`\n"
+        "• `/help` для всех команд"
+    )
 
-async def show_last_plan(update: Update, context):
-    """Показать последний xBRIEF план"""
-    try:
-        if os.path.exists("logs/last_plan.json"):
-            with open("logs/last_plan.json", "r", encoding="utf-8") as f:
-                plan = json.load(f)
-                
-                plan_text = json.dumps(plan, indent=2, ensure_ascii=False)
-                
-                if len(plan_text) > 4000:
-                    plan_text = plan_text[:4000] + "\n... (обрезано)"
-                
-                await update.message.reply_text(
-                    f"📋 **Последний xBRIEF план:**\n\n```json\n{plan_text}\n```",
-                    parse_mode="Markdown"
-                )
-        else:
-            if os.path.exists("logs/last_plan_raw.json"):
-                with open("logs/last_plan_raw.json", "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                    await update.message.reply_text(
-                        f"📋 **Сырой ответ агента (не распарсился):**\n\n```\n{raw.get('raw', '')[:2000]}\n```",
-                        parse_mode="Markdown"
-                    )
-            else:
-                await update.message.reply_text("❌ Нет сохранённого плана. Сначала дай команду боту.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
+async def help_command(update: Update, context):
+    await start(update, context)
 
-async def show_debug_logs(update: Update, context):
-    """Показать последние отладочные логи"""
-    try:
-        if os.path.exists("logs/debug.log"):
-            with open("logs/debug.log", "r", encoding="utf-8") as f:
-                lines = f.readlines()[-50:]
-            
-            if lines:
-                text = "🐞 **Отладочные логи (последние 50 строк):**\n\n```\n" + "".join(lines[-40:]) + "\n```"
-                await update.message.reply_text(text[:4000], parse_mode="Markdown")
-            else:
-                await update.message.reply_text("📭 Файл debug.log пуст")
-        else:
-            await update.message.reply_text("❌ Файл logs/debug.log не найден. Сначала дай команду боту.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-# ===== КОНЕЦ КОМАНД =====
-
+# ===== ЗАПУСК =====
 def main():
-    add_log("bot_started", "Бот запущен", "success")
+    # Подключаемся к браузеру при старте
+    try:
+        ensure_real_tab()
+        browser.connected = True
+        print("✅ Браузер подключен при старте")
+    except Exception as e:
+        print(f"⚠️ Не удалось подключиться при старте: {e}")
+    
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("logai", show_logs))
-    app.add_handler(CommandHandler("logclear", clear_logs_command))
-    app.add_handler(CommandHandler("keep", toggle_keep_browser))
-    app.add_handler(CommandHandler("close", close_browser_command))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("debug_x", debug_x))
-    
-    app.add_handler(CommandHandler("logs_cdp", download_cdp_logs))
-    app.add_handler(CommandHandler("logs_cdp_full", download_full_cdp_logs))
-    app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
-    app.add_handler(CommandHandler("cdp_stats", cdp_stats))
-    app.add_handler(CommandHandler("logs_eval", show_eval_logs))
-    app.add_handler(CommandHandler("last_plan", show_last_plan))
-    app.add_handler(CommandHandler("debug_logs", show_debug_logs))
+    app.add_handler(CommandHandler("connect", connect))
+    app.add_handler(CommandHandler("open", open_url))
+    app.add_handler(CommandHandler("js", execute_js))
+    app.add_handler(CommandHandler("screenshot", screenshot))
+    app.add_handler(CommandHandler("info", info))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Бот запущен с xBRIEF")
-    print("📋 Команды:")
-    print("  /logs_cdp — показать CDP логи")
-    print("  /logs_cdp_full — скачать полный CDP лог")
-    print("  /logs_clear_cdp — очистить CDP логи")
-    print("  /cdp_stats — статистика CDP команд")
-    print("  /logs_eval — показать eval логи")
-    print("  /last_plan — показать последний xBRIEF план")
-    print("  /debug_logs — показать отладочные логи")
+    print("✅ Бот запущен")
     app.run_polling()
 
 if __name__ == "__main__":
