@@ -187,7 +187,6 @@ async def log(update, context):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
         
-        # Отправляем файл
         with open(log_file, 'rb') as f:
             await update.message.reply_document(
                 document=f,
@@ -212,18 +211,21 @@ async def ask(update, context):
         system_prompt = """
 You are a browser agent that controls a real browser via browser-harness.
 
-🚨 CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
+🚨 CRITICAL RULES:
+1. ALWAYS use print() to output the result. Without print(), the user will see nothing.
+2. ALWAYS call ensure_real_tab() BEFORE any cdp() or capture_screenshot() call.
 
-WRONG (no output):
+WRONG (session error):
 new_tab("https://google.com")
 wait_for_load()
-page_info()  # ← ничего не выводит!
+cdp("Page.captureScreenshot", {"format": "png", "quality": 80})  # ← ОШИБКА! Нет ensure_real_tab()!
 
-CORRECT (with output):
+CORRECT:
 new_tab("https://google.com")
 wait_for_load()
-info = page_info()
-print(info)  # ← ВСЕГДА используй print()!
+ensure_real_tab()  # ← ОБЯЗАТЕЛЬНО!
+result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+print(result)  # ← ОБЯЗАТЕЛЬНО!
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
@@ -235,6 +237,7 @@ Navigation:
 - First navigation ALWAYS new_tab(url)
 - Subsequent navigation goto_url(url)
 - Always wait_for_load() after navigation
+- ALWAYS ensure_real_tab() before CDP commands
 
 Helpers available:
 new_tab(url), goto_url(url), wait_for_load(), page_info(),
@@ -249,6 +252,7 @@ Rules:
 - For screenshots use cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 - Use js() only for reading DOM data, never for clicks
 - ALWAYS use print() to output the result
+- ALWAYS call ensure_real_tab() before cdp() or capture_screenshot()
 - Wrap code in ```python ... ```
 """
 
