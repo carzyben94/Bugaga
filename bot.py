@@ -123,7 +123,7 @@ def list_skills() -> list[str]:
     return skills
 
 # ============================================================
-# 5. СИСТЕМНЫЙ ПРОМПТ
+# 5. СИСТЕМНЫЙ ПРОМПТ (исправлен)
 # ============================================================
 
 SYSTEM_PROMPT = """
@@ -166,21 +166,21 @@ SYSTEM_PROMPT = """
    - "note": "Описание"
    - "source": "Название сайта с эмодзи"
 
-Пример кода для скриншота (без маркдаун-блоков внутри):
+Пример кода для скриншота:
 import json
 import base64
 try:
     new_tab("https://example.com")
     wait_for_load()
     img = capture_screenshot()
-    print(json.dumps({
+    print(json.dumps({{
         "action": "screenshot_taken",
         "source": "🌐 Example",
         "screenshot": base64.b64encode(img).decode(),
         "note": "Скриншот главной страницы"
-    }))
+    }}))
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    print(json.dumps({{"error": str(e)}}))
 
 ВАЖНО:
 - Не используй слова "пример", "ориентировочно", "около" без необходимости
@@ -219,7 +219,7 @@ async def ask_agnes(messages: list[dict]) -> str:
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# 7. ИСПОЛНИТЕЛЬ КОДА С ПОДДЕРЖКОЙ СКРИНШОТОВ
+# 7. ИСПОЛНИТЕЛЬ КОДА
 # ============================================================
 
 async def execute_agent_code(code: str, update: Update = None) -> tuple[str, bool]:
@@ -316,23 +316,14 @@ try:
     new_tab("https://example.com")
     wait_for_load()
     img = capture_screenshot()
-    print(json.dumps({
+    print(json.dumps({{
         "action": "screenshot_taken",
         "source": "🌐 Example",
         "screenshot": base64.b64encode(img).decode(),
         "note": "Скриншот главной страницы"
-    }))
+    }}))
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
-
-Пример для цен:
-{
-  "source": "🍎 Apple Germany",
-  "product": "iPhone 15 Pro",
-  "price": "1199€",
-  "memory": "256GB",
-  "url": "https://apple.com"
-}
+    print(json.dumps({{"error": str(e)}}))
 """
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT + context_text},
