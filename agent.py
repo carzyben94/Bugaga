@@ -394,6 +394,23 @@ const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => (
             )
             result = resp.json()["choices"][0]["message"]["content"]
             add_to_memory("assistant", result)
+            
+            # ===== СОХРАНЯЕМ ПЛАН ДЛЯ ОТЛАДКИ =====
+            try:
+                os.makedirs("logs", exist_ok=True)
+                parsed = parse_response(result)
+                if parsed:
+                    with open("logs/last_plan.json", "w", encoding="utf-8") as f:
+                        json.dump(parsed, f, indent=2, ensure_ascii=False)
+                    print(f"📋 План сохранён в logs/last_plan.json")
+                else:
+                    with open("logs/last_plan_raw.json", "w", encoding="utf-8") as f:
+                        json.dump({"raw": result[:1000]}, f, indent=2, ensure_ascii=False)
+                    print(f"📋 Сырой ответ сохранён в logs/last_plan_raw.json")
+            except Exception as e:
+                print(f"⚠️ Ошибка сохранения плана: {e}")
+            # ===== КОНЕЦ СОХРАНЕНИЯ =====
+            
             return result
     except Exception as e:
         add_log("api_error", str(e), "error")
