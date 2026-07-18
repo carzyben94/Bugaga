@@ -47,13 +47,13 @@ def check_browser():
 def ensure_browser():
     """Запускает браузер если не запущен"""
     chrome_path = "/usr/bin/chromium"
-    
+
     if check_browser():
-        logger.info("✅ Браузер уже запущен")
+        logger.info("Браузер уже запущен")
         return True
-    
-    logger.info("🔄 Запускаем браузер...")
-    
+
+    logger.info("Запускаем браузер...")
+
     cmd = [
         chrome_path,
         "--headless",
@@ -65,22 +65,22 @@ def ensure_browser():
         "--user-data-dir=/tmp/chrome-profile",
         "about:blank"
     ]
-    
+
     subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True
     )
-    
+
     for i in range(30):
         time.sleep(1)
         if check_browser():
-            logger.info(f"✅ Браузер запущен! (через {i+1} сек)")
+            logger.info(f"Браузер запущен! (через {i+1} сек)")
             return True
-        logger.info(f"   Ожидание... {i+1}/30")
-    
-    logger.error("❌ Не удалось запустить браузер")
+        logger.info(f"Ожидание... {i+1}/30")
+
+    logger.error("Не удалось запустить браузер")
     return False
 
 # ============================================================
@@ -91,7 +91,7 @@ async def run_harness(code: str) -> tuple[str, str]:
     """Выполняет Python-код через browser-harness CLI"""
     env = os.environ.copy()
     env["BU_CDP_URL"] = "http://localhost:9222"
-    
+
     try:
         process = await asyncio.create_subprocess_exec(
             "browser-harness",
@@ -103,9 +103,9 @@ async def run_harness(code: str) -> tuple[str, str]:
         stdout, stderr = await process.communicate(code.encode())
         return stdout.decode(), stderr.decode()
     except FileNotFoundError:
-        return "", "❌ browser-harness не найден. Установите: pip install browser-harness"
+        return "", "browser-harness не найден. Установите: pip install browser-harness"
     except Exception as e:
-        return "", f"❌ Ошибка выполнения: {str(e)}"
+        return "", f"Ошибка выполнения: {str(e)}"
 
 # ============================================================
 # 4. ХРАНИЛИЩЕ НАВЫКОВ
@@ -118,7 +118,7 @@ def save_skill(domain: str, code: str, description: str = ""):
     """Сохраняет навык в файл"""
     domain_dir = os.path.join(SKILLS_DIR, domain)
     os.makedirs(domain_dir, exist_ok=True)
-    
+
     skill_file = os.path.join(domain_dir, f"{domain}_skill.py")
     with open(skill_file, "w") as f:
         f.write(f'"""\n{description}\n"""\n\n{code}')
@@ -135,14 +135,6 @@ def list_skills() -> list[str]:
                     skills.append(f"{domain}/{f[:-3]}")
     return skills
 
-def get_skill(domain: str) -> str | None:
-    """Возвращает код навыка по домену"""
-    skill_file = os.path.join(SKILLS_DIR, domain, f"{domain}_skill.py")
-    if os.path.exists(skill_file):
-        with open(skill_file, "r") as f:
-            return f.read()
-    return None
-
 # ============================================================
 # 5. СИСТЕМНЫЙ ПРОМПТ
 # ============================================================
@@ -150,7 +142,7 @@ def get_skill(domain: str) -> str | None:
 SYSTEM_PROMPT = """
 Ты — ИИ-агент, который управляет браузером через browser-harness.
 
-**Доступные хелперы (не требуют импорта):**
+Доступные хелперы (не требуют импорта):
 - new_tab(url) - открыть новую вкладку
 - wait_for_load() - дождаться загрузки
 - page_info() - получить информацию о странице
@@ -163,7 +155,7 @@ SYSTEM_PROMPT = """
 - goto_url(url) - перейти по URL
 - cdp(method, params) - отправить CDP-команду
 
-**Правила работы:**
+Правила работы:
 1. Если запрос простой — отвечай напрямую.
 2. Если нужен браузер — пиши Python-код с хелперами.
 3. Если функция не сработала — проанализируй ошибку и исправь код.
@@ -173,7 +165,7 @@ SYSTEM_PROMPT = """
 7. Добавляй try/except с выводом ошибок.
 8. Используй time.sleep() для ожидания динамической загрузки.
 
-**ВАЖНО:** Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
+ВАЖНО: Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
 """
 
 # ============================================================
@@ -183,13 +175,13 @@ SYSTEM_PROMPT = """
 async def ask_agnes(messages: list[dict]) -> str:
     """Запрос к Agnes AI"""
     if not AGNES_API_KEY:
-        return "❌ Ошибка: AGNES_API_KEY не задан."
+        return "Ошибка: AGNES_API_KEY не задан."
 
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     payload = {
         "model": AI_MODEL,
         "messages": messages,
@@ -202,13 +194,13 @@ async def ask_agnes(messages: list[dict]) -> str:
             response = await client.post(AGNES_API_URL, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
-            
+
             if "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
-            return "⚠️ Неожиданный формат ответа"
+            return "Неожиданный формат ответа"
     except Exception as e:
         logger.error(f"LLM ошибка: {e}")
-        return f"❌ Ошибка LLM: {str(e)[:200]}"
+        return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
 # 7. ИСПОЛНИТЕЛЬ КОДА
@@ -217,39 +209,35 @@ async def ask_agnes(messages: list[dict]) -> str:
 async def execute_agent_code(code: str) -> tuple[str, bool]:
     """Выполняет код, сгенерированный агентом"""
     try:
-        # Извлечь код из маркдауна
         code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
         if code_match:
             code = code_match.group(1)
-        
-        # Проверка на опасные операции
+
         dangerous = ['os.system', 'subprocess', '__import__', 'eval(', 'exec(']
         for d in dangerous:
             if d in code:
-                return f"❌ Обнаружена опасная операция: {d}", False
-        
-        # Если нет хелперов — это не код для браузера
+                return f"Обнаружена опасная операция: {d}", False
+
         if not any(h in code for h in ['new_tab', 'page_info', 'capture_screenshot', 'click_at_xy', 'js', 'cdp', 'goto_url']):
             return code, True
-        
+
         stdout, stderr = await run_harness(code)
-        
+
         if stderr:
             logger.warning(f"STDERR: {stderr[:200]}")
-            return f"⚠️ Ошибка: {stderr[:500]}", False
-        
+            return f"Ошибка: {stderr[:500]}", False
+
         if stdout:
             try:
-                # Попытка парсинга JSON
                 data = json.loads(stdout.strip())
                 return json.dumps(data, indent=2, ensure_ascii=False), True
             except:
                 return stdout[:4000], True
-        
-        return "✅ Выполнено успешно", True
+
+        return "Выполнено успешно", True
     except Exception as e:
         logger.error(f"Ошибка выполнения: {e}")
-        return f"❌ Ошибка выполнения: {str(e)[:500]}", False
+        return f"Ошибка выполнения: {str(e)[:500]}", False
 
 # ============================================================
 # 8. КОМАНДЫ БОТА
@@ -286,11 +274,9 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text(f"🤔 Думаю над задачей: *{user_query[:50]}...*")
 
     try:
-        # Добавляем контекст о навыках
         skills = list_skills()
         context_text = f"\n\nДоступные навыки: {', '.join(skills)}" if skills else "\n\nНавыков пока нет."
-        
-        # Усиленный запрос с требованием JSON-вывода
+
         enhanced_query = f"""{user_query}
 
 ВАЖНЫЕ ТРЕБОВАНИЯ:
@@ -315,23 +301,21 @@ except Exception as e:
             {"role": "system", "content": SYSTEM_PROMPT + context_text},
             {"role": "user", "content": enhanced_query}
         ]
-        
+
         response = await ask_agnes(messages)
         logger.info(f"LLM ответ получен, длина: {len(response)}")
-        
+
         if "```python" in response:
             await status_msg.edit_text("⚙️ Выполняю код...")
-            
+
             result, success = await execute_agent_code(response)
-            
+
             if success:
                 await status_msg.edit_text("✅ Готово!")
-                
-                # Сохраняем как навык, если код длинный и успешный
+
                 code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
                 if code_match and len(code_match.group(1)) > 50 and 'error' not in result.lower():
                     skill_code = code_match.group(1)
-                    # Определяем домен
                     domain = "custom"
                     domains = {
                         'github': 'github',
@@ -346,11 +330,10 @@ except Exception as e:
                         if key in user_query.lower():
                             domain = val
                             break
-                    
+
                     save_skill(domain, skill_code, user_query)
                     await update.message.reply_text(f"💾 Навык сохранён для домена '{domain}'")
-                
-                # Отправляем результат
+
                 if len(result) > 4000:
                     for i in range(0, len(result), 4000):
                         await update.message.reply_text(f"**Результат:**\n{result[i:i+4000]}")
@@ -358,14 +341,13 @@ except Exception as e:
                     await update.message.reply_text(f"**Результат:**\n{result}")
             else:
                 await status_msg.edit_text("🔄 Исправляю ошибку...")
-                
-                # Пытаемся исправить
+
                 error_messages = messages + [
                     {"role": "assistant", "content": response},
                     {"role": "user", "content": f"Код выдал ошибку. Исправь и предложи новый код.\nОшибка: {result}"}
                 ]
                 fixed_response = await ask_agnes(error_messages)
-                
+
                 if "```python" in fixed_response:
                     result2, success2 = await execute_agent_code(fixed_response)
                     if success2:
@@ -382,7 +364,7 @@ except Exception as e:
                     await update.message.reply_text(response[i:i+4000])
             else:
                 await update.message.reply_text(response)
-            
+
     except Exception as e:
         logger.error(f"Ошибка в /ask: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -402,7 +384,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /status - статус системы"""
     browser_ok = check_browser()
     status = "✅ работает" if browser_ok else "❌ не отвечает"
-    
+
     try:
         process = await asyncio.create_subprocess_exec(
             "browser-harness", "--version",
@@ -414,10 +396,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cli_status = f"✅ {version}"
     except:
         cli_status = "❌ не найден"
-    
+
     llm_status = "✅ подключена" if AGNES_API_KEY else "❌ не задан ключ"
     skills_count = len(list_skills())
-    
+
     await update.message.reply_text(
         f"**📊 Статус системы:**\n\n"
         f"🖥️ **Браузер:** {status}\n"
@@ -429,46 +411,42 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /debug - полная диагностика"""
     status_msg = await update.message.reply_text("🔍 Запускаю диагностику...")
-    
-    # ТЕСТ 1: Навигация
-    code1 = """
+
+    code1 = '''
 import json
 try:
     new_tab("https://httpbin.org/html")
     wait_for_load()
     info = page_info()
-    print(json.dumps({'test': 'navigation', 'title': info.get('title'), 'status': 'ok'}))
+    print(json.dumps({"test": "navigation", "title": info.get("title"), "status": "ok"}))
 except Exception as e:
-    print(json.dumps({'test': 'navigation', 'error': str(e)}))
-"""
+    print(json.dumps({"test": "navigation", "error": str(e)}))
+'''
     stdout1, stderr1 = await run_harness(code1)
-    
-    # ТЕСТ 2: JavaScript
-    code2 = """
+
+    code2 = '''
 import json
 try:
     new_tab("about:blank")
     result = js("return 'Hello from JS'")
-    print(json.dumps({'test': 'javascript', 'result': result, 'status': 'ok'}))
+    print(json.dumps({"test": "javascript", "result": result, "status": "ok"}))
 except Exception as e:
-    print(json.dumps({'test': 'javascript', 'error': str(e)}))
-"""
+    print(json.dumps({"test": "javascript", "error": str(e)}))
+'''
     stdout2, stderr2 = await run_harness(code2)
-    
-    # ТЕСТ 3: Скриншот
-    code3 = """
+
+    code3 = '''
 import json
 try:
     new_tab("https://httpbin.org/image/png")
     wait_for_load()
     img = capture_screenshot()
-    print(json.dumps({'test': 'screenshot', 'bytes': len(img), 'status': 'ok'}))
+    print(json.dumps({"test": "screenshot", "bytes": len(img), "status": "ok"}))
 except Exception as e:
-    print(json.dumps({'test': 'screenshot', 'error': str(e)}))
-"""
+    print(json.dumps({"test": "screenshot", "error": str(e)}))
+'''
     stdout3, stderr3 = await run_harness(code3)
-    
-    # ТЕСТ 4: Idealo (исправленный)
+
     code4 = '''
 import json
 import time
@@ -478,35 +456,42 @@ try:
     new_tab("https://www.idealo.de/preisvergleich/")
     wait_for_load()
     time.sleep(2)
-    
-    search_input = js('document.querySelector("input[name=\\'q\\']") ? "found" : "not found"')
-    results["search_input"] = search_input
-    
-    if search_input == "found":
-        js('document.querySelector("input[name=\\'q\\']").value = "iPhone 16"')
-        time.sleep(1)
-        js('document.querySelector("input[name=\\'q\\']").closest("form").submit()')
+
+    search_check = js("""
+        var input = document.querySelector('input[name="q"]');
+        return input ? 'found' : 'not found';
+    """)
+    results["search_input"] = search_check
+
+    if search_check == "found":
+        js("""
+            var input = document.querySelector('input[name="q"]');
+            if (input) {
+                input.value = 'iPhone 16';
+                input.closest('form').submit();
+            }
+        """)
         time.sleep(3)
-        
-        prices = js('''
-            var items = document.querySelectorAll(".product-price-value, .product-price, .price");
+
+        prices = js("""
+            var items = document.querySelectorAll('.product-price-value, .product-price, .price');
             var result = [];
             for (var i = 0; i < Math.min(items.length, 5); i++) {
                 result.push(items[i].textContent.trim());
             }
             return result;
-        ''')
+        """)
         results["prices"] = prices
         results["count"] = len(prices)
     else:
         results["error"] = "Поле поиска не найдено"
-    
+
     results["url"] = page_info().get("url")
-    
+
     if not results.get("prices") and not results.get("error"):
         screenshot = capture_screenshot()
         results["screenshot_size"] = len(screenshot)
-    
+
 except Exception as e:
     import traceback
     results["error"] = str(e)
@@ -515,10 +500,9 @@ except Exception as e:
 print(json.dumps(results))
 '''
     stdout4, stderr4 = await run_harness(code4)
-    
-    # Формируем отчёт
+
     msg = "🔍 **Результаты диагностики:**\n\n"
-    
+
     try:
         data1 = json.loads(stdout1) if stdout1 else {'error': 'пустой ответ'}
         msg += f"1️⃣ **Навигация:** "
@@ -528,7 +512,7 @@ print(json.dumps(results))
             msg += f"✅ {data1.get('title', 'ok')}\n"
     except:
         msg += f"1️⃣ **Навигация:** ⚠️ {stdout1[:50]}\n"
-    
+
     try:
         data2 = json.loads(stdout2) if stdout2 else {'error': 'пустой ответ'}
         msg += f"2️⃣ **JavaScript:** "
@@ -538,7 +522,7 @@ print(json.dumps(results))
             msg += f"✅ {data2.get('result', 'ok')}\n"
     except:
         msg += f"2️⃣ **JavaScript:** ⚠️ {stdout2[:50]}\n"
-    
+
     try:
         data3 = json.loads(stdout3) if stdout3 else {'error': 'пустой ответ'}
         msg += f"3️⃣ **Скриншот:** "
@@ -548,7 +532,7 @@ print(json.dumps(results))
             msg += f"✅ {data3.get('bytes', 0)} байт\n"
     except:
         msg += f"3️⃣ **Скриншот:** ⚠️ {stdout3[:50]}\n"
-    
+
     msg += "\n4️⃣ **Поиск на Idealo:**\n"
     try:
         data4 = json.loads(stdout4) if stdout4 else {'error': 'пустой ответ'}
@@ -566,12 +550,13 @@ print(json.dumps(results))
                 msg += f"   📸 Скриншот сделан ({data4['screenshot_size']} байт)\n"
         if 'traceback' in data4:
             msg += f"   📋 Traceback: {data4['traceback']}\n"
-    except:
-        msg += f"   ⚠️ {stdout4[:200]}\n"
-    
+    except Exception as e:
+        msg += f"   ⚠️ Ошибка парсинга: {str(e)[:100]}\n"
+        msg += f"   📄 stdout: {stdout4[:200]}\n"
+
     if stderr4:
         msg += f"\n⚠️ **STDERR:** {stderr4[:200]}"
-    
+
     await status_msg.edit_text(msg[:4000])
 
 # ============================================================
@@ -581,25 +566,23 @@ print(json.dumps(results))
 def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
-    
+
     logger.info("🚀 Запуск бота...")
-    
+
     if not ensure_browser():
         logger.warning("⚠️ Браузер не запустился")
-    
-    # Создаём приложение
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Регистрируем команды
+
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("skills", skills_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("debug", debug_command))
-    
+
     logger.info("📋 Команды: /ask, /skills, /status, /debug")
     logger.info("🚀 Бот запущен!")
-    
+
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
