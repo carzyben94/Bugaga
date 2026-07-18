@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 sys.path.insert(0, "browser-harness/src")
 
-# helpers.py - только то, что есть!
+# helpers.py - только то, что там есть!
 from browser_harness.helpers import (
     new_tab,
     goto_url,
@@ -29,8 +29,6 @@ from browser_harness.helpers import (
     js,
     cdp,
     ensure_real_tab,
-    start_remote_daemon,
-    stop_remote_daemon,
 )
 
 # admin.py - управление daemon
@@ -38,12 +36,11 @@ from browser_harness.admin import (
     ensure_daemon,
     daemon_alive,
     restart_daemon,
+    start_remote_daemon,
+    stop_remote_daemon,
     run_doctor,
     run_update,
 )
-
-# daemon.py - класс BrowserDaemon
-from browser_harness.daemon import BrowserDaemon
 
 # ============================================================
 # 2. НАСТРОЙКА
@@ -106,18 +103,15 @@ def execute_code(code):
             'js': js,
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
-            'start_remote_daemon': start_remote_daemon,
-            'stop_remote_daemon': stop_remote_daemon,
             
             # admin.py
             'ensure_daemon': ensure_daemon,
             'daemon_alive': daemon_alive,
             'restart_daemon': restart_daemon,
+            'start_remote_daemon': start_remote_daemon,
+            'stop_remote_daemon': stop_remote_daemon,
             'run_doctor': run_doctor,
             'run_update': run_update,
-            
-            # daemon.py
-            'BrowserDaemon': BrowserDaemon,
             
             # Встроенные функции
             'print': print,
