@@ -1,4 +1,5 @@
-import os
+
+code = '''import os
 import subprocess
 import asyncio
 import json
@@ -96,7 +97,7 @@ def save_skill(domain: str, code: str, description: str = ""):
     os.makedirs(domain_dir, exist_ok=True)
     skill_file = os.path.join(domain_dir, f"{domain}_skill.py")
     with open(skill_file, "w") as f:
-        f.write(f'"""\n{description}\n"""\n\n{code}')
+        f.write(f\'"""\\n{description}\\n"""\\n\\n{code}\')
     return skill_file
 
 def list_skills() -> list[str]:
@@ -127,6 +128,7 @@ press_key(key), scroll(x, y), js(script), cdp(method, params), ensure_real_tab()
 ВАЖНО: Для скриншотов ВСЕГДА используй CDP-метод (надёжнее в headless-режиме):
 
 ПРАВИЛЬНЫЙ КОД ДЛЯ СКРИНШОТА:
+```python
 import json
 try:
     new_tab("https://example.com")
@@ -140,6 +142,7 @@ try:
     }))
 except Exception as e:
     print(json.dumps({"error": str(e)}))
+```
 
 ФОРМАТ ВЫВОДА:
 Для скриншотов:
@@ -160,6 +163,7 @@ except Exception as e:
 - ПЕРВАЯ навигация — ТОЛЬКО new_tab()
 - После навигации ВСЕГДА wait_for_load()
 - Для скриншотов используй cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+- ВСЕГДА оборачивай код в блок ```python ... ```
 """
 
 async def ask_agnes(messages: list[dict]) -> str:
@@ -192,14 +196,14 @@ async def ask_agnes(messages: list[dict]) -> str:
 
 async def execute_agent_code(code: str, update: Update = None) -> tuple[str, bool]:
     try:
-        code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
+        code_match = re.search(r\'`{3}python\\n(.*?)\\n`{3}\', code, re.DOTALL)
         if code_match:
             code = code_match.group(1)
-        dangerous = ['os.system', 'subprocess', '__import__', 'eval(', 'exec(']
+        dangerous = [\'os.system\', \'subprocess\', \'__import__\', \'eval(\', \'exec(\']
         for d in dangerous:
             if d in code:
                 return f"Обнаружена опасная операция: {d}", False
-        if not any(h in code for h in ['new_tab', 'page_info', 'capture_screenshot', 'click_at_xy', 'js', 'cdp', 'goto_url']):
+        if not any(h in code for h in [\'new_tab\', \'page_info\', \'capture_screenshot\', \'click_at_xy\', \'js\', \'cdp\', \'goto_url\']):
             return code, True
         stdout, stderr = await run_harness(code)
         if stderr:
@@ -209,29 +213,29 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
             try:
                 data = json.loads(stdout.strip())
                 if update and isinstance(data, dict):
-                    if data.get('action') == 'screenshot_taken':
-                        screenshot_b64 = data.get('screenshot')
+                    if data.get(\'action\') == \'screenshot_taken\':
+                        screenshot_b64 = data.get(\'screenshot\')
                         if screenshot_b64:
                             try:
                                 if isinstance(screenshot_b64, bytes):
-                                    screenshot_b64 = screenshot_b64.decode('utf-8')
-                                if ',' in screenshot_b64:
-                                    screenshot_b64 = screenshot_b64.split(',', 1)[1]
+                                    screenshot_b64 = screenshot_b64.decode(\'utf-8\')
+                                if \',\' in screenshot_b64:
+                                    screenshot_b64 = screenshot_b64.split(\',\', 1)[1]
                                 screenshot_b64 = screenshot_b64.strip()
                                 missing_padding = len(screenshot_b64) % 4
                                 if missing_padding:
-                                    screenshot_b64 += '=' * (4 - missing_padding)
+                                    screenshot_b64 += \'=\' * (4 - missing_padding)
                                 img_bytes = base64.b64decode(screenshot_b64)
                                 if len(img_bytes) > 10 * 1024 * 1024:
                                     return "Скриншот слишком большой (>10MB)", False
-                                caption = f"📸 {data.get('source', 'Скриншот')}"
-                                if data.get('note'):
-                                    caption += f"\n\n{data.get('note')}"
+                                caption = f"📸 {data.get(\'source\', \'Скриншот\')}"
+                                if data.get(\'note\'):
+                                    caption += f"\\n\\n{data.get(\'note\')}"
                                 await update.message.reply_photo(
                                     photo=img_bytes,
                                     caption=caption[:1024]
                                 )
-                                del data['screenshot']
+                                del data[\'screenshot\']
                                 return json.dumps(data, indent=2, ensure_ascii=False), True
                             except Exception as e:
                                 logger.error(f"Ошибка отправки скриншота: {e}")
@@ -246,24 +250,24 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **Агент с browser-harness**\n\n"
-        "Я умею управлять браузером по твоим командам.\n"
-        "Просто напиши, что нужно сделать.\n\n"
-        "📋 Команды:\n"
-        "/ask <запрос> - задать задачу\n"
-        "/skills - список сохранённых навыков\n"
-        "/status - статус системы\n"
+        "🤖 **Агент с browser-harness**\\n\\n"
+        "Я умею управлять браузером по твоим командам.\\n"
+        "Просто напиши, что нужно сделать.\\n\\n"
+        "📋 Команды:\\n"
+        "/ask <запрос> - задать задачу\\n"
+        "/skills - список сохранённых навыков\\n"
+        "/status - статус системы\\n"
         "/debug - диагностика браузера"
     )
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            "🤖 **ИИ-агент с browser-harness**\n\n"
-            "Просто опиши задачу, я решу, как её выполнить:\n"
-            "• 'Сделай скриншот google.com'\n"
-            "• 'Найди цены на iPhone'\n"
-            "• 'Кликни на кнопку входа'\n\n"
+            "🤖 **ИИ-агент с browser-harness**\\n\\n"
+            "Просто опиши задачу, я решу, как её выполнить:\\n"
+            "• \'Сделай скриншот google.com\'\\n"
+            "• \'Найди цены на iPhone\'\\n"
+            "• \'Кликни на кнопку входа\'\\n\\n"
             "Пример: /ask сделай скриншот google.com"
         )
         return
@@ -273,7 +277,7 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         skills = list_skills()
-        context_text = f"\n\nДоступные навыки: {', '.join(skills)}" if skills else "\n\nНавыков пока нет."
+        context_text = f"\\n\\nДоступные навыки: {\', \'.join(skills)}" if skills else "\\n\\nНавыков пока нет."
         
         enhanced_query = f"""{user_query}
 
@@ -286,8 +290,10 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. Для кликов используй координаты, НЕ селекторы
 5. ПЕРВАЯ навигация — new_tab(), НЕ goto_url()
 6. После навигации ВСЕГДА wait_for_load()
+7. ОБЯЗАТЕЛЬНО оборачивай весь код в блок ```python ... ```
 
 Пример правильного кода для скриншота:
+```python
 import json
 try:
     new_tab("https://google.com")
@@ -301,6 +307,7 @@ try:
     }}))
 except Exception as e:
     print(json.dumps({{"error": str(e)}}))
+```
 """
         
         messages = [
@@ -315,40 +322,50 @@ except Exception as e:
             await status_msg.edit_text(f"❌ {response}")
             return
         
+        # === ИСПРАВЛЕНИЕ: fallback для кода без markdown-блока ===
+        code_to_execute = None
+        
         if "```python" in response:
+            code_match = re.search(r\'`{3}python\\n(.*?)\\n`{3}\', response, re.DOTALL)
+            if code_match:
+                code_to_execute = code_match.group(1)
+        elif any(h in response for h in [\'new_tab\', \'page_info\', \'capture_screenshot\', \'click_at_xy\', \'js\', \'cdp\', \'goto_url\', \'wait_for_load\']):
+            # LLM вернул код без markdown — попробуем извлечь весь ответ как код
+            code_to_execute = response.strip()
+            logger.info("Код найден без markdown-блока, используем fallback")
+        
+        if code_to_execute:
             await status_msg.edit_text("⚙️ Выполняю код...")
-            result, success = await execute_agent_code(response, update)
+            result, success = await execute_agent_code(code_to_execute, update)
             
             if success:
                 await status_msg.edit_text("✅ Готово!")
                 
-                code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-                if code_match and len(code_match.group(1)) > 50 and 'error' not in result.lower():
-                    skill_code = code_match.group(1)
+                if len(code_to_execute) > 50 and \'error\' not in result.lower():
                     domain = "custom"
                     domains = {
-                        'github': 'github', 'google': 'google',
-                        'linkedin': 'linkedin', 'apple': 'apple',
-                        'amazon': 'amazon', 'ebay': 'ebay', 'idealo': 'idealo'
+                        \'github\': \'github\', \'google\': \'google\',
+                        \'linkedin\': \'linkedin\', \'apple\': \'apple\',
+                        \'amazon\': \'amazon\', \'ebay\': \'ebay\', \'idealo\': \'idealo\'
                     }
                     for key, val in domains.items():
                         if key in user_query.lower():
                             domain = val
                             break
-                    save_skill(domain, skill_code, user_query)
-                    await update.message.reply_text(f"💾 Навык сохранён для домена '{domain}'")
+                    save_skill(domain, code_to_execute, user_query)
+                    await update.message.reply_text(f"💾 Навык сохранён для домена \'{domain}\'")
                 
                 if len(result) > 4000:
                     for i in range(0, len(result), 4000):
-                        await update.message.reply_text(f"**Результат:**\n{result[i:i+4000]}")
+                        await update.message.reply_text(f"**Результат:**\\n{result[i:i+4000]}")
                 else:
-                    await update.message.reply_text(f"**Результат:**\n{result}")
+                    await update.message.reply_text(f"**Результат:**\\n{result}")
             else:
                 await status_msg.edit_text("🔄 Исправляю ошибку...")
                 
                 error_messages = messages + [
                     {"role": "assistant", "content": response},
-                    {"role": "user", "content": f"Код выдал ошибку. Исправь и предложи новый код.\nОшибка: {result}"}
+                    {"role": "user", "content": f"Код выдал ошибку. Исправь и предложи новый код.\\nОшибка: {result}"}
                 ]
                 fixed_response = await ask_agnes(error_messages)
                 
@@ -356,15 +373,24 @@ except Exception as e:
                     await update.message.reply_text(f"❌ {fixed_response}")
                     return
                 
+                # === ИСПРАВЛЕНИЕ: тот же fallback для исправленного кода ===
+                fixed_code = None
                 if "```python" in fixed_response:
-                    result2, success2 = await execute_agent_code(fixed_response, update)
+                    code_match = re.search(r\'`{3}python\\n(.*?)\\n`{3}\', fixed_response, re.DOTALL)
+                    if code_match:
+                        fixed_code = code_match.group(1)
+                elif any(h in fixed_response for h in [\'new_tab\', \'page_info\', \'capture_screenshot\', \'click_at_xy\', \'js\', \'cdp\', \'goto_url\', \'wait_for_load\']):
+                    fixed_code = fixed_response.strip()
+                
+                if fixed_code:
+                    result2, success2 = await execute_agent_code(fixed_code, update)
                     if success2:
                         await status_msg.edit_text("✅ Исправлено!")
-                        await update.message.reply_text(f"**Результат:**\n{result2[:4000]}")
+                        await update.message.reply_text(f"**Результат:**\\n{result2[:4000]}")
                     else:
-                        await update.message.reply_text(f"❌ Не удалось исправить:\n{result2}")
+                        await update.message.reply_text(f"❌ Не удалось исправить:\\n{result2}")
                 else:
-                    await update.message.reply_text(f"❌ Агент не смог исправить ошибку:\n{result}")
+                    await update.message.reply_text(f"❌ Агент не смог исправить ошибку:\\n{result}")
         else:
             await status_msg.edit_text("💬 Ответ:")
             if len(response) > 4000:
@@ -382,10 +408,10 @@ except Exception as e:
 async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     skills = list_skills()
     if skills:
-        msg = "💾 **Сохранённые навыки:**\n\n"
+        msg = "💾 **Сохранённые навыки:**\\n\\n"
         for s in skills:
-            msg += f"• `{s}`\n"
-        await update.message.reply_text(msg, parse_mode='Markdown')
+            msg += f"• `{s}`\\n"
+        await update.message.reply_text(msg, parse_mode=\'Markdown\')
     else:
         await update.message.reply_text("💾 Нет сохранённых навыков.")
 
@@ -406,17 +432,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     llm_status = "✅ подключена" if AGNES_API_KEY else "❌ не задан ключ"
     skills_count = len(list_skills())
     await update.message.reply_text(
-        f"**📊 Статус системы:**\n\n"
-        f"🖥️ **Браузер:** {status}\n"
-        f"🔧 **CLI browser-harness:** {cli_status}\n"
-        f"🧠 **Agnes AI:** {llm_status}\n"
+        f"**📊 Статус системы:**\\n\\n"
+        f"🖥️ **Браузер:** {status}\\n"
+        f"🔧 **CLI browser-harness:** {cli_status}\\n"
+        f"🧠 **Agnes AI:** {llm_status}\\n"
         f"💾 **Навыков:** {skills_count}"
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔍 Запускаю диагностику...")
     
-    code1 = '''
+    code1 = \'\'\'
 import json
 try:
     new_tab("https://httpbin.org/html")
@@ -425,21 +451,21 @@ try:
     print(json.dumps({"test": "navigation", "title": info.get("title"), "status": "ok"}))
 except Exception as e:
     print(json.dumps({"test": "navigation", "error": str(e)}))
-'''
+\'\'\'
     stdout1, stderr1 = await run_harness(code1)
     
-    code2 = '''
+    code2 = \'\'\'
 import json
 try:
     new_tab("about:blank")
-    result = js("return 'Hello from JS'")
+    result = js("return \'Hello from JS\'")
     print(json.dumps({"test": "javascript", "result": result, "status": "ok"}))
 except Exception as e:
     print(json.dumps({"test": "javascript", "error": str(e)}))
-'''
+\'\'\'
     stdout2, stderr2 = await run_harness(code2)
     
-    code3 = '''
+    code3 = \'\'\'
 import json
 try:
     new_tab("https://httpbin.org/image/png")
@@ -449,49 +475,49 @@ try:
     print(json.dumps({"test": "screenshot", "bytes": len(img), "status": "ok"}))
 except Exception as e:
     print(json.dumps({"test": "screenshot", "error": str(e)}))
-'''
+\'\'\'
     stdout3, stderr3 = await run_harness(code3)
     
-    msg = "🔍 **Результаты диагностики:**\n\n"
+    msg = "🔍 **Результаты диагностики:**\\n\\n"
     
     try:
-        data1 = json.loads(stdout1) if stdout1 else {'error': 'пустой ответ'}
+        data1 = json.loads(stdout1) if stdout1 else {\'error\': \'пустой ответ\'}
         msg += f"1️⃣ **Навигация:** "
-        if 'error' in data1:
-            msg += f"❌ {data1['error']}\n"
+        if \'error\' in data1:
+            msg += f"❌ {data1[\'error\']}\\n"
         else:
-            msg += f"✅ {data1.get('title', 'ok')}\n"
+            msg += f"✅ {data1.get(\'title\', \'ok\')}\\n"
     except:
-        msg += f"1️⃣ **Навигация:** ⚠️ {stdout1[:50]}\n"
+        msg += f"1️⃣ **Навигация:** ⚠️ {stdout1[:50]}\\n"
     
     try:
-        data2 = json.loads(stdout2) if stdout2 else {'error': 'пустой ответ'}
+        data2 = json.loads(stdout2) if stdout2 else {\'error\': \'пустой ответ\'}
         msg += f"2️⃣ **JavaScript:** "
-        if 'error' in data2:
-            msg += f"❌ {data2['error']}\n"
+        if \'error\' in data2:
+            msg += f"❌ {data2[\'error\']}\\n"
         else:
-            msg += f"✅ {data2.get('result', 'ok')}\n"
+            msg += f"✅ {data2.get(\'result\', \'ok\')}\\n"
     except:
-        msg += f"2️⃣ **JavaScript:** ⚠️ {stdout2[:50]}\n"
+        msg += f"2️⃣ **JavaScript:** ⚠️ {stdout2[:50]}\\n"
     
     try:
-        data3 = json.loads(stdout3) if stdout3 else {'error': 'пустой ответ'}
+        data3 = json.loads(stdout3) if stdout3 else {\'error\': \'пустой ответ\'}
         msg += f"3️⃣ **Скриншот (CDP):** "
-        if 'error' in data3:
-            msg += f"❌ {data3['error']}\n"
+        if \'error\' in data3:
+            msg += f"❌ {data3[\'error\']}\\n"
         else:
-            msg += f"✅ {data3.get('bytes', 0)} байт\n"
+            msg += f"✅ {data3.get(\'bytes\', 0)} байт\\n"
     except:
-        msg += f"3️⃣ **Скриншот (CDP):** ⚠️ {stdout3[:50]}\n"
+        msg += f"3️⃣ **Скриншот (CDP):** ⚠️ {stdout3[:50]}\\n"
     
     if stderr1 or stderr2 or stderr3:
-        msg += f"\n⚠️ **Ошибки:**"
+        msg += f"\\n⚠️ **Ошибки:**"
         if stderr1:
-            msg += f"\n• {stderr1[:100]}"
+            msg += f"\\n• {stderr1[:100]}"
         if stderr2:
-            msg += f"\n• {stderr2[:100]}"
+            msg += f"\\n• {stderr2[:100]}"
         if stderr3:
-            msg += f"\n• {stderr3[:100]}"
+            msg += f"\\n• {stderr3[:100]}"
     
     await status_msg.edit_text(msg[:4000])
 
@@ -513,3 +539,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+'''
+
+# Write to file
+with open('/mnt/agents/output/selenium_x_agent_fixed.py', 'w') as f:
+    f.write(code)
+
+print("File written successfully")
+print(f"Length: {len(code)} chars")
