@@ -46,7 +46,31 @@ ensure_daemon()
 logger.info("✅ Браузер готов")
 
 # ============================================================
-# 4. КОМАНДЫ
+# 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
+def get_session_id_by_url(url_part: str):
+    """Находит sessionId вкладки по части URL"""
+    try:
+        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+        pages = resp.json()
+        
+        for page in pages:
+            if url_part in page.get("url", ""):
+                logger.info(f"✅ Найдена вкладка: {page.get('url')}")
+                return page["id"]
+        
+        # Если не найдено — берём последнюю
+        if pages:
+            logger.warning(f"⚠️ {url_part} не найдена, берём последнюю")
+            return pages[-1]["id"]
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка получения sessionId: {e}")
+        return None
+
+# ============================================================
+# 5. КОМАНДЫ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,19 +109,15 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wait_for_load()
         time.sleep(2)
         
-        # 2. Получаем СПИСОК всех вкладок
-        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
-        pages = resp.json()
+        # 2. Ищем вкладку с google.com
+        session_id = get_session_id_by_url("google.com")
         
-        if not pages:
-            raise ValueError("Нет активных вкладок")
+        if not session_id:
+            raise ValueError("Не удалось найти вкладку с google.com")
         
-        # 3. Берём ПОСЛЕДНЮЮ вкладку (она только что открылась)
-        session_id = pages[-1]["id"]
         logger.info(f"Session ID: {session_id}")
-        logger.info(f"URL: {pages[-1].get('url')}")
         
-        # 4. Устанавливаем разрешение через CDP с sessionId
+        # 3. Устанавливаем разрешение через CDP с sessionId
         cdp(
             "Emulation.setDeviceMetricsOverride",
             width=1280,
@@ -108,7 +128,7 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         time.sleep(1)
         
-        # 5. Делаем скриншот через CDP с sessionId
+        # 4. Делаем скриншот через CDP с sessionId
         result = cdp(
             "Page.captureScreenshot",
             format="png",
@@ -178,7 +198,7 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 5. ЗАПУСК
+# 6. ЗАПУСК
 # ============================================================
 
 def main():
