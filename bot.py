@@ -70,7 +70,7 @@ ensure_daemon()
 logger.info("✅ Браузер готов")
 
 # ============================================================
-# 3. ЗАПРОС К AGNES AI
+# 3. ЗАПРОС К AGNES AI С ЛОГИРОВАНИЕМ
 # ============================================================
 
 async def ask_agnes(messages):
@@ -175,11 +175,11 @@ async def start(update, context):
     logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
-        "/log — скачать файл логов"
+        "/log — показать последние логи"
     )
 
 async def log(update, context):
-    """Скачивает файл логов"""
+    """Показывает последние 30 строк логов (без Markdown)"""
     logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
@@ -187,12 +187,15 @@ async def log(update, context):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
         
-        with open(log_file, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename='bot.log',
-                caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
-            )
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
+            last_lines = lines[-30:] if len(lines) > 30 else lines
+            
+            msg = "📋 Последние логи:\n\n"
+            msg += ''.join(last_lines)
+            
+            # Отправляем БЕЗ parse_mode
+            await update.message.reply_text(msg[:4000])
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -211,21 +214,18 @@ async def ask(update, context):
         system_prompt = """
 You are a browser agent that controls a real browser via browser-harness.
 
-🚨 CRITICAL RULES:
-1. ALWAYS use print() to output the result. Without print(), the user will see nothing.
-2. ALWAYS call ensure_real_tab() BEFORE any cdp() or capture_screenshot() call.
+🚨 CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
 
-WRONG (session error):
+WRONG (no output):
 new_tab("https://google.com")
 wait_for_load()
-cdp("Page.captureScreenshot", {"format": "png", "quality": 80})  # ← ОШИБКА! Нет ensure_real_tab()!
+page_info()  # ← ничего не выводит!
 
-CORRECT:
+CORRECT (with output):
 new_tab("https://google.com")
 wait_for_load()
-ensure_real_tab()  # ← ОБЯЗАТЕЛЬНО!
-result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
-print(result)  # ← ОБЯЗАТЕЛЬНО!
+info = page_info()
+print(info)  # ← ВСЕГДА используй print()!
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
@@ -237,7 +237,6 @@ Navigation:
 - First navigation ALWAYS new_tab(url)
 - Subsequent navigation goto_url(url)
 - Always wait_for_load() after navigation
-- ALWAYS ensure_real_tab() before CDP commands
 
 Helpers available:
 new_tab(url), goto_url(url), wait_for_load(), page_info(),
@@ -252,7 +251,6 @@ Rules:
 - For screenshots use cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 - Use js() only for reading DOM data, never for clicks
 - ALWAYS use print() to output the result
-- ALWAYS call ensure_real_tab() before cdp() or capture_screenshot()
 - Wrap code in ```python ... ```
 """
 
