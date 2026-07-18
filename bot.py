@@ -5,6 +5,7 @@ import base64
 import sys
 import re
 from typing import Dict
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
@@ -254,33 +255,32 @@ async def format_runtime_result(value) -> str:
     
     if isinstance(value, dict):
         text = "📊 **Результат:**\n\n"
-        name = value.get('name', '')
-        username = value.get('username', '')
-        bio = value.get('bio', '')
-        followers = value.get('followers', '')
-        following = value.get('following', '')
-        posts = value.get('posts', '')
-        joined = value.get('joined', '')
         
-        if username:
-            text += f"👤 **{escape_markdown(name)}** (@{escape_markdown(username)})\n\n"
-        if bio:
-            text += f"📝 {escape_markdown(bio)}\n\n"
-        if followers:
-            text += f"👥 Подписчики: **{escape_markdown(str(followers))}**\n"
-        if following:
-            text += f"📌 Подписки: **{escape_markdown(str(following))}**\n"
-        if posts:
-            text += f"📊 Постов: **{escape_markdown(str(posts))}**\n"
-        if joined:
-            text += f"📅 Присоединился: {escape_markdown(joined)}\n"
+        # Если есть count — показываем его
+        if "count" in value:
+            text += f"📊 Количество: **{escape_markdown(str(value['count']))}**\n\n"
         
-        if not username:
-            for key, val in value.items():
-                if isinstance(val, (int, float)):
-                    text += f"• **{escape_markdown(key)}**: {val:,}\n"
-                else:
-                    text += f"• **{escape_markdown(key)}**: {escape_markdown(str(val))}\n"
+        # Если есть error
+        if "error" in value:
+            text += f"❌ {escape_markdown(value['error'])}\n\n"
+        
+        # Показываем остальные поля
+        for key, val in value.items():
+            if key in ["count", "error"]:
+                continue
+            if isinstance(val, (int, float)):
+                text += f"• **{escape_markdown(key)}**: {val:,}\n"
+            elif isinstance(val, list):
+                text += f"• **{escape_markdown(key)}**: {len(val)} элементов\n"
+                if val and len(val) <= 5:
+                    for i, item in enumerate(val[:5], 1):
+                        if isinstance(item, dict):
+                            item_str = json.dumps(item, ensure_ascii=False)[:100]
+                            text += f"  {i}. {escape_markdown(item_str)}\n"
+                        else:
+                            text += f"  {i}. {escape_markdown(str(item)[:100])}\n"
+            else:
+                text += f"• **{escape_markdown(key)}**: {escape_markdown(str(val)[:100])}\n"
         return text
     
     elif isinstance(value, list):
@@ -290,19 +290,10 @@ async def format_runtime_result(value) -> str:
         text = "📊 **Результат:**\n\n"
         for i, item in enumerate(value[:10], 1):
             if isinstance(item, dict):
-                author = item.get('author', item.get('username', 'Неизвестно'))
-                text_content = item.get('text', item.get('name', str(item)))[:80]
-                likes = item.get('likes', '')
-                retweets = item.get('retweets', '')
-                
-                text += f"{i}. **{escape_markdown(author)}**: {escape_markdown(text_content)}"
-                if likes:
-                    text += f" ❤️ {escape_markdown(str(likes))}"
-                if retweets:
-                    text += f" 🔁 {escape_markdown(str(retweets))}"
-                text += "\n"
+                item_str = json.dumps(item, ensure_ascii=False)[:100]
+                text += f"{i}. {escape_markdown(item_str)}\n"
             else:
-                text += f"{i}. {escape_markdown(str(item))}\n"
+                text += f"{i}. {escape_markdown(str(item)[:100])}\n"
         
         if len(value) > 10:
             text += f"\n... и ещё {len(value) - 10} результатов"
@@ -327,7 +318,7 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
         order = [item["id"] for item in items]
     
     browser = None
-    results = []
+    results = {}
     
     for item_id in order:
         item = next((i for i in items if i["id"] == item_id), None)
@@ -353,7 +344,7 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 formatted = await format_runtime_result(result)
                 await update.message.reply_text(formatted, parse_mode="Markdown")
                 item["status"] = "done"
-                results.append({"id": item_id, "status": "done"})
+                results[item_id] = {"result": result}
                 continue
             
             elif method == "extract_all":
@@ -364,7 +355,7 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 formatted = await format_runtime_result(result)
                 await update.message.reply_text(formatted, parse_mode="Markdown")
                 item["status"] = "done"
-                results.append({"id": item_id, "status": "done"})
+                results[item_id] = {"result": result}
                 continue
             
             elif method == "wait":
@@ -373,13 +364,32 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 await browser.wait_for_element(selector, timeout)
                 await update.message.reply_text(f"⏳ Элемент найден: {selector}")
                 item["status"] = "done"
-                results.append({"id": item_id, "status": "done"})
+                results[item_id] = {"result": True}
                 continue
             
             result = await browser.send_command(method, params)
             
             item["status"] = "done"
-            results.append({"id": item_id, "status": "done"})
+            
+            # ===== СОХРАНЯЕМ РЕЗУЛЬТАТ =====
+            if method == "Runtime.evaluate":
+                value = result.get("result", {}).get("result", {}).get("value")
+                results[item_id] = {"result": value}
+                
+                # Логируем в отдельный файл
+                try:
+                    os.makedirs("logs", exist_ok=True)
+                    with open("logs/evaluate_results.log", "a", encoding="utf-8") as f:
+                        f.write(json.dumps({
+                            "timestamp": datetime.now().isoformat(),
+                            "step_id": item_id,
+                            "expression": params.get("expression", ""),
+                            "result": value
+                        }, ensure_ascii=False) + "\n")
+                except:
+                    pass
+            else:
+                results[item_id] = {"result": result}
             
             if method == "Page.captureScreenshot":
                 if "result" in result and "data" in result["result"]:
@@ -410,9 +420,35 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
         await browser.disconnect()
         browser.close()
     
+    # ===== ПОДСТАНОВКА ПЕРЕМЕННЫХ В OUTCOME =====
     narratives = plan.get("plan", {}).get("narratives", {})
-    if narratives.get("Outcome"):
-        await update.message.reply_text(f"📋 **Итог:** {narratives['Outcome']}")
+    outcome = narratives.get("Outcome", "")
+    
+    def replace_vars(match):
+        var_path = match.group(1).strip()
+        parts = var_path.split('.')
+        
+        if len(parts) >= 2:
+            step_id = parts[0]
+            field = '.'.join(parts[1:])
+            
+            if step_id in results:
+                value = results[step_id]
+                for key in field.split('.'):
+                    if isinstance(value, dict) and key in value:
+                        value = value[key]
+                    else:
+                        return "не найдено"
+                if value is None:
+                    return "не найдено"
+                return str(value)
+        return match.group(0)
+    
+    # Подставляем переменные вида {{step2.result.count}}
+    outcome = re.sub(r'{{(.*?)}}', replace_vars, outcome)
+    
+    if outcome:
+        await update.message.reply_text(f"📋 **Итог:** {outcome}")
     
     return True
 
@@ -609,8 +645,6 @@ async def cdp_stats(update: Update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
-# ===== НОВАЯ КОМАНДА ДЛЯ EVAL ЛОГОВ =====
-
 async def show_eval_logs(update: Update, context):
     """Показать последние eval логи"""
     try:
@@ -664,13 +698,10 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("debug_x", debug_x))
     
-    # КОМАНДЫ ДЛЯ CDP ЛОГОВ
     app.add_handler(CommandHandler("logs_cdp", download_cdp_logs))
     app.add_handler(CommandHandler("logs_cdp_full", download_full_cdp_logs))
     app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
     app.add_handler(CommandHandler("cdp_stats", cdp_stats))
-    
-    # КОМАНДА ДЛЯ EVAL ЛОГОВ
     app.add_handler(CommandHandler("logs_eval", show_eval_logs))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
