@@ -430,7 +430,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /debug - полная диагностика"""
     status_msg = await update.message.reply_text("🔍 Запускаю диагностику...")
     
-    # Тест 1: Базовая навигация
+    # ТЕСТ 1: Навигация
     code1 = """
 import json
 try:
@@ -443,7 +443,7 @@ except Exception as e:
 """
     stdout1, stderr1 = await run_harness(code1)
     
-    # Тест 2: JavaScript
+    # ТЕСТ 2: JavaScript
     code2 = """
 import json
 try:
@@ -455,7 +455,7 @@ except Exception as e:
 """
     stdout2, stderr2 = await run_harness(code2)
     
-    # Тест 3: Скриншот
+    # ТЕСТ 3: Скриншот
     code3 = """
 import json
 try:
@@ -468,72 +468,57 @@ except Exception as e:
 """
     stdout3, stderr3 = await run_harness(code3)
     
-    # Тест 4: Поиск на Idealo (основной тест)
-    code4 = """
+    # ТЕСТ 4: Idealo (исправленный)
+    code4 = '''
 import json
 import time
 results = {}
+
 try:
     new_tab("https://www.idealo.de/preisvergleich/")
     wait_for_load()
     time.sleep(2)
     
-    # Пробуем найти поле поиска
-    search_input = js("""
-        const input = document.querySelector('input[name="q"]');
-        return input ? input.tagName : 'not found';
-    """)
-    results['search_input'] = search_input
+    search_input = js('document.querySelector("input[name=\\'q\\']") ? "found" : "not found"')
+    results["search_input"] = search_input
     
-    if search_input != 'not found':
-        js("""
-            const input = document.querySelector('input[name="q"]');
-            if (input) {
-                input.value = 'iPhone 16';
-                const form = input.closest('form');
-                if (form) form.submit();
-            }
-        """)
+    if search_input == "found":
+        js('document.querySelector("input[name=\\'q\\']").value = "iPhone 16"')
+        time.sleep(1)
+        js('document.querySelector("input[name=\\'q\\']").closest("form").submit()')
         time.sleep(3)
         
-        # Ищем цены
-        prices = js("""
-            const selectors = ['.product-price-value', '.product-price', '.price'];
-            let prices = [];
-            for (let sel of selectors) {
-                const els = document.querySelectorAll(sel);
-                if (els.length > 0) {
-                    prices = Array.from(els).slice(0,5).map(el => el.textContent.trim());
-                    break;
-                }
+        prices = js('''
+            var items = document.querySelectorAll(".product-price-value, .product-price, .price");
+            var result = [];
+            for (var i = 0; i < Math.min(items.length, 5); i++) {
+                result.push(items[i].textContent.trim());
             }
-            return prices;
-        """)
-        results['prices'] = prices
-        results['count'] = len(prices)
+            return result;
+        ''')
+        results["prices"] = prices
+        results["count"] = len(prices)
     else:
-        results['error'] = 'Поле поиска не найдено'
+        results["error"] = "Поле поиска не найдено"
     
-    results['url'] = page_info().get('url')
-    results['status'] = 'ok'
+    results["url"] = page_info().get("url")
     
-    if not results.get('prices') and not results.get('error'):
+    if not results.get("prices") and not results.get("error"):
         screenshot = capture_screenshot()
-        results['screenshot_size'] = len(screenshot)
+        results["screenshot_size"] = len(screenshot)
     
 except Exception as e:
     import traceback
-    results['error'] = str(e)
-    results['traceback'] = traceback.format_exc()[-200:]
+    results["error"] = str(e)
+    results["traceback"] = traceback.format_exc()[-200:]
 
 print(json.dumps(results))
-"""
+'''
     stdout4, stderr4 = await run_harness(code4)
     
     # Формируем отчёт
     msg = "🔍 **Результаты диагностики:**\n\n"
     
-    # Парсим результаты тестов
     try:
         data1 = json.loads(stdout1) if stdout1 else {'error': 'пустой ответ'}
         msg += f"1️⃣ **Навигация:** "
@@ -564,7 +549,6 @@ print(json.dumps(results))
     except:
         msg += f"3️⃣ **Скриншот:** ⚠️ {stdout3[:50]}\n"
     
-    # Парсим основной тест (Idealo)
     msg += "\n4️⃣ **Поиск на Idealo:**\n"
     try:
         data4 = json.loads(stdout4) if stdout4 else {'error': 'пустой ответ'}
