@@ -86,99 +86,109 @@ SYSTEM_PROMPT = """
 - goto_url(url) - перейти по URL
 - cdp(method, params) - отправить CDP-команду
 
-Правильный пример (без import):
+Правильный пример (обязательно в маркдауне):
+```python
 goto_url("https://example.com")
 wait_for_load()
 info = page_info()
 print(f"Заголовок: {info['title']}")
+```
 
 Неправильный пример (НЕ ИСПОЛЬЗУЙ):
+
+```python
 import json
 from browser_harness import ...
+```
 
 Правила:
-1. Для получения заголовка используй: info = page_info(); print(info['title'])
-2. Для скриншота: data = capture_screenshot(); print(len(data))
-3. ВСЕГДА возвращай результат через print()
-4. НЕ используй import, НЕ пытайся парсить JSON вручную
-"""
+
+1. ВСЕГДА возвращай код в формате python ... 
+2. Для получения заголовка используй: info = page_info(); print(info['title'])
+3. Для скриншота: data = capture_screenshot(); print(len(data))
+4. ВСЕГДА возвращай результат через print()
+5. НЕ используй import, НЕ пытайся парсить JSON вручную
+6. НЕ выводи просто текст с кодом — ВСЕГДА оборачивай в ```python
+   """
 
 async def ask_agnes(messages: list[dict]) -> str:
-    if not AGNES_API_KEY:
-        return "Ошибка: AGNES_API_KEY не задан."
-    headers = {
-        "Authorization": f"Bearer {AGNES_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": AI_MODEL,
-        "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": 2000
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(AGNES_API_URL, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            if "choices" in data and len(data["choices"]) > 0:
-                return data["choices"][0]["message"]["content"]
-            return "Неожиданный формат ответа"
-    except Exception as e:
-        return f"Ошибка LLM: {str(e)[:200]}"
+if not AGNES_API_KEY:
+return "Ошибка: AGNES_API_KEY не задан."
+headers = {
+"Authorization": f"Bearer {AGNES_API_KEY}",
+"Content-Type": "application/json"
+}
+payload = {
+"model": AI_MODEL,
+"messages": messages,
+"temperature": 0.3,
+"max_tokens": 2000
+}
+try:
+async with httpx.AsyncClient(timeout=60.0) as client:
+response = await client.post(AGNES_API_URL, headers=headers, json=payload)
+response.raise_for_status()
+data = response.json()
+if "choices" in data and len(data["choices"]) > 0:
+return data["choices"][0]["message"]["content"]
+return "Неожиданный формат ответа"
+except Exception as e:
+return f"Ошибка LLM: {str(e)[:200]}"
 
 async def execute_agent_code(code: str) -> tuple[str, bool]:
-    try:
-        code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
-        if code_match:
-            code = code_match.group(1)
-        lines = code.split('\n')
-        clean_lines = []
-        for line in lines:
-            if not line.strip().startswith('import ') and not line.strip().startswith('from '):
-                clean_lines.append(line)
-        code = '\n'.join(clean_lines)
-        if not any(h in code for h in ['new_tab', 'page_info', 'capture_screenshot', 'click_at_xy', 'js', 'cdp', 'goto_url', 'wait_for_load']):
-            return code, True
-        stdout, stderr = await run_harness(code)
-        if stderr:
-            return f"Ошибка: {stderr[:500]}", False
-        if stdout:
-            return stdout[:4000], True
-        return "Выполнено успешно", True
-    except Exception as e:
-        return f"Ошибка выполнения: {str(e)[:500]}", False
+try:
+code_match = re.search(r'python\n(.*?)\n', code, re.DOTALL)
+if code_match:
+code = code_match.group(1)
+else:
+if 'goto_url' in code or 'page_info' in code or 'new_tab' in code:
+pass
+else:
+return code, True
+code = re.sub(r'^import\s+\w+.*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^from\s+\w+.*import.*$', '', code, flags=re.MULTILINE)
+code = '\n'.join([line for line in code.split('\n') if line.strip()])
+if not any(h in code for h in ['new_tab', 'page_info', 'capture_screenshot', 'click_at_xy', 'js', 'cdp', 'goto_url', 'wait_for_load']):
+return code, True
+stdout, stderr = await run_harness(code)
+if stderr:
+return f"Ошибка: {stderr[:500]}", False
+if stdout:
+return stdout[:4000], True
+return "Выполнено успешно", True
+except Exception as e:
+return f"Ошибка выполнения: {str(e)[:500]}", False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Агент с browser-harness\n\n"
-        "Я умею управлять браузером по твоим командам.\n"
-        "Просто напиши, что нужно сделать.\n\n"
-        "Команды:\n"
-        "/ask <запрос> - задать задачу\n"
-        "/status - статус системы\n"
-        "/debug - диагностика"
-    )
+await update.message.reply_text(
+"Агент с browser-harness\n\n"
+"Я умею управлять браузером по твоим командам.\n"
+"Просто напиши, что нужно сделать.\n\n"
+"Команды:\n"
+"/ask <запрос> - задать задачу\n"
+"/status - статус системы\n"
+"/debug - диагностика"
+)
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text(
-            "ИИ-агент с browser-harness\n\n"
-            "Примеры запросов:\n"
-            "/ask покажи заголовок example.com\n"
-            "/ask сделай скриншот github.com\n"
-            "/ask найди контакты на сайте"
-        )
-        return
-    user_query = " ".join(context.args)
-    status_msg = await update.message.reply_text(f"Думаю над задачей...")
-    try:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query}
-        ]
-        response = await ask_agnes(messages)
-        if "```python" in response:
+if not context.args:
+await update.message.reply_text(
+"ИИ-агент с browser-harness\n\n"
+"Примеры запросов:\n"
+"/ask покажи заголовок example.com\n"
+"/ask сделай скриншот github.com\n"
+"/ask найди контакты на сайте"
+)
+return
+user_query = " ".join(context.args)
+status_msg = await update.message.reply_text("Думаю над задачей...")
+try:
+messages = [
+{"role": "system", "content": SYSTEM_PROMPT},
+{"role": "user", "content": user_query}
+]
+response = await ask_agnes(messages)
+if "python" in response or 'goto_url' in response or 'page_info' in response:
             await status_msg.edit_text("Выполняю код...")
             result, success = await execute_agent_code(response)
             if success:
@@ -188,72 +198,72 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text("Исправляю ошибку...")
                 error_messages = messages + [
                     {"role": "assistant", "content": response},
-                    {"role": "user", "content": f"Код выдал ошибку. Исправь. Не используй import!\nОшибка: {result}"}
-                ]
-                fixed_response = await ask_agnes(error_messages)
-                if "```python" in fixed_response:
-                    result2, success2 = await execute_agent_code(fixed_response)
-                    if success2:
-                        await status_msg.edit_text("Исправлено!")
-                        await update.message.reply_text(f"Результат:\n{result2}")
-                    else:
-                        await update.message.reply_text(f"Не удалось исправить:\n{result2}")
-                else:
-                    await update.message.reply_text(f"Агент не смог исправить ошибку:\n{result}")
-        else:
-            await status_msg.edit_text("Ответ:")
-            await update.message.reply_text(response[:4000])
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+                    {"role": "user", "content": f"Код выдал ошибку. Исправь. Не используй import! ВСЕГДА оборачивай в python\nОшибка: {result}"}
+]
+fixed_response = await ask_agnes(error_messages)
+if "```python" in fixed_response:
+result2, success2 = await execute_agent_code(fixed_response)
+if success2:
+await status_msg.edit_text("Исправлено!")
+await update.message.reply_text(f"Результат:\n{result2}")
+else:
+await update.message.reply_text(f"Не удалось исправить:\n{result2}")
+else:
+await update.message.reply_text(f"Агент не смог исправить ошибку:\n{result}")
+else:
+await status_msg.edit_text("Ответ:")
+await update.message.reply_text(response[:4000])
+except Exception as e:
+await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    browser_ok = check_browser()
-    status_text = "работает" if browser_ok else "не отвечает"
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "browser-harness", "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await process.communicate()
-        version = stdout.decode().strip() if stdout else "неизвестно"
-        cli_status = f"{version}"
-    except:
-        cli_status = "не найден"
-    llm_status = "подключена" if AGNES_API_KEY else "не задан ключ"
-    await update.message.reply_text(
-        f"Браузер: {status_text}\n"
-        f"CLI browser-harness: {cli_status}\n"
-        f"Agnes AI: {llm_status}"
-    )
+browser_ok = check_browser()
+status_text = "работает" if browser_ok else "не отвечает"
+try:
+process = await asyncio.create_subprocess_exec(
+"browser-harness", "--version",
+stdout=asyncio.subprocess.PIPE,
+stderr=asyncio.subprocess.PIPE
+)
+stdout, _ = await process.communicate()
+version = stdout.decode().strip() if stdout else "неизвестно"
+cli_status = f"{version}"
+except:
+cli_status = "не найден"
+llm_status = "подключена" if AGNES_API_KEY else "не задан ключ"
+await update.message.reply_text(
+f"Браузер: {status_text}\n"
+f"CLI browser-harness: {cli_status}\n"
+f"Agnes AI: {llm_status}"
+)
 
 async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    code = """
+code = """
 info = page_info()
 print(f"Страница: {info.get('title', 'нет заголовка')}")
 print(f"URL: {info.get('url', 'нет URL')}")
 """
-    stdout, stderr = await run_harness(code)
-    msg = "Диагностика:\n\n"
-    if stdout:
-        msg += stdout
-    if stderr:
-        msg += f"\nОшибки: {stderr[:200]}"
-    await update.message.reply_text(msg[:4000])
+stdout, stderr = await run_harness(code)
+msg = "Диагностика:\n\n"
+if stdout:
+msg += stdout
+if stderr:
+msg += f"\nОшибки: {stderr[:200]}"
+await update.message.reply_text(msg[:4000])
 
 def main():
-    if not TELEGRAM_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
-    if not ensure_browser():
-        print("Браузер не запустился")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("ask", ask))
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("debug", debug))
-    print("Агент запускается...")
-    print("Команды: /ask, /status, /debug")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+if not TELEGRAM_TOKEN:
+raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+if not ensure_browser():
+print("Браузер не запустился")
+app = Application.builder().token(TELEGRAM_TOKEN).build()
+app.add_handler(CommandHandler("ask", ask))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("status", status))
+app.add_handler(CommandHandler("debug", debug))
+print("Агент запускается...")
+print("Команды: /ask, /status, /debug")
+app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__ == "__main__":
-    main()
+if name == "main":
+main()
