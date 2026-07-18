@@ -45,18 +45,18 @@ from browser_harness.admin import (
 # 2. НАСТРОЙКА ЛОГИРОВАНИЯ
 # ============================================================
 
+LOGS_DIR = '/app/logs'
+os.makedirs(LOGS_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/app/logs/bot.log'),
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log')),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Создаём папку для логов
-os.makedirs('/app/logs', exist_ok=True)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
@@ -170,7 +170,7 @@ async def log(update, context):
     """Показывает последние 20 строк логов"""
     logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
-        log_file = '/app/logs/bot.log'
+        log_file = os.path.join(LOGS_DIR, 'bot.log')
         if not os.path.exists(log_file):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
@@ -202,7 +202,7 @@ async def ask(update, context):
         system_prompt = """
 You are a browser agent that controls a real browser via browser-harness.
 
-CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
+🚨 CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
