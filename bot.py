@@ -133,7 +133,7 @@ SYSTEM_PROMPT = """
 - new_tab(url) - открыть новую вкладку
 - wait_for_load() - дождаться загрузки
 - page_info() - получить информацию о странице
-- capture_screenshot(max_dim=1800) - сделать скриншот (возвращает base64 строку)
+- capture_screenshot(max_dim=800) - сделать скриншот (возвращает base64 строку)
 - click_at_xy(x, y) - кликнуть по координатам
 - type_text(text) - ввести текст
 - press_key(key) - нажать клавишу
@@ -159,7 +159,7 @@ SYSTEM_PROMPT = """
 Для цен указывай валюту.
 
 Для скриншотов:
-1. Используй capture_screenshot() - она уже возвращает base64 строку
+1. Используй capture_screenshot(max_dim=800) - она возвращает base64 строку
 2. В JSON добавь поля:
    - "action": "screenshot_taken"
    - "screenshot": результат capture_screenshot() (уже base64)
@@ -171,20 +171,20 @@ import json
 try:
     new_tab("https://example.com")
     wait_for_load()
-    img = capture_screenshot()
-    print(json.dumps({{
+    img = capture_screenshot(max_dim=800)
+    print(json.dumps({
         "action": "screenshot_taken",
         "source": "🌐 Example",
         "screenshot": img,
         "note": "Скриншот главной страницы"
-    }}))
+    }))
 except Exception as e:
-    print(json.dumps({{"error": str(e)}}))
+    print(json.dumps({"error": str(e)}))
 
 ВАЖНО:
 - Не используй слова "пример", "ориентировочно", "около" без необходимости
 - Если точная цена неизвестна — напиши "цена не найдена"
-- Для скриншотов возвращай screenshot как есть (уже base64)
+- Для скриншотов используй max_dim=800 чтобы уменьшить размер
 - Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
 """
 
@@ -244,11 +244,25 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                         screenshot_b64 = data.get('screenshot')
                         if screenshot_b64:
                             try:
-                                # Декодируем base64 строку в байты для отправки
+                                # Удаляем префикс data:image/png;base64, если есть
+                                if ',' in screenshot_b64:
+                                    screenshot_b64 = screenshot_b64.split(',', 1)[1]
+                                
+                                # Декодируем base64 в байты
                                 img_bytes = base64.b64decode(screenshot_b64)
+                                
+                                # Проверяем размер (Telegram лимит ~10MB)
+                                if len(img_bytes) > 10 * 1024 * 1024:
+                                    return "Скриншот слишком большой (>10MB)", False
+                                
+                                # Если изображение слишком маленькое - возможно ошибка
+                                if len(img_bytes) < 100:
+                                    return "Скриншот повреждён или пустой", False
+                                
                                 caption = f"📸 {data.get('source', 'Скриншот')}"
                                 if data.get('note'):
                                     caption += f"\n\n{data.get('note')}"
+                                
                                 await update.message.reply_photo(
                                     photo=img_bytes,
                                     caption=caption[:1024]
@@ -308,21 +322,22 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. Всегда добавляй URL, если он есть
 5. Для скриншотов обязательно добавь поле "screenshot" с base64
 6. Для скриншотов добавь поле "action": "screenshot_taken"
+7. Используй capture_screenshot(max_dim=800) для уменьшения размера
 
 Пример правильного кода для скриншота:
 import json
 try:
     new_tab("https://example.com")
     wait_for_load()
-    img = capture_screenshot()
-    print(json.dumps({{
+    img = capture_screenshot(max_dim=800)
+    print(json.dumps({
         "action": "screenshot_taken",
         "source": "🌐 Example",
         "screenshot": img,
         "note": "Скриншот главной страницы"
-    }}))
+    }))
 except Exception as e:
-    print(json.dumps({{"error": str(e)}}))
+    print(json.dumps({"error": str(e)}))
 """
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT + context_text},
