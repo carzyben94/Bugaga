@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
 
-# ========== Управление браузером ==========
+# ========== Управление браузером (БЕЗ ИЗМЕНЕНИЙ) ==========
 
 def check_browser():
     try:
@@ -122,13 +122,12 @@ async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔄 Загружаю {url}...")
     
     try:
-        # ПРАВИЛЬНЫЙ синтаксис по документации
+        # ✅ ПРАВИЛЬНЫЙ синтаксис по документации
         code = f"""
 with new_tab() as tab:
     tab.get("{url}")
-    import time
-    time.sleep(2)
-    print({{"title": tab.title(), "url": tab.url}})
+    tab.wait_for_load()
+    print(f"{{{{'title': '{tab.title()}', 'url': '{tab.url}'}}}}")
 """
         stdout, stderr = await run_harness(code)
         
@@ -160,15 +159,14 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 Делаю скриншот {url}...")
     
     try:
-        # ПРАВИЛЬНЫЙ синтаксис для скриншота
+        # ✅ ПРАВИЛЬНЫЙ синтаксис по документации
         code = f"""
 import base64
 with new_tab() as tab:
     tab.get("{url}")
-    import time
-    time.sleep(3)
-    screenshot = tab.screenshot()
-    print(base64.b64encode(screenshot).decode())
+    tab.wait_for_load()
+    screenshot_bytes = tab.screenshot()
+    print(base64.b64encode(screenshot_bytes).decode())
 """
         stdout, stderr = await run_harness(code)
         
