@@ -42,11 +42,21 @@ from browser_harness.admin import (
 )
 
 # ============================================================
-# 2. НАСТРОЙКА
+# 2. НАСТРОЙКА ЛОГИРОВАНИЯ
 # ============================================================
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/app/logs/bot.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Создаём папку для логов
+os.makedirs('/app/logs', exist_ok=True)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
@@ -63,6 +73,7 @@ logger.info("✅ Браузер готов")
 # ============================================================
 
 async def ask_agnes(messages):
+    logger.info(f"📤 Запрос к Agnes AI: {messages[-1]['content'][:100]}...")
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
@@ -73,13 +84,21 @@ async def ask_agnes(messages):
         "temperature": 0.3,
         "max_tokens": 2000
     }
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        response = await client.post(
-            "https://apihub.agnes-ai.com/v1/chat/completions",
-            headers=headers,
-            json=payload
-        )
-        return response.json()["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                "https://apihub.agnes-ai.com/v1/chat/completions",
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            logger.info(f"📥 Ответ от Agnes AI получен, длина: {len(content)}")
+            return content
+    except Exception as e:
+        logger.error(f"❌ Ошибка Agnes AI: {e}")
+        return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
 # 4. ВЫПОЛНЕНИЕ КОДА С ПЕРЕХВАТОМ ВЫВОДА
@@ -87,6 +106,7 @@ async def ask_agnes(messages):
 
 def execute_code(code):
     """Выполняет код и перехватывает всё, что выводится через print()"""
+    logger.info(f"⚙️ Выполнение кода:\n{code[:500]}...")
     try:
         stdout_buffer = io.StringIO()
         old_stdout = sys.stdout
@@ -122,12 +142,17 @@ def execute_code(code):
         output = stdout_buffer.getvalue()
         
         if output:
+            logger.info(f"📤 Вывод кода:\n{output[:500]}...")
             return output.strip(), None
         elif 'result' in globals_dict:
-            return str(globals_dict['result']), None
+            result = str(globals_dict['result'])
+            logger.info(f"📤 Результат: {result[:500]}...")
+            return result, None
         
+        logger.warning("⚠️ Код выполнен, но нет вывода")
         return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", None
     except Exception as e:
+        logger.error(f"❌ Ошибка выполнения: {e}")
         return None, str(e)
 
 # ============================================================
@@ -135,9 +160,32 @@ def execute_code(code):
 # ============================================================
 
 async def start(update, context):
+    logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
-        "/ask <запрос> — задать задачу агенту"
+        "/ask <запрос> — задать задачу агенту\n"
+        "/log — показать последние логи"
     )
+
+async def log(update, context):
+    """Показывает последние 20 строк логов"""
+    logger.info(f"👤 {update.effective_user.username} вызвал /log")
+    try:
+        log_file = '/app/logs/bot.log'
+        if not os.path.exists(log_file):
+            await update.message.reply_text("📭 Лог-файл не найден")
+            return
+        
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
+            last_lines = lines[-20:] if len(lines) > 20 else lines
+            
+            msg = "📋 **Последние логи:**\n\n```\n"
+            msg += ''.join(last_lines)
+            msg += "```"
+            
+            await update.message.reply_text(msg[:4000], parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def ask(update, context):
     if not context.args:
@@ -145,6 +193,9 @@ async def ask(update, context):
         return
 
     user_query = " ".join(context.args)
+    username = update.effective_user.username or "unknown"
+    logger.info(f"👤 {username} запросил: {user_query}")
+    
     status_msg = await update.message.reply_text("🤔 Думаю...")
 
     try:
@@ -196,13 +247,17 @@ Rules:
             output, error = execute_code(code)
 
             if error:
+                logger.error(f"❌ Ошибка выполнения для {username}: {error[:200]}")
                 await status_msg.edit_text(f"❌ Ошибка: {error[:500]}")
             else:
+                logger.info(f"✅ Успешное выполнение для {username}")
                 await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
         else:
+            logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
             await status_msg.edit_text(response[:4000])
 
     except Exception as e:
+        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
@@ -213,6 +268,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("log", log))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
