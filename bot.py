@@ -89,7 +89,7 @@ SYSTEM_PROMPT = """
 Правила:
 1. ВСЕГДА возвращай код в формате ```python ... ```
 2. Для получения заголовка используй: info = page_info(); print(info['title'])
-3. Для скриншота: data = capture_screenshot(); print(len(data))
+3. Для скриншота используй: data = capture_screenshot(); print(list(data))
 4. ВСЕГДА возвращай результат через print()
 5. НЕ используй import, НЕ пытайся парсить JSON вручную
 6. НЕ выводи просто текст с кодом — ВСЕГДА оборачивай в ```python
@@ -138,6 +138,12 @@ async def execute_agent_code(code: str) -> tuple[str, bool]:
         if stderr:
             return f"Ошибка: {stderr[:500]}", False
         if stdout:
+            try:
+                data = json.loads(stdout.strip())
+                if isinstance(data, list) and len(data) > 0:
+                    return bytes(data), True
+            except:
+                pass
             return stdout[:4000], True
         return "Выполнено успешно", True
     except Exception as e:
@@ -177,7 +183,10 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result, success = await execute_agent_code(response)
             if success:
                 await status_msg.edit_text("Готово!")
-                await update.message.reply_text(f"Результат:\n{result}")
+                if isinstance(result, bytes) and len(result) > 1000:
+                    await update.message.reply_photo(result)
+                else:
+                    await update.message.reply_text(f"Результат:\n{result}")
             else:
                 await status_msg.edit_text("Исправляю ошибку...")
                 error_messages = messages + [
@@ -189,7 +198,10 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     result2, success2 = await execute_agent_code(fixed_response)
                     if success2:
                         await status_msg.edit_text("Исправлено!")
-                        await update.message.reply_text(f"Результат:\n{result2}")
+                        if isinstance(result2, bytes) and len(result2) > 1000:
+                            await update.message.reply_photo(result2)
+                        else:
+                            await update.message.reply_text(f"Результат:\n{result2}")
                     else:
                         await update.message.reply_text(f"Не удалось исправить:\n{result2}")
                 else:
