@@ -352,11 +352,15 @@ const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => (
 {
   "items": [
     {"id": "step1", "title": "Page.navigate", "params": {"url": "https://x.com/elonmusk"}},
-    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).map(t => ({text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0, 10)};"}}
+    {"id": "step2", "title": "wait", "params": {"selector": "body", "timeout": 15}},
+    {"id": "step3", "title": "Runtime.evaluate", "params": {"expression": "const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).map(t => ({text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0, 10)};"}}
   ],
-  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}],
+  "edges": [
+    {"from": "step1", "to": "step2", "type": "blocks"},
+    {"from": "step2", "to": "step3", "type": "blocks"}
+  ],
   "narratives": {
-    "Outcome": "Найдено твитов: {{step2.result.count}}"
+    "Outcome": "Найдено твитов: {{step3.result.count}}"
   }
 }
 
@@ -380,6 +384,7 @@ const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => (
 9. Если элементов нет → верни {count: 0}
 10. В narratives.Outcome используй {{stepX.result.поле}}
 11. Если результат = null → "не найдено"
+12. После Page.navigate ВСЕГДА добавляй шаг wait с selector: body
 
 """ + get_harness_instruction()
 
@@ -388,9 +393,9 @@ const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => (
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 AGNES_API_URL,
-                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 800},
+                json={"model": AI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 4096},
                 headers={"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"},
-                timeout=30.0
+                timeout=60.0
             )
             result = resp.json()["choices"][0]["message"]["content"]
             add_to_memory("assistant", result)
