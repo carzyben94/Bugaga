@@ -1,182 +1,126 @@
 import os
-import sys
+import subprocess
+import tempfile
+import base64
 import asyncio
-import importlib
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WS_URL = os.getenv("HARNESS_WS_URL", "ws://localhost:9222/devtools/browser")
 
-# ============ УНИВЕРСАЛЬНЫЙ ИМПОРТ ============
-def get_harness_class():
-    """
-    Автоматически находит правильный класс Harness в пакете
-    """
-    try:
-        import browser_harness
-        
-        # Проверяем все атрибуты пакета
-        for attr_name in dir(browser_harness):
-            if attr_name.lower() in ['harness', 'browserharness', 'cdpharness']:
-                attr = getattr(browser_harness, attr_name)
-                if callable(attr):
-                    return attr
-        
-        # Пробуем импортировать из подмодулей
-        submodules = ['harness', 'core', 'browser', 'cdp', 'client']
-        for sub in submodules:
-            try:
-                module = importlib.import_module(f'browser_harness.{sub}')
-                for attr_name in dir(module):
-                    if attr_name.lower() in ['harness', 'browserharness']:
-                        attr = getattr(module, attr_name)
-                        if callable(attr):
-                            return attr
-            except ImportError:
-                continue
-        
-        # Если ничего не найдено - выводим структуру
-        print("📦 Содержимое browser_harness:")
-        print(dir(browser_harness))
-        
-        # Проверяем, есть ли вложенные пакеты
-        if hasattr(browser_harness, '__path__'):
-            import pkgutil
-            print("\n📁 Подмодули:")
-            for module_info in pkgutil.iter_modules(browser_harness.__path__):
-                print(f"  - {module_info.name}")
-        
-        return None
-        
-    except ImportError as e:
-        print(f"❌ Не удалось импортировать browser_harness: {e}")
-        return None
-
-# Получаем класс
-HarnessClass = get_harness_class()
-
-if HarnessClass is None:
-    print("❌ Harness не найден. Используем fallback - прямую работу с CDP")
-    HarnessClass = None
-
-# ============ FALLBACK - ПРЯМОЙ CDP ============
-class SimpleCDP:
-    """Запасной вариант без browser-harness"""
+class BrowserHarnessCLI:
+    """Обертка для browser-harness через CLI"""
     
-    def __init__(self, ws_url):
-        self.ws_url = ws_url
-        self.ws = None
-        self.message_id = 0
-        self.tabs = {}
-        
-    async def connect(self):
-        import websockets
-        self.ws = await websockets.connect(self.ws_url)
-        print(f"✅ CDP подключен к {self.ws_url}")
-        return self
-    
-    async def send(self, method, params=None, session_id=None):
-        self.message_id += 1
-        msg = {
-            "id": self.message_id,
-            "method": method,
-            "params": params or {}
-        }
-        if session_id:
-            msg["sessionId"] = session_id
-        await self.ws.send(json.dumps(msg))
-        response = await self.ws.recv()
-        return json.loads(response)
-    
-    async def new_tab(self):
-        result = await self.send("Target.createTarget", {"url": "about:blank"})
-        target_id = result['result']['targetId']
-        
-        # Получаем сессию для новой вкладки
-        session_result = await self.send("Target.attachToTarget", {"targetId": target_id})
-        session_id = session_result['result']['sessionId']
-        
-        tab = SimpleTab(self, session_id)
-        self.tabs[target_id] = tab
-        return tab
-    
-    async def close_tab(self, target_id):
-        await self.send("Target.closeTarget", {"targetId": target_id})
-        del self.tabs[target_id]
-
-class SimpleTab:
-    def __init__(self, cdp, session_id):
-        self.cdp = cdp
-        self.session_id = session_id
-        
-    async def goto(self, url):
-        await self.cdp.send("Page.navigate", {"url": url}, self.session_id)
-        
-    async def screenshot(self):
-        result = await self.cdp.send("Page.captureScreenshot", {"format": "png"}, self.session_id)
-        import base64
-        return base64.b64decode(result['result']['data'])
-    
-    async def content(self):
-        result = await self.cdp.send("Runtime.evaluate", {
-            "expression": "document.documentElement.outerHTML"
-        }, self.session_id)
-        return result['result']['result']['value']
-    
-    async def close(self):
-        # Получаем targetId из session_id
-        for target_id, tab in self.cdp.tabs.items():
-            if tab is self:
-                await self.cdp.close_tab(target_id)
-                break
-
-# ============ ИНИЦИАЛИЗАЦИЯ ============
-class BrowserManager:
     def __init__(self):
-        self.harness = None
-        self.is_cdp = False
+        self.browser_process = None
+        self.temp_script = None
         
-    async def init(self):
-        if HarnessClass:
-            try:
-                # Пробуем стандартный способ
-                if hasattr(HarnessClass, 'connect'):
-                    self.harness = await HarnessClass.connect(WS_URL)
-                else:
-                    self.harness = HarnessClass(WS_URL)
-                    if hasattr(self.harness, 'connect'):
-                        await self.harness.connect()
-                print("✅ Harness инициализирован")
-                return self.harness
-            except Exception as e:
-                print(f"⚠️ Ошибка Harness: {e}, переключаемся на CDP")
+    def run_script(self, script: str, timeout: int = 60) -> str:
+        """Запускает скрипт в browser-harness"""
+        try:
+            result = subprocess.run(
+                ["browser-harness"],
+                input=script,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"}
+            )
+            
+            if result.returncode != 0:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                raise RuntimeError(f"Harness error: {error_msg}")
+                
+            return result.stdout
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Harness timeout (60s)")
+        except FileNotFoundError:
+            raise RuntimeError("browser-harness not found in PATH")
+        except Exception as e:
+            raise RuntimeError(f"Harness error: {str(e)}")
+    
+    def new_tab(self, url: str) -> str:
+        """Открывает новую вкладку"""
+        script = f"""
+new_tab("{url}")
+wait_for_load()
+print(page_info())
+"""
+        return self.run_script(script)
+    
+    def screenshot(self) -> bytes:
+        """Делает скриншот и возвращает как bytes"""
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
         
-        # Fallback на CDP
-        self.is_cdp = True
-        self.harness = SimpleCDP(WS_URL)
-        await self.harness.connect()
-        return self.harness
+        try:
+            script = f"""
+capture_screenshot("{tmp_path}")
+print("SCREENSHOT_SAVED")
+"""
+            self.run_script(script)
+            
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
     
-    async def new_tab(self):
-        if hasattr(self.harness, 'new_tab'):
-            return await self.harness.new_tab()
-        elif hasattr(self.harness, 'create_tab'):
-            return await self.harness.create_tab()
-        elif hasattr(self.harness, 'newPage'):
-            return await self.harness.newPage()
-        else:
-            raise Exception("Не найден метод создания вкладки")
+    def get_content(self) -> str:
+        """Получает HTML содержимое страницы"""
+        script = """
+html = js("document.documentElement.outerHTML")
+print(html)
+"""
+        return self.run_script(script)
     
-    async def close(self):
-        if hasattr(self.harness, 'close'):
-            await self.harness.close()
-        elif hasattr(self.harness, 'ws') and self.harness.ws:
-            await self.harness.ws.close()
+    def click(self, x: int, y: int) -> str:
+        """Клик по координатам"""
+        script = f"""
+click_at_xy({x}, {y})
+capture_screenshot("click_result.png")
+print("Clicked at ({}, {})".format({x}, {y}))
+"""
+        return self.run_script(script)
+    
+    def fill(self, selector: str, text: str) -> str:
+        """Заполняет поле"""
+        script = f"""
+fill_input("{selector}", "{text}")
+print("Filled {}".format("{selector}"))
+"""
+        return self.run_script(script)
+    
+    def execute_js(self, code: str) -> str:
+        """Выполняет JavaScript"""
+        # Экранируем кавычки в коде
+        code_escaped = code.replace('"', '\\"')
+        script = f"""
+result = js("{code_escaped}")
+print(result)
+"""
+        return self.run_script(script)
+    
+    def get_page_info(self) -> dict:
+        """Получает информацию о странице"""
+        script = """
+info = page_info()
+print(info)
+"""
+        output = self.run_script(script)
+        try:
+            # Парсим JSON вывод
+            return json.loads(output)
+        except:
+            return {"raw": output}
 
-browser_manager = BrowserManager()
+# Глобальный экземпляр
+browser = BrowserHarnessCLI()
 
 # ============ BOT COMMANDS ============
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Browser Harness Bot\n"
@@ -184,95 +128,126 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/navigate <url> - открыть страницу\n"
         "/screenshot - скриншот\n"
         "/html - получить HTML\n"
-        "/close - закрыть вкладку"
+        "/click <x> <y> - кликнуть\n"
+        "/fill <selector> <text> - заполнить\n"
+        "/js <code> - выполнить JS\n"
+        "/info - информация о странице"
     )
 
 async def navigate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ Укажите URL")
+        await update.message.reply_text("❌ Укажите URL: /navigate https://example.com")
         return
     
     url = context.args[0]
     try:
-        tab = await browser_manager.new_tab()
-        await tab.goto(url)
-        context.user_data['tab'] = tab
-        await update.message.reply_text(f"✅ Открыто: {url}")
+        result = browser.new_tab(url)
+        await update.message.reply_text(f"✅ Открыто: {url}\n\n{result[:500]}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tab = context.user_data.get('tab')
-    if not tab:
-        await update.message.reply_text("❌ Нет активной вкладки")
-        return
-    
     try:
-        img = await tab.screenshot()
-        await update.message.reply_photo(img)
+        img_bytes = browser.screenshot()
+        await update.message.reply_photo(img_bytes, caption="📸 Скриншот")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def get_html(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tab = context.user_data.get('tab')
-    if not tab:
-        await update.message.reply_text("❌ Нет активной вкладки")
-        return
-    
     try:
-        html = await tab.content()
-        await update.message.reply_text(html[:4000])
+        html = browser.get_content()
+        # Обрезаем длинный HTML
+        if len(html) > 4000:
+            html = html[:4000] + "... (обрезано)"
+        await update.message.reply_text(f"📄 HTML:\n\n{html}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def close_tab(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tab = context.user_data.get('tab')
-    if tab:
-        try:
-            await tab.close()
-            context.user_data['tab'] = None
-            await update.message.reply_text("✅ Вкладка закрыта")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-    else:
-        await update.message.reply_text("Нет активной вкладки")
+async def click_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажите координаты: /click 100 200")
+        return
+    
+    try:
+        x, y = int(context.args[0]), int(context.args[1])
+        result = browser.click(x, y)
+        await update.message.reply_text(f"✅ Клик по ({x}, {y})\n\n{result}")
+    except ValueError:
+        await update.message.reply_text("❌ Координаты должны быть числами")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_text = f"""
-📊 Статус:
-- Harness: {'✅' if browser_manager.harness else '❌'}
-- Режим: {'CDP прямой' if browser_manager.is_cdp else 'browser-harness'}
-- Активная вкладка: {'✅' if context.user_data.get('tab') else '❌'}
-- WS URL: {WS_URL}
-    """
-    await update.message.reply_text(status_text)
+async def fill_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Укажите: /fill #input текст")
+        return
+    
+    selector = context.args[0]
+    text = ' '.join(context.args[1:])
+    
+    try:
+        result = browser.fill(selector, text)
+        await update.message.reply_text(f"✅ Заполнено: {selector}\n\n{result}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def execute_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажите JS код: /js document.title")
+        return
+    
+    code = ' '.join(context.args)
+    try:
+        result = browser.execute_js(code)
+        await update.message.reply_text(f"📝 Результат:\n\n{result[:500]}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def get_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        info = browser.get_page_info()
+        info_text = json.dumps(info, indent=2, ensure_ascii=False)
+        await update.message.reply_text(f"📊 Информация:\n\n{info_text[:500]}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ============ MAIN ============
+
 def main():
     if not TELEGRAM_TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN не установлен")
-        sys.exit(1)
+        return
     
-    # Инициализируем браузер
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(browser_manager.init())
+    # Проверяем доступность browser-harness
+    try:
+        test_result = subprocess.run(
+            ["browser-harness", "--help"],
+            capture_output=True,
+            timeout=5
+        )
+        if test_result.returncode != 0:
+            print("⚠️ browser-harness недоступен, будут проблемы с командами")
+        else:
+            print("✅ browser-harness доступен")
+    except FileNotFoundError:
+        print("❌ browser-harness не найден в PATH")
+        print("   Установите: uv tool install browser-harness")
+        return
     
-    if not browser_manager.harness:
-        print("❌ Не удалось инициализировать браузер")
-        sys.exit(1)
-    
-    # Бот
+    # Создаем приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("navigate", navigate))
     app.add_handler(CommandHandler("screenshot", screenshot))
     app.add_handler(CommandHandler("html", get_html))
-    app.add_handler(CommandHandler("close", close_tab))
-    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("click", click_element))
+    app.add_handler(CommandHandler("fill", fill_field))
+    app.add_handler(CommandHandler("js", execute_js))
+    app.add_handler(CommandHandler("info", get_info))
     
-    print("🤖 Бот запущен")
+    print("🤖 Бот запущен, ожидаем сообщения...")
     app.run_polling()
 
 if __name__ == "__main__":
