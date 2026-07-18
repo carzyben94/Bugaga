@@ -58,6 +58,45 @@ def ensure_browser():
     print("❌ Не удалось запустить браузер")
     return False
 
+# ========== Работа с browser-harness ==========
+
+async def get_browser():
+    """Подключается к браузеру через CDP"""
+    try:
+        # Пробуем разные способы импорта
+        try:
+            from browser_harness.cdp import CDPClient
+            client = CDPClient("http://localhost:9222")
+            return client
+        except ImportError:
+            pass
+        
+        try:
+            from browser_harness.core import BrowserHarness
+            harness = BrowserHarness("http://localhost:9222")
+            return harness
+        except ImportError:
+            pass
+        
+        # Самый простой вариант - через websocket напрямую
+        import websockets
+        import json
+        
+        # Получаем WebSocket URL из /json/version
+        with httpx.Client() as client:
+            response = client.get("http://localhost:9222/json/version")
+            data = response.json()
+            ws_url = data.get("webSocketDebuggerUrl")
+            
+            if ws_url:
+                ws = await websockets.connect(ws_url)
+                return ws
+        
+        raise Exception("Не удалось подключиться к браузеру")
+        
+    except Exception as e:
+        raise Exception(f"Ошибка подключения к браузеру: {str(e)}")
+
 # ========== Команды бота ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,22 +130,90 @@ async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔄 Загружаю {url}...")
     
     try:
-        from browser_harness import Browser
-        from browser_harness.utils import connect_to_browser
+        # Используем asyncio.subprocess для выполнения команды browser-harness
+        import asyncio
         
-        # Подключаемся к существующему браузеру
-        browser = await connect_to_browser("http://localhost:9222")
+        # Временный скрипт для получения заголовка
+        script = f"""
+import asyncio
+import json
+import websockets
+import httpx
+
+async def get_title():
+    try:
+        # Получаем WebSocket URL
+        with httpx.Client() as client:
+            response = client.get("http://localhost:9222/json/version")
+            data = response.json()
+            ws_url = data.get("webSocketDebuggerUrl")
         
-        # Открываем страницу
-        page = await browser.new_page()
-        await page.goto(url, wait_until="domcontentloaded")
+        if not ws_url:
+            return "Ошибка: не найден WebSocket URL"
         
-        title = await page.title()
-        await page.close()
+        # Подключаемся
+        async with websockets.connect(ws_url) as ws:
+            # Создаем новую страницу
+            await ws.send(json.dumps({{"id": 1, "method": "Target.createTarget", "params": {{"url": "about:blank"}}}}))
+            response = await ws.recv()
+            result = json.loads(response)
+            target_id = result.get("result", {{}}).get("targetId")
+            
+            if not target_id:
+                return "Ошибка: не удалось создать страницу"
+            
+            # Получаем WebSocket URL для страницы
+            await ws.send(json.dumps({{"id": 2, "method": "Target.getTargetInfo", "params": {{"targetId": target_id}}}}))
+            response = await ws.recv()
+            result = json.loads(response)
+            page_ws_url = result.get("result", {{}}).get("targetInfo", {{}}).get("webSocketDebuggerUrl")
+            
+            if not page_ws_url:
+                return "Ошибка: не найден URL страницы"
+            
+            # Подключаемся к странице
+            async with websockets.connect(page_ws_url) as page_ws:
+                # Включаем Page
+                await page_ws.send(json.dumps({{"id": 3, "method": "Page.enable"}}))
+                await page_ws.recv()
+                
+                # Навигация
+                await page_ws.send(json.dumps({{"id": 4, "method": "Page.navigate", "params": {{"url": "{url}"}}}}))
+                await page_ws.recv()
+                
+                # Получаем заголовок
+                await page_ws.send(json.dumps({{"id": 5, "method": "Runtime.evaluate", "params": {{"expression": "document.title"}}}}))
+                response = await page_ws.recv()
+                result = json.loads(response)
+                title = result.get("result", {{}}).get("result", {{}}).get("value", "Без заголовка")
+                
+                # Закрываем страницу
+                await ws.send(json.dumps({{"id": 6, "method": "Target.closeTarget", "params": {{"targetId": target_id}}}}))
+                
+                return title
+    except Exception as e:
+        return f"Ошибка: {{str(e)}}"
+
+if __name__ == "__main__":
+    result = asyncio.run(get_title())
+    print(result)
+"""
         
-        await update.message.reply_text(
-            f"✅ Заголовок: {title}"
+        # Выполняем скрипт через subprocess
+        process = await asyncio.create_subprocess_exec(
+            "python3", "-c", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
+        stdout, stderr = await process.communicate()
+        
+        if stdout:
+            title = stdout.decode().strip()
+            await update.message.reply_text(f"✅ Заголовок: {title}")
+        else:
+            error = stderr.decode().strip() if stderr else "Неизвестная ошибка"
+            await update.message.reply_text(f"❌ Ошибка: {error}")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
@@ -120,24 +227,108 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 Делаю скриншот {url}...")
     
     try:
-        from browser_harness import Browser
-        from browser_harness.utils import connect_to_browser
+        import asyncio
         import base64
-        from io import BytesIO
         
-        browser = await connect_to_browser("http://localhost:9222")
-        page = await browser.new_page()
-        await page.goto(url, wait_until="domcontentloaded")
+        # Простой скрипт для скриншота через CDP
+        script = f"""
+import asyncio
+import json
+import websockets
+import httpx
+import base64
+
+async def take_screenshot():
+    try:
+        # Получаем WebSocket URL
+        with httpx.Client() as client:
+            response = client.get("http://localhost:9222/json/version")
+            data = response.json()
+            ws_url = data.get("webSocketDebuggerUrl")
         
-        # Делаем скриншот
-        screenshot_bytes = await page.screenshot(full_page=True)
-        await page.close()
+        if not ws_url:
+            return None, "Не найден WebSocket URL"
         
-        # Отправляем фото
-        await update.message.reply_photo(
-            photo=screenshot_bytes,
-            caption=f"Скриншот {url}"
+        async with websockets.connect(ws_url) as ws:
+            # Создаем новую страницу
+            await ws.send(json.dumps({{"id": 1, "method": "Target.createTarget", "params": {{"url": "about:blank"}}}}))
+            response = await ws.recv()
+            result = json.loads(response)
+            target_id = result.get("result", {{}}).get("targetId")
+            
+            if not target_id:
+                return None, "Не удалось создать страницу"
+            
+            # Получаем WebSocket URL для страницы
+            await ws.send(json.dumps({{"id": 2, "method": "Target.getTargetInfo", "params": {{"targetId": target_id}}}}))
+            response = await ws.recv()
+            result = json.loads(response)
+            page_ws_url = result.get("result", {{}}).get("targetInfo", {{}}).get("webSocketDebuggerUrl")
+            
+            if not page_ws_url:
+                return None, "Не найден URL страницы"
+            
+            async with websockets.connect(page_ws_url) as page_ws:
+                # Включаем Page
+                await page_ws.send(json.dumps({{"id": 3, "method": "Page.enable"}}))
+                await page_ws.recv()
+                
+                # Навигация
+                await page_ws.send(json.dumps({{"id": 4, "method": "Page.navigate", "params": {{"url": "{url}"}}}}))
+                await page_ws.recv()
+                
+                # Ждем загрузки
+                await asyncio.sleep(2)
+                
+                # Делаем скриншот
+                await page_ws.send(json.dumps({{"id": 5, "method": "Page.captureScreenshot", "params": {{"format": "png"}}}}))
+                response = await page_ws.recv()
+                result = json.loads(response)
+                screenshot_data = result.get("result", {{}}).get("data", "")
+                
+                # Закрываем страницу
+                await ws.send(json.dumps({{"id": 6, "method": "Target.closeTarget", "params": {{"targetId": target_id}}}}))
+                
+                if screenshot_data:
+                    return base64.b64decode(screenshot_data), None
+                else:
+                    return None, "Не удалось сделать скриншот"
+    except Exception as e:
+        return None, str(e)
+
+if __name__ == "__main__":
+    data, error = asyncio.run(take_screenshot())
+    if error:
+        print(f"ERROR: {{error}}")
+    else:
+        import sys
+        sys.stdout.buffer.write(data)
+"""
+        
+        # Выполняем скрипт
+        process = await asyncio.create_subprocess_exec(
+            "python3", "-c", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
+        stdout, stderr = await process.communicate()
+        
+        if stderr:
+            error_msg = stderr.decode().strip()
+            if "ERROR:" in error_msg:
+                error_msg = error_msg.split("ERROR:")[1].strip()
+                await update.message.reply_text(f"❌ {error_msg}")
+                return
+        
+        if stdout:
+            # Отправляем скриншот
+            await update.message.reply_photo(
+                photo=stdout,
+                caption=f"Скриншот {url}"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось сделать скриншот")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
@@ -151,40 +342,48 @@ async def search_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 Ищу: {query}...")
     
     try:
-        from browser_harness import Browser
-        from browser_harness.utils import connect_to_browser
+        # Получаем заголовки результатов через простой парсинг
+        import re
         
-        browser = await connect_to_browser("http://localhost:9222")
-        page = await browser.new_page()
+        # Используем curl для получения HTML
+        import asyncio
         
-        # Идем в Google
-        await page.goto("https://www.google.com")
+        # Кодируем запрос для URL
+        import urllib.parse
+        encoded_query = urllib.parse.quote(query)
+        search_url = f"https://www.google.com/search?q={encoded_query}"
         
-        # Вводим запрос
-        search_input = await page.wait_for_selector('input[name="q"]')
-        await search_input.fill(query)
-        await search_input.press("Enter")
+        process = await asyncio.create_subprocess_exec(
+            "curl", "-s", "-L", search_url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
         
-        # Ждем результаты
-        await page.wait_for_selector('h3', timeout=5000)
-        
-        # Получаем первые 5 результатов
-        results = await page.query_selector_all('h3')
-        titles = []
-        for i, result in enumerate(results[:5]):
-            title = await result.text_content()
-            if title:
-                titles.append(f"{i+1}. {title}")
-        
-        await page.close()
-        
-        if titles:
-            response = "🔍 Результаты поиска:\n\n" + "\n".join(titles)
+        if stdout:
+            html = stdout.decode('utf-8', errors='ignore')
+            
+            # Ищем заголовки результатов
+            # Простое извлечение текста между <h3> тегами
+            titles = re.findall(r'<h3[^>]*>(.*?)</h3>', html, re.DOTALL)
+            
+            # Очищаем от HTML тегов
+            clean_titles = []
+            for title in titles[:5]:
+                clean = re.sub(r'<[^>]+>', '', title)
+                clean = re.sub(r'\s+', ' ', clean).strip()
+                if clean and len(clean) > 3:
+                    clean_titles.append(clean)
+            
+            if clean_titles:
+                response = "🔍 Результаты поиска:\n\n" + "\n".join([f"{i+1}. {t}" for i, t in enumerate(clean_titles)])
+            else:
+                response = "❌ Результатов не найдено"
+            
+            await update.message.reply_text(response)
         else:
-            response = "❌ Результатов не найдено"
-        
-        await update.message.reply_text(response)
-        
+            await update.message.reply_text("❌ Не удалось выполнить поиск")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
