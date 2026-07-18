@@ -46,18 +46,36 @@ async def ask_agnes(messages):
         )
         return response.json()["choices"][0]["message"]["content"]
 
-async def run_harness(code):
-    env = os.environ.copy()
-    env["BU_CDP_URL"] = "http://localhost:9222"
-    process = await asyncio.create_subprocess_exec(
-        "browser-harness",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env
-    )
-    stdout, stderr = await process.communicate(code.encode())
-    return stdout.decode(), stderr.decode()
+async def execute_code(code):
+    """Выполняет код напрямую, без CLI"""
+    try:
+        # Создаём словарь с хелперами
+        globals_dict = {
+            'new_tab': new_tab,
+            'goto_url': goto_url,
+            'wait_for_load': wait_for_load,
+            'page_info': page_info,
+            'capture_screenshot': capture_screenshot,
+            'click_at_xy': click_at_xy,
+            'type_text': type_text,
+            'press_key': press_key,
+            'scroll': scroll,
+            'js': js,
+            'cdp': cdp,
+            'ensure_real_tab': ensure_real_tab,
+            'print': print,
+        }
+        
+        # Выполняем код
+        exec(code, globals_dict)
+        
+        # Если в коде была переменная result — возвращаем её
+        if 'result' in globals_dict:
+            return str(globals_dict['result']), None
+        
+        return "✅ Выполнено успешно", None
+    except Exception as e:
+        return None, str(e)
 
 async def start(update, context):
     await update.message.reply_text(
@@ -147,12 +165,14 @@ Rules:
             code = code_match.group(1) if code_match else response
 
             await status_msg.edit_text("⚙️ Выполняю код...")
-            stdout, stderr = await run_harness(code)
+            
+            # ВЫПОЛНЯЕМ КОД НАПРЯМУЮ, БЕЗ CLI
+            output, error = await execute_code(code)
 
-            if stderr:
-                await status_msg.edit_text(f"❌ Ошибка: {stderr[:500]}")
+            if error:
+                await status_msg.edit_text(f"❌ Ошибка: {error[:500]}")
             else:
-                await status_msg.edit_text(f"✅ Результат:\n{stdout[:4000]}")
+                await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
         else:
             await status_msg.edit_text(response[:4000])
 
