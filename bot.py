@@ -175,11 +175,11 @@ async def start(update, context):
     logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
-        "/log — показать последние логи"
+        "/log — скачать файл логов"
     )
 
 async def log(update, context):
-    """Показывает последние 30 строк логов (без Markdown)"""
+    """Скачивает файл логов"""
     logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
@@ -187,15 +187,12 @@ async def log(update, context):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
         
-        with open(log_file, 'r') as f:
-            lines = f.readlines()
-            last_lines = lines[-30:] if len(lines) > 30 else lines
-            
-            msg = "📋 Последние логи:\n\n"
-            msg += ''.join(last_lines)
-            
-            # Отправляем БЕЗ parse_mode
-            await update.message.reply_text(msg[:4000])
+        with open(log_file, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename='bot.log',
+                caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -214,18 +211,21 @@ async def ask(update, context):
         system_prompt = """
 You are a browser agent that controls a real browser via browser-harness.
 
-🚨 CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
+🚨 CRITICAL RULES:
+1. ALWAYS use print() to output the result. Without print(), the user will see nothing.
+2. ALWAYS call ensure_real_tab() BEFORE any cdp() or capture_screenshot() call.
 
-WRONG (no output):
+WRONG (session error):
 new_tab("https://google.com")
 wait_for_load()
-page_info()  # ← ничего не выводит!
+cdp("Page.captureScreenshot", {"format": "png", "quality": 80})  # ← ОШИБКА! Нет ensure_real_tab()!
 
-CORRECT (with output):
+CORRECT:
 new_tab("https://google.com")
 wait_for_load()
-info = page_info()
-print(info)  # ← ВСЕГДА используй print()!
+ensure_real_tab()  # ← ОБЯЗАТЕЛЬНО!
+result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+print(result)  # ← ОБЯЗАТЕЛЬНО!
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
@@ -237,6 +237,7 @@ Navigation:
 - First navigation ALWAYS new_tab(url)
 - Subsequent navigation goto_url(url)
 - Always wait_for_load() after navigation
+- ALWAYS ensure_real_tab() before CDP commands
 
 Helpers available:
 new_tab(url), goto_url(url), wait_for_load(), page_info(),
@@ -251,6 +252,7 @@ Rules:
 - For screenshots use cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 - Use js() only for reading DOM data, never for clicks
 - ALWAYS use print() to output the result
+- ALWAYS call ensure_real_tab() before cdp() or capture_screenshot()
 - Wrap code in ```python ... ```
 """
 
