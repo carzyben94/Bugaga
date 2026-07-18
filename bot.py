@@ -254,25 +254,16 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                         screenshot_b64 = data.get('screenshot')
                         if screenshot_b64:
                             try:
-                                # Удаляем префикс data:image/png;base64, если есть
                                 if ',' in screenshot_b64:
                                     screenshot_b64 = screenshot_b64.split(',', 1)[1]
-                                
-                                # Декодируем base64 в байты
                                 img_bytes = base64.b64decode(screenshot_b64)
-                                
-                                # Проверяем размер (Telegram лимит ~10MB)
                                 if len(img_bytes) > 10 * 1024 * 1024:
                                     return "Скриншот слишком большой (>10MB)", False
-                                
-                                # Если изображение слишком маленькое - возможно ошибка
                                 if len(img_bytes) < 100:
                                     return "Скриншот повреждён или пустой", False
-                                
                                 caption = f"📸 {data.get('source', 'Скриншот')}"
                                 if data.get('note'):
                                     caption += f"\n\n{data.get('note')}"
-                                
                                 await update.message.reply_photo(
                                     photo=img_bytes,
                                     caption=caption[:1024]
@@ -343,14 +334,14 @@ try:
     new_tab("https://example.com")
     wait_for_load()
     img = capture_screenshot(max_dim=800)
-    print(json.dumps({
+    print(json.dumps({{
         "action": "screenshot_taken",
         "source": "🌐 Example",
         "screenshot": img,
         "note": "Скриншот главной страницы"
-    }))
+    }}))
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    print(json.dumps({{"error": str(e)}}))
 """
         
         messages = [
@@ -358,11 +349,9 @@ except Exception as e:
             {"role": "user", "content": enhanced_query}
         ]
         
-        # Запрос к LLM с таймаутом
         response = await ask_agnes(messages)
         logger.info(f"LLM ответ получен, длина: {len(response)}")
         
-        # Если LLM вернула ошибку
         if response.startswith("Ошибка"):
             await status_msg.edit_text(f"❌ {response}")
             return
@@ -390,7 +379,6 @@ except Exception as e:
                     save_skill(domain, skill_code, user_query)
                     await update.message.reply_text(f"💾 Навык сохранён для домена '{domain}'")
                 
-                # Отправляем результат
                 if len(result) > 4000:
                     for i in range(0, len(result), 4000):
                         await update.message.reply_text(f"**Результат:**\n{result[i:i+4000]}")
@@ -445,7 +433,6 @@ async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     browser_ok = check_browser()
     status = "✅ работает" if browser_ok else "❌ не отвечает"
-    
     try:
         process = await asyncio.create_subprocess_exec(
             "browser-harness", "--version",
@@ -457,10 +444,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cli_status = f"✅ {version}"
     except:
         cli_status = "❌ не найден"
-    
     llm_status = "✅ подключена" if AGNES_API_KEY else "❌ не задан ключ"
     skills_count = len(list_skills())
-    
     await update.message.reply_text(
         f"**📊 Статус системы:**\n\n"
         f"🖥️ **Браузер:** {status}\n"
@@ -471,7 +456,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔍 Запускаю диагностику...")
-    
     code1 = '''
 import json
 try:
@@ -483,7 +467,6 @@ except Exception as e:
     print(json.dumps({"test": "navigation", "error": str(e)}))
 '''
     stdout1, stderr1 = await run_harness(code1)
-    
     code2 = '''
 import json
 try:
@@ -494,7 +477,6 @@ except Exception as e:
     print(json.dumps({"test": "javascript", "error": str(e)}))
 '''
     stdout2, stderr2 = await run_harness(code2)
-    
     code3 = '''
 import json
 try:
@@ -506,7 +488,6 @@ except Exception as e:
     print(json.dumps({"test": "screenshot", "error": str(e)}))
 '''
     stdout3, stderr3 = await run_harness(code3)
-    
     code4 = '''
 import json
 import time
@@ -552,9 +533,7 @@ except Exception as e:
 print(json.dumps(results))
 '''
     stdout4, stderr4 = await run_harness(code4)
-    
     msg = "🔍 **Результаты диагностики:**\n\n"
-    
     try:
         data1 = json.loads(stdout1) if stdout1 else {'error': 'пустой ответ'}
         msg += f"1️⃣ **Навигация:** "
@@ -564,7 +543,6 @@ print(json.dumps(results))
             msg += f"✅ {data1.get('title', 'ok')}\n"
     except:
         msg += f"1️⃣ **Навигация:** ⚠️ {stdout1[:50]}\n"
-    
     try:
         data2 = json.loads(stdout2) if stdout2 else {'error': 'пустой ответ'}
         msg += f"2️⃣ **JavaScript:** "
@@ -574,7 +552,6 @@ print(json.dumps(results))
             msg += f"✅ {data2.get('result', 'ok')}\n"
     except:
         msg += f"2️⃣ **JavaScript:** ⚠️ {stdout2[:50]}\n"
-    
     try:
         data3 = json.loads(stdout3) if stdout3 else {'error': 'пустой ответ'}
         msg += f"3️⃣ **Скриншот:** "
@@ -584,7 +561,6 @@ print(json.dumps(results))
             msg += f"✅ {data3.get('bytes', 0)} байт\n"
     except:
         msg += f"3️⃣ **Скриншот:** ⚠️ {stdout3[:50]}\n"
-    
     msg += "\n4️⃣ **Поиск на Idealo:**\n"
     try:
         data4 = json.loads(stdout4) if stdout4 else {'error': 'пустой ответ'}
@@ -605,10 +581,8 @@ print(json.dumps(results))
     except Exception as e:
         msg += f"   ⚠️ Ошибка парсинга: {str(e)[:100]}\n"
         msg += f"   📄 stdout: {stdout4[:200]}\n"
-    
     if stderr4:
         msg += f"\n⚠️ **STDERR:** {stderr4[:200]}"
-    
     await status_msg.edit_text(msg[:4000])
 
 # ============================================================
@@ -618,23 +592,17 @@ print(json.dumps(results))
 def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
-    
     logger.info("🚀 Запуск бота...")
-    
     if not ensure_browser():
         logger.warning("⚠️ Браузер не запустился")
-    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("skills", skills_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("debug", debug_command))
-    
     logger.info("📋 Команды: /ask, /skills, /status, /debug")
     logger.info("🚀 Бот запущен!")
-    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
