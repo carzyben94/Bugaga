@@ -267,7 +267,7 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ВАЖНЫЕ ТРЕБОВАНИЯ:
 1. ВСЕГДА выводи результат через print(json.dumps(...))
 2. Для скриншотов используй CDP:
-   result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+   result = cdp("Page.captureScreenshot", {{"format": "png", "quality": 80}})
    screenshot = result.get("data")
 3. НЕ используй capture_screenshot() - она ненадёжна в headless-режиме
 4. Для кликов используй координаты, НЕ селекторы
@@ -281,15 +281,15 @@ import json
 try:
     new_tab("https://google.com")
     wait_for_load()
-    result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
-    print(json.dumps({
+    result = cdp("Page.captureScreenshot", {{"format": "png", "quality": 80}})
+    print(json.dumps({{
         "action": "screenshot_taken",
         "source": "🔍 Google",
         "screenshot": result.get("data"),
         "note": "Скриншот главной страницы"
-    }))
+    }}))
 except Exception as e:
-    print(json.dumps({"error": str(e)}))
+    print(json.dumps({{"error": str(e)}}))
 """
         
         messages = [
