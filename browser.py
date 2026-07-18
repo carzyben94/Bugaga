@@ -104,20 +104,30 @@ class ChromiumBrowser:
                         raise Exception(f"Не удалось подключиться к браузеру: {e}")
     
     async def _keep_alive(self):
-        """Отправляет пинг каждые 10 секунд"""
-        while self.websocket and not self.websocket.closed:
+        """Отправляет пинг каждые 15 секунд с переподключением"""
+        while True:
             try:
-                await asyncio.sleep(10)
-                await self.websocket.ping()
-                print("💓 WebSocket ping отправлен")
+                if self.websocket and not self.websocket.closed:
+                    await asyncio.sleep(15)
+                    await self.websocket.ping()
+                    print("💓 WebSocket ping отправлен")
+                else:
+                    print("⏳ WebSocket закрыт, keep-alive ждёт...")
+                    await asyncio.sleep(2)
+            except websockets.exceptions.ConnectionClosed:
+                print("⚠️ WebSocket закрыт, переподключаюсь...")
+                self.websocket = None
+                try:
+                    await self.connect()
+                except Exception as e:
+                    print(f"❌ Ошибка переподключения: {e}")
+                    await asyncio.sleep(5)
             except Exception as e:
                 print(f"⚠️ Keep-alive ошибка: {e}")
-                break
+                await asyncio.sleep(5)
     
     async def set_cookies_for_url(self, url: str):
-        """Устанавливает куки для URL из cookies.py"""
         cookies = get_cookies_for_url(url)
-        
         if not cookies:
             print(f"🍪 Нет кук для {url}")
             return
@@ -147,7 +157,6 @@ class ChromiumBrowser:
             return None
     
     async def set_all_cookies(self):
-        """Устанавливает все куки из cookies.py для всех доменов"""
         from cookies import SITE_COOKIES
         total = 0
         for domain, cookies in SITE_COOKIES.items():
@@ -183,11 +192,14 @@ class ChromiumBrowser:
         if not self.ws_url:
             self.ws_url = await self.get_ws_url()
         
+        # ✅ Увеличенные таймауты keepalive
         self.websocket = await websockets.connect(
             self.ws_url,
-            max_size=10 * 1024 * 1024
+            max_size=10 * 1024 * 1024,
+            ping_interval=20,   # Отправлять Ping каждые 20 секунд
+            ping_timeout=60     # Ждать ответ на Pong до 60 секунд
         )
-        print("🔗 WebSocket подключен (макс. размер: 10 МБ)")
+        print("🔗 WebSocket подключен (макс. размер: 10 МБ, ping_timeout: 60 сек)")
         
         if self._keep_alive_task is None or self._keep_alive_task.done():
             self._keep_alive_task = asyncio.create_task(self._keep_alive())
@@ -204,23 +216,29 @@ class ChromiumBrowser:
         print("✅ JS-маскировка применена")
         
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
-        if not self.websocket:
+        try:
+            if not self.websocket:
+                await self.connect()
+            
+            self._msg_id += 1
+            msg = {"id": self._msg_id, "method": method, "params": params or {}}
+            
+            print(f"📤 Отправка: {method} (id={self._msg_id})")
+            await self.websocket.send(json.dumps(msg))
+            
+            while True:
+                response = await self.websocket.recv()
+                data = json.loads(response)
+                if "id" in data:
+                    if "error" in data:
+                        raise Exception(f"CDP Error: {data['error']}")
+                    return data
+                print(f"📡 Событие: {data.get('method')}")
+        except (websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
+            print(f"⚠️ WebSocket упал: {e}. Переподключаюсь...")
+            self.websocket = None
             await self.connect()
-        
-        self._msg_id += 1
-        msg = {"id": self._msg_id, "method": method, "params": params or {}}
-        
-        print(f"📤 Отправка: {method} (id={self._msg_id})")
-        await self.websocket.send(json.dumps(msg))
-        
-        while True:
-            response = await self.websocket.recv()
-            data = json.loads(response)
-            if "id" in data:
-                if "error" in data:
-                    raise Exception(f"CDP Error: {data['error']}")
-                return data
-            print(f"📡 Событие: {data.get('method')}")
+            return await self.send_command(method, params)
     
     async def set_viewport(self, width: int = 1280, height: int = 720):
         self.viewport_width = width
@@ -234,7 +252,6 @@ class ChromiumBrowser:
         print(f"📐 Установлен размер окна: {width}x{height}")
     
     async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.5):
-        """Ожидает появления элемента на странице"""
         print(f"⏳ Ожидание элемента: {selector}")
         for attempt in range(int(timeout / interval)):
             try:
@@ -259,7 +276,6 @@ class ChromiumBrowser:
         await self.send_command("Page.enable")
         result = await self.send_command("Page.navigate", {"url": url})
         
-        # ✅ Ожидание загрузки страницы
         for attempt in range(30):
             await asyncio.sleep(0.5)
             try:
@@ -270,11 +286,9 @@ class ChromiumBrowser:
             except Exception as e:
                 print(f"⏳ Ожидание загрузки... ({attempt+1}/30)")
         
-        # ✅ Дополнительное ожидание для X.com
         if "x.com" in url or "twitter.com" in url:
             print("🐦 Дополнительное ожидание для X.com (3 сек)...")
             await asyncio.sleep(3)
-            # Ждём появления основного контента
             await self.wait_for_element("article[data-testid='tweet']", timeout=10)
         
         await asyncio.sleep(1)
@@ -290,16 +304,13 @@ class ChromiumBrowser:
         return result.get("result", {}).get("result", {}).get("value")
     
     async def extract(self, model_name: str, timeout: int = 10) -> Dict:
-        """Извлекает данные по модели из x-com-extraction.json"""
         from agent import X_EXTRACTION
-        
         if not X_EXTRACTION:
             print("⚠️ x-com-extraction.json не загружен")
             return {}
         
         models = X_EXTRACTION.get("models", {})
         model = models.get(model_name)
-        
         if not model:
             print(f"⚠️ Модель '{model_name}' не найдена")
             return {}
@@ -314,7 +325,6 @@ class ChromiumBrowser:
         for field_name, field_config in fields.items():
             selector = field_config.get("selector")
             transform = field_config.get("transform")
-            
             if not selector:
                 continue
             
@@ -329,7 +339,6 @@ class ChromiumBrowser:
             
             try:
                 value = await self.evaluate(js)
-                
                 if transform == "int":
                     if isinstance(value, str):
                         value = value.replace(',', '').replace('.', '').strip()
@@ -341,9 +350,7 @@ class ChromiumBrowser:
                 elif transform == "extract_tweet_id":
                     if value and "/status/" in value:
                         value = value.split("/status/")[-1].split("?")[0]
-                
                 result[field_name] = value
-                
             except Exception as e:
                 print(f"⚠️ Ошибка извлечения {field_name}: {e}")
                 result[field_name] = None
@@ -351,15 +358,12 @@ class ChromiumBrowser:
         return result
     
     async def extract_all(self, model_name: str, timeout: int = 10, limit: int = 20) -> List[Dict]:
-        """Извлекает список элементов по модели из x-com-extraction.json"""
         from agent import X_EXTRACTION
-        
         if not X_EXTRACTION:
             return []
         
         models = X_EXTRACTION.get("models", {})
         model = models.get(model_name)
-        
         if not model:
             return []
         
@@ -379,7 +383,6 @@ class ChromiumBrowser:
             for field_name, field_config in fields.items():
                 selector = field_config.get("selector")
                 transform = field_config.get("transform")
-                
                 if not selector:
                     continue
                 
@@ -396,7 +399,6 @@ class ChromiumBrowser:
                 
                 try:
                     value = await self.evaluate(js)
-                    
                     if transform == "int":
                         if isinstance(value, str):
                             value = value.replace(',', '').strip()
@@ -405,7 +407,6 @@ class ChromiumBrowser:
                         value = bool(value)
                     elif transform == "list":
                         value = [value] if value else []
-                    
                     item_result[field_name] = value
                     if value:
                         has_value = True
