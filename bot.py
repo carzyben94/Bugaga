@@ -3,7 +3,6 @@ import sys
 import time
 import logging
 import base64
-import json
 import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -47,28 +46,7 @@ ensure_daemon()
 logger.info("✅ Браузер готов")
 
 # ============================================================
-# 4. ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ АКТИВНОЙ ВКЛАДКИ
-# ============================================================
-
-def get_active_tab_ws_url():
-    """Получает WebSocket URL активной вкладки через /json/list"""
-    try:
-        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
-        pages = resp.json()
-        if not pages:
-            logger.error("Нет активных вкладок")
-            return None
-        
-        # Берём первую вкладку (или активную)
-        ws_url = pages[0]["webSocketDebuggerUrl"]
-        logger.info(f"✅ Найдена вкладка: {ws_url}")
-        return ws_url
-    except Exception as e:
-        logger.error(f"Ошибка получения вкладки: {e}")
-        return None
-
-# ============================================================
-# 5. КОМАНДЫ
+# 4. КОМАНДЫ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,7 +56,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ping - проверка\n"
         "/info - информация о странице\n"
         "/screenshot - скриншот google.com\n"
-        "/tabs - показать активные вкладки"
+        "/tabs - показать активные вкладки\n"
+        "/restart - перезапустить браузер"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,38 +80,46 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📸 Делаю скриншот...")
     try:
-        # 1. Получаем WebSocket URL активной вкладки
-        ws_url = get_active_tab_ws_url()
-        if not ws_url:
-            # Если нет вкладки — создаём новую
-            new_tab("https://google.com")
-            wait_for_load()
-            time.sleep(2)
-            ws_url = get_active_tab_ws_url()
+        # 1. Открываем НОВУЮ вкладку
+        new_tab("https://google.com")
+        wait_for_load()
+        time.sleep(2)
         
-        if not ws_url:
-            raise ValueError("Не удалось получить доступ к вкладке")
+        # 2. Получаем СПИСОК всех вкладок
+        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+        pages = resp.json()
         
-        # 2. Устанавливаем CDP-сессию через WebSocket
-        #    (это делается автоматически через browser-harness)
-        #    Но мы можем проверить, что сессия активна
-        ensure_real_tab()
+        if not pages:
+            raise ValueError("Нет активных вкладок")
         
-        # 3. Устанавливаем разрешение 1280x720
-        cdp("Emulation.setDeviceMetricsOverride", {
-            "width": 1280,
-            "height": 720,
-            "deviceScaleFactor": 1,
-            "mobile": False
-        })
+        # 3. Берём ПОСЛЕДНЮЮ вкладку (она только что открылась)
+        session_id = pages[-1]["id"]
+        logger.info(f"Session ID: {session_id}")
+        logger.info(f"URL: {pages[-1].get('url')}")
+        
+        # 4. Устанавливаем разрешение через CDP с sessionId
+        cdp(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": 1280,
+                "height": 720,
+                "deviceScaleFactor": 1,
+                "mobile": False
+            },
+            session_id=session_id
+        )
         time.sleep(1)
         
-        # 4. Делаем скриншот
-        result = cdp("Page.captureScreenshot", {
-            "format": "png",
-            "quality": 80,
-            "captureBeyondViewport": False
-        })
+        # 5. Делаем скриншот через CDP с sessionId
+        result = cdp(
+            "Page.captureScreenshot",
+            {
+                "format": "png",
+                "quality": 80,
+                "captureBeyondViewport": False
+            },
+            session_id=session_id
+        )
         screenshot_b64 = result.get("data")
         
         if not screenshot_b64:
@@ -173,17 +160,29 @@ async def tabs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         msg = "📑 **Активные вкладки:**\n\n"
-        for i, page in enumerate(pages[:5]):
+        for i, page in enumerate(pages[:10]):
             title = page.get("title", "Без названия")[:50]
             url = page.get("url", "unknown")[:60]
-            msg += f"{i+1}. **{title}**\n   `{url}`\n\n"
+            session_id = page.get("id", "нет")[:20]
+            msg += f"{i+1}. **{title}**\n   `{url}`\n   🆔 `{session_id}`\n\n"
         
         await update.message.reply_text(msg[:4000], parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перезапуск браузера"""
+    status_msg = await update.message.reply_text("🔄 Перезапускаю браузер...")
+    try:
+        restart_daemon()
+        time.sleep(2)
+        ensure_daemon()
+        await status_msg.edit_text("✅ Браузер перезапущен!")
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
 # ============================================================
-# 6. ЗАПУСК
+# 5. ЗАПУСК
 # ============================================================
 
 def main():
@@ -202,6 +201,7 @@ def main():
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("screenshot", screenshot))
     app.add_handler(CommandHandler("tabs", tabs))
+    app.add_handler(CommandHandler("restart", restart))
     
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
