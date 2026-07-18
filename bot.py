@@ -10,12 +10,12 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# 1. ИМПОРТ ВСЕГО ИЗ BROWSER-HARNESS
+# 1. ИМПОРТ ИЗ BROWSER-HARNESS
 # ============================================================
 
 sys.path.insert(0, "browser-harness/src")
 
-# helpers.py - все хелперы (save_screenshot НЕТ!)
+# helpers.py - только то, что есть!
 from browser_harness.helpers import (
     new_tab,
     goto_url,
@@ -29,7 +29,6 @@ from browser_harness.helpers import (
     js,
     cdp,
     ensure_real_tab,
-    ensure_isolated_browser,
     start_remote_daemon,
     stop_remote_daemon,
 )
@@ -45,52 +44,6 @@ from browser_harness.admin import (
 
 # daemon.py - класс BrowserDaemon
 from browser_harness.daemon import BrowserDaemon
-
-# auth.py - авторизация
-from browser_harness.auth import (
-    get_browser_use_api_key,
-    run_auth_cli,
-)
-
-# paths.py - пути
-from browser_harness.paths import (
-    get_agent_workspace,
-    get_domain_skills_dir,
-    get_helpers_path,
-)
-
-# recorder.py - запись сессий
-from browser_harness.recorder import (
-    Recording,
-    auto_recording_setting,
-    latest_recording,
-    recordings,
-    set_auto_recording,
-)
-
-# telemetry.py - телеметрия
-from browser_harness.telemetry import (
-    capture_cli_event,
-    is_enabled,
-    run_telemetry_cli,
-)
-
-# video.py - видео
-from browser_harness.video import (
-    compile_video,
-    export_video,
-    render_video,
-)
-
-# run.py - CLI
-from browser_harness.run import (
-    main as run_cli_main,
-    _run,
-    _version,
-    NAME,
-    HELP,
-    USAGE,
-)
 
 # ============================================================
 # 2. НАСТРОЙКА
@@ -153,7 +106,6 @@ def execute_code(code):
             'js': js,
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
-            'ensure_isolated_browser': ensure_isolated_browser,
             'start_remote_daemon': start_remote_daemon,
             'stop_remote_daemon': stop_remote_daemon,
             
@@ -166,40 +118,6 @@ def execute_code(code):
             
             # daemon.py
             'BrowserDaemon': BrowserDaemon,
-            
-            # auth.py
-            'get_browser_use_api_key': get_browser_use_api_key,
-            'run_auth_cli': run_auth_cli,
-            
-            # paths.py
-            'get_agent_workspace': get_agent_workspace,
-            'get_domain_skills_dir': get_domain_skills_dir,
-            'get_helpers_path': get_helpers_path,
-            
-            # recorder.py
-            'Recording': Recording,
-            'auto_recording_setting': auto_recording_setting,
-            'latest_recording': latest_recording,
-            'recordings': recordings,
-            'set_auto_recording': set_auto_recording,
-            
-            # telemetry.py
-            'capture_cli_event': capture_cli_event,
-            'telemetry_enabled': is_enabled,
-            'run_telemetry_cli': run_telemetry_cli,
-            
-            # video.py
-            'compile_video': compile_video,
-            'export_video': export_video,
-            'render_video': render_video,
-            
-            # run.py
-            'run_cli_main': run_cli_main,
-            '_run': _run,
-            '_version': _version,
-            'NAME': NAME,
-            'HELP': HELP,
-            'USAGE': USAGE,
             
             # Встроенные функции
             'print': print,
