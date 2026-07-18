@@ -36,7 +36,6 @@ def escape_markdown(text: str) -> str:
         return text
     if not isinstance(text, str):
         text = str(text)
-    # Экранируем _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
     special_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(special_chars)}])', r'\\\1', text)
 
@@ -50,7 +49,9 @@ async def start(update: Update, context):
         "/keep — удержание браузера\n"
         "/close — закрыть браузер\n"
         "/status — статус\n"
-        "/debug_x — диагностика X.com"
+        "/debug_x — диагностика X.com\n"
+        "/logs_cdp — показать CDP логи\n"
+        "/logs_clear_cdp — очистить CDP логи"
     )
 
 async def status(update: Update, context):
@@ -474,6 +475,52 @@ async def handle_message(update: Update, context):
     await update.message.reply_text("🤔 Думаю...")
     await execute_with_retry(update, user_text)
 
+# ===== НОВЫЕ КОМАНДЫ ДЛЯ ЛОГОВ =====
+
+async def download_cdp_logs(update: Update, context):
+    """Скачать CDP логи"""
+    try:
+        if os.path.exists("cdp_responses.log"):
+            with open("cdp_responses.log", "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            if not content:
+                await update.message.reply_text("📭 CDP лог пуст")
+                return
+            
+            if len(content) > 4000:
+                lines = content.split('\n')
+                # Показываем последние 50 записей
+                if len(lines) > 50:
+                    lines = lines[-50:]
+                content = '\n'.join(lines)
+                await update.message.reply_text(
+                    f"📡 **CDP логи (последние 50 записей):**\n\n```json\n{content[:4000]}\n```",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    f"📡 **CDP логи:**\n\n```json\n{content[:4000]}\n```",
+                    parse_mode="Markdown"
+                )
+        else:
+            await update.message.reply_text("❌ Файл cdp_responses.log не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
+async def clear_cdp_logs(update: Update, context):
+    """Очистить CDP логи"""
+    try:
+        if os.path.exists("cdp_responses.log"):
+            os.remove("cdp_responses.log")
+            await update.message.reply_text("🧹 CDP логи очищены")
+        else:
+            await update.message.reply_text("📭 Файл cdp_responses.log не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
+# ===== КОНЕЦ НОВЫХ КОМАНД =====
+
 def main():
     add_log("bot_started", "Бот запущен", "success")
     app = Application.builder().token(TOKEN).build()
@@ -485,6 +532,10 @@ def main():
     app.add_handler(CommandHandler("close", close_browser_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("debug_x", debug_x))
+    # НОВЫЕ КОМАНДЫ
+    app.add_handler(CommandHandler("logs_cdp", download_cdp_logs))
+    app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
+    # ОБЫЧНЫЕ КОМАНДЫ
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ Бот запущен с xBRIEF")
     app.run_polling()
