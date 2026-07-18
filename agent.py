@@ -26,9 +26,7 @@ PROTOCOLS_DIR = os.environ.get("PROTOCOLS_DIR", "/app/docs")
 BROWSER_PROTOCOL = os.path.join(PROTOCOLS_DIR, "browser_protocol.json")
 JS_PROTOCOL = os.path.join(PROTOCOLS_DIR, "js_protocol.json")
 XBRIEF_SCHEMA_PATH = os.path.join(PROTOCOLS_DIR, "vbrief-core.schema.json")
-BROWSER_LOGIC_PATH = os.path.join(PROTOCOLS_DIR, "browser-logic.json")
 BROWSER_HARNESS_PATH = os.path.join(PROTOCOLS_DIR, "browser-harness-all.json")
-X_EXTRACTION_PATH = os.path.join(PROTOCOLS_DIR, "x-com-extraction.json")
 
 history: List[Dict[str, str]] = []
 last_error: Optional[str] = None
@@ -163,18 +161,6 @@ JS_DOMAINS = load_js_protocol()
 if JS_DOMAINS:
     print(f"📂 Загружен js_protocol.json ({len(JS_DOMAINS.get('domains', []))} доменов)")
 
-def load_browser_logic():
-    try:
-        with open(BROWSER_LOGIC_PATH, 'r', encoding='utf-8-sig') as f:
-            logic = json.load(f)
-            print("📄 browser-logic.json загружен")
-            return logic
-    except Exception as e:
-        print(f"⚠️ Ошибка загрузки browser-logic.json: {e}")
-        return None
-
-BROWSER_LOGIC = load_browser_logic()
-
 def load_browser_harness():
     try:
         with open(BROWSER_HARNESS_PATH, 'r', encoding='utf-8-sig') as f:
@@ -186,39 +172,6 @@ def load_browser_harness():
         return None
 
 BROWSER_HARNESS = load_browser_harness()
-
-def load_x_extraction():
-    try:
-        with open(X_EXTRACTION_PATH, 'r', encoding='utf-8-sig') as f:
-            data = json.load(f)
-            print(f"📄 x-com-extraction.json загружен")
-            return data
-    except Exception as e:
-        print(f"⚠️ Ошибка загрузки x-com-extraction.json: {e}")
-        return None
-
-X_EXTRACTION = load_x_extraction()
-
-def get_full_command_info(method: str) -> Optional[Dict]:
-    if not BROWSER_DOMAINS:
-        return None
-    try:
-        domain_name, cmd_name = method.split(".", 1)
-        for domain in BROWSER_DOMAINS.get("domains", []):
-            if domain.get("domain") == domain_name:
-                for cmd in domain.get("commands", []):
-                    if cmd.get("name") == cmd_name:
-                        return cmd
-    except:
-        pass
-    return None
-
-def get_common_commands() -> str:
-    return """
-Page.navigate — открыть URL. Нужен параметр: url
-Page.captureScreenshot — сделать скриншот. Параметры: format (png), captureBeyondViewport (false)
-Runtime.evaluate — выполнить JS. Нужен параметр: expression
-"""
 
 def get_all_commands() -> str:
     if not BROWSER_DOMAINS:
@@ -237,12 +190,11 @@ def get_all_commands() -> str:
                 lines.append(f"  {domain_name}.{cmd_name} — {desc}")
     return "\n".join(lines[:40])
 
-def get_browser_harness_instruction() -> str:
+def get_harness_instruction() -> str:
     if not BROWSER_HARNESS:
         return ""
     
     domains = BROWSER_HARNESS.get("domains", [])
-    rules = BROWSER_HARNESS.get("rules", [])
     total_methods = BROWSER_HARNESS.get("total_methods", 0)
     
     domain_examples = []
@@ -251,19 +203,15 @@ def get_browser_harness_instruction() -> str:
         methods = [m.get("name") for m in domain.get("methods", [])[:3]]
         domain_examples.append(f"  • {domain_name}: {', '.join(methods)}...")
     
-    instruction = f"""
-=== ПОЛНАЯ ЛОГИКА CDP (browser-harness-all.json) ===
+    return f"""
+=== ВСЕ 652 МЕТОДА CDP ДОСТУПНЫ ===
 У тебя есть доступ ко всем {total_methods} методам CDP через 56 доменов.
 
-Примеры доменов и методов:
+Основные домены:
 {chr(10).join(domain_examples)}
 
-Основные правила:
-{chr(10).join([f"- {r}" for r in rules[:8]])}
-
-Ты можешь использовать ЛЮБОЙ CDP-метод напрямую. Если нужного метода нет в списке — ищи в browser-harness-all.json.
+Ты можешь использовать ЛЮБОЙ CDP-метод напрямую.
 """
-    return instruction
 
 async def get_response(user_msg: str, error_context: str = None) -> str:
     if not AGNES_API_KEY:
@@ -272,70 +220,11 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
         set_last_error(error_context)
     add_to_memory("user", user_msg)
 
-    browser_logic_instruction = ""
-    if BROWSER_LOGIC:
-        actions = BROWSER_LOGIC.get("actions", {})
-        rules = BROWSER_LOGIC.get("rules", [])
-        
-        action_list = []
-        for name, action in actions.items():
-            action_list.append(f"- {name}: {action.get('description', '')}")
-        
-        browser_logic_instruction = f"""
-=== ДОПОЛНИТЕЛЬНАЯ ЛОГИКА ДЛЯ БРАУЗЕРА (browser-logic.json) ===
-Ты можешь использовать следующие ДЕЙСТВИЯ (не CDP-команды):
-
-{chr(10).join(action_list)}
-
-Эти действия НЕ являются CDP-командами! Не используй их в плане как "title".
-
-Правила:
-{chr(10).join([f"- {r}" for r in rules])}
-"""
-
-    harness_instruction = get_browser_harness_instruction()
-
-    x_instruction = """
-=== ДЛЯ X.COM (ОБЯЗАТЕЛЬНЫЙ АЛГОРИТМ) ===
-
-ВСЕГДА выполняй ЭТИ 3 ШАГА для X.com:
-
-ШАГ 1 (ОБЯЗАТЕЛЬНО): Найди все data-testid на странице
-{
-  "title": "Runtime.evaluate",
-  "params": {
-    "expression": "Array.from(document.querySelectorAll('[data-testid]')).map(el => el.getAttribute('data-testid')).filter((v,i,a) => a.indexOf(v) === i)"
-  }
-}
-
-ШАГ 2: Посмотри результат и найди селектор для твитов
-- Если есть 'tweet' → используй '[data-testid=\"tweet\"]'
-- Если есть 'cellInnerDiv' → используй 'div[data-testid=\"cellInnerDiv\"]'
-- Если есть 'tweetText' → используй его для текста
-
-ШАГ 3: Извлеки твиты с найденным селектором
-{
-  "title": "Runtime.evaluate",
-  "params": {
-    "expression": "Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '' }))"
-  }
-}
-
-ШАГ 4: Если твитов нет — добавь задержку и прокрутку
-{
-  "title": "Runtime.evaluate",
-  "params": {
-    "expression": "await new Promise(r => setTimeout(r, 2000)); window.scrollBy(0, 1000); return 'scrolled'"
-  }
-}
-
-=== ВАЖНО ===
-НЕ ПРОПУСКАЙ ШАГ 1! Всегда сначала узнай, какие data-testid есть на странице.
-"""
+    harness_instruction = get_harness_instruction()
 
     system_prompt = f"""Ты агент, управляющий браузером через CDP.
 
-Твоя задача — создавать xBRIEF планы для выполнения действий в браузере.
+Твоя задача — создавать xBRIEF планы для выполнения любых действий в браузере.
 
 === СТРУКТУРА xBRIEF ПЛАНА ===
 {{
@@ -348,9 +237,9 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
     "title": "Название плана",
     "status": "running",
     "items": [
-      {{"id": "step1", "type": "task", "title": "Page.navigate", "status": "pending", "params": {{"url": "..."}}}},
-      {{"id": "step2", "type": "task", "title": "Runtime.evaluate", "status": "pending", "params": {{"expression": "..."}}}},
-      {{"id": "step3", "type": "task", "title": "Page.captureScreenshot", "status": "pending", "params": {{"format": "png"}}}}
+      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "..."}}}},
+      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "..."}}}},
+      {{"id": "step3", "title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
     ],
     "edges": [
       {{"from": "step1", "to": "step2", "type": "blocks"}},
@@ -363,80 +252,93 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }}
 }}
 
-=== ДОСТУПНЫЕ CDP-КОМАНДЫ (используй ТОЛЬКО их) ===
-{get_all_commands()}
+=== ОСНОВНЫЕ CDP-КОМАНДЫ ===
 
-{browser_logic_instruction}
+1. Page.navigate — открыть URL
+   params: {{"url": "https://example.com"}}
+
+2. Page.captureScreenshot — скриншот
+   params: {{"format": "png", "captureBeyondViewport": false}}
+
+3. Runtime.evaluate — выполнить JavaScript
+   params: {{"expression": "код"}}
+
+4. Input.dispatchMouseEvent — клик по координатам
+   params: {{"type": "mousePressed", "x": 100, "y": 200, "button": "left"}}
+
+5. Input.insertText — ввести текст
+   params: {{"text": "hello"}}
+
+6. Network.setCookie — установить куку
+   params: {{"name": "session", "value": "123", "url": "https://example.com"}}
+
+7. Emulation.setDeviceMetricsOverride — эмуляция устройства
+   params: {{"width": 375, "height": 812, "mobile": true, "deviceScaleFactor": 3}}
+
+8. DOM.getDocument — получить DOM
+9. DOM.querySelector — найти элемент
+10. DOM.querySelectorAll — найти все элементы
+
+=== КАК ПАРСИТЬ DOM ===
+
+Для извлечения данных используй Runtime.evaluate:
+
+Пример: извлечь все твиты
+{{
+  "expression": "Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({{ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '' }}))"
+}}
+
+Пример: извлечь все ссылки
+{{
+  "expression": "Array.from(document.querySelectorAll('a')).map(a => a.href)"
+}}
+
+Пример: получить заголовок
+{{
+  "expression": "document.title"
+}}
+
+=== ПРИМЕРЫ ПЛАНОВ ===
+
+ПРИМЕР 1: Открыть сайт и скриншот
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://google.com"}}}},
+    {{"title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+  ],
+  "edges": [{{"from": "step1", "to": "step2"}}]
+}}
+
+ПРИМЕР 2: Поиск в Google
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://www.google.com"}}}},
+    {{"title": "Runtime.evaluate", "params": {{"expression": "document.querySelector('textarea[name=\"q\"]').value = 'погода'; document.querySelector('input[name=\"btnK\"]')?.click()"}}}},
+    {{"title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+  ],
+  "edges": [{{"from": "step1", "to": "step2"}}, {{"from": "step2", "to": "step3"}}]
+}}
+
+ПРИМЕР 3: Извлечение данных
+{{
+  "items": [
+    {{"title": "Page.navigate", "params": {{"url": "https://example.com"}}}},
+    {{"title": "Runtime.evaluate", "params": {{"expression": "Array.from(document.querySelectorAll('.item')).map(el => ({{ title: el.querySelector('.title')?.innerText || '', link: el.querySelector('a')?.getAttribute('href') || '' }}))"}}}}
+  ],
+  "edges": [{{"from": "step1", "to": "step2"}}]
+}}
+
+ПРИМЕР 4: Эмуляция iPhone
+{{
+  "items": [
+    {{"title": "Emulation.setDeviceMetricsOverride", "params": {{"width": 375, "height": 812, "deviceScaleFactor": 3, "mobile": true}}}},
+    {{"title": "Page.navigate", "params": {{"url": "https://example.com"}}}},
+    {{"title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+  ],
+  "edges": [{{"from": "step1", "to": "step2"}}, {{"from": "step2", "to": "step3"}}]
+}}
 
 {harness_instruction}
-
-{x_instruction}
-
-=== ВАЖНОЕ ПРАВИЛО ===
-НЕ используй "recon", "click", "fill", "read", "navigate", "screenshot" как названия шагов ("title").
-Это логика из browser-logic.json, а не CDP-команды.
-Вместо них используй настоящие CDP-команды:
-
-- Вместо "recon" → "Runtime.evaluate" с JS-кодом для получения структуры
-- Вместо "click" → "Runtime.evaluate" с el.click() или "Input.dispatchMouseEvent"
-- Вместо "fill" → "Runtime.evaluate" с el.value = 'text' или "Input.insertText"
-- Вместо "read" → "Runtime.evaluate" с document.body.innerText
-- Вместо "navigate" → "Page.navigate"
-- Вместо "screenshot" → "Page.captureScreenshot"
-
-=== ПРИМЕР ДЛЯ X.COM ===
-Пользователь: "покажи твиты elonmusk"
-Твой план (ПРАВИЛЬНЫЙ):
-{{
-  "xBRIEFInfo": {{
-    "version": "0.8",
-    "author": "agent",
-    "created": "2026-07-17T00:00:00Z"
-  }},
-  "plan": {{
-    "title": "Твиты elonmusk",
-    "status": "running",
-    "items": [
-      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
-      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "Array.from(document.querySelectorAll('[data-testid]')).map(el => el.getAttribute('data-testid')).filter((v,i,a) => a.indexOf(v) === i)"}}}},
-      {{"id": "step3", "title": "Runtime.evaluate", "params": {{"expression": "Array.from(document.querySelectorAll('[data-testid=\\\"tweet\\\"]')).slice(0,5).map(tweet => ({{ text: tweet.querySelector('[data-testid=\\\"tweetText\\\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\\\"User-Name\\\"] span')?.innerText || '' }}))"}}}}
-    ],
-    "edges": [
-      {{"from": "step1", "to": "step2"}},
-      {{"from": "step2", "to": "step3"}}
-    ],
-    "narratives": {{
-      "Outcome": "Получены твиты elonmusk",
-      "Lessons": "Сначала находим data-testid, потом извлекаем"
-    }}
-  }}
-}}
-
-=== ПРИМЕР ===
-Пользователь: "открой google.com и сделай скриншот"
-Твой ответ:
-{{
-  "xBRIEFInfo": {{
-    "version": "0.8",
-    "author": "agent",
-    "created": "2026-07-17T00:00:00Z"
-  }},
-  "plan": {{
-    "title": "Открыть сайт и сделать скриншот",
-    "status": "running",
-    "items": [
-      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "https://google.com"}}}},
-      {{"id": "step2", "title": "Page.captureScreenshot", "params": {{"format": "png", "captureBeyondViewport": false}}}}
-    ],
-    "edges": [
-      {{"from": "step1", "to": "step2", "type": "blocks"}}
-    ],
-    "narratives": {{
-      "Outcome": "Сайт открыт, скриншот сделан",
-      "Lessons": "Цепочка выполняется автоматически"
-    }}
-  }}
-}}
 
 === ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
@@ -445,8 +347,8 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 4. Каждый шаг — это одна CDP-команда
 5. Используй edges для указания порядка шагов
 6. После выполнения плана заполни narratives.Outcome
-7. Для сложных задач используй методы из browser-harness-all.json
-8. Для X.com ВСЕГДА сначала получай data-testid (Шаг 1)
+7. Для X.com используй document.querySelectorAll('[data-testid]') для поиска селекторов
+8. Для ожидания загрузки добавь: await new Promise(r => setTimeout(r, 3000))
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
@@ -477,14 +379,12 @@ def parse_response(response: str) -> Optional[Dict]:
             
             json_str = response[start:end].strip()
             
-            # Восстанавливаем обрезанный JSON
             open_braces = json_str.count('{')
             close_braces = json_str.count('}')
             
             if open_braces > close_braces:
                 json_str += '}' * (open_braces - close_braces)
             
-            # Проверяем незакрытые кавычки
             if json_str.count('"') % 2 != 0:
                 json_str += '"'
             
@@ -519,9 +419,7 @@ def get_protocols_stats() -> Dict:
         "browser": {"loaded": False, "domains": 0, "commands": 0},
         "js": {"loaded": False, "domains": 0, "commands": 0},
         "xbrief": {"loaded": False},
-        "browser_logic": {"loaded": False},
-        "browser_harness": {"loaded": False, "total_methods": 0, "total_domains": 0},
-        "x_extraction": {"loaded": False}
+        "browser_harness": {"loaded": False, "total_methods": 0, "total_domains": 0}
     }
     
     if BROWSER_DOMAINS:
@@ -539,15 +437,9 @@ def get_protocols_stats() -> Dict:
     if XBRIEF_SCHEMA:
         stats["xbrief"]["loaded"] = True
     
-    if BROWSER_LOGIC:
-        stats["browser_logic"]["loaded"] = True
-    
     if BROWSER_HARNESS:
         stats["browser_harness"]["loaded"] = True
         stats["browser_harness"]["total_methods"] = BROWSER_HARNESS.get("total_methods", 0)
         stats["browser_harness"]["total_domains"] = BROWSER_HARNESS.get("total_domains", 0)
-    
-    if X_EXTRACTION:
-        stats["x_extraction"]["loaded"] = True
     
     return stats
