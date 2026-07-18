@@ -279,24 +279,126 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 9. DOM.querySelector — найти элемент
 10. DOM.querySelectorAll — найти все элементы
 
-=== КАК ПАРСИТЬ DOM ===
+=== КАК ИСКАТЬ ЭЛЕМЕНТЫ ===
 
-Для извлечения данных используй Runtime.evaluate:
+// ССЫЛКИ
+document.querySelectorAll('a[href]') → {{text, href}}
+document.querySelectorAll('[role="link"]')
 
-Пример: извлечь все твиты
-{{
-  "expression": "Array.from(document.querySelectorAll('article[data-testid=\"tweet\"]')).slice(0,5).map(tweet => ({{ text: tweet.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: tweet.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '' }}))"
-}}
+// КНОПКИ
+document.querySelectorAll('button, [role="button"], input[type="submit"]') → {{text, type, id}}
 
-Пример: извлечь все ссылки
-{{
-  "expression": "Array.from(document.querySelectorAll('a')).map(a => a.href)"
-}}
+// ПОЛЯ
+document.querySelectorAll('input:not([type="hidden"]), textarea, [contenteditable="true"]') → {{name, type, placeholder}}
 
-Пример: получить заголовок
-{{
-  "expression": "document.title"
-}}
+// ИЗОБРАЖЕНИЯ
+document.querySelectorAll('img[src]') → {{src, alt, width, height}}
+
+// ЗАГОЛОВКИ
+document.querySelectorAll('h1, h2, h3, h4') → {{tag, text}}
+
+// ТВИТЫ (X.com)
+document.querySelectorAll('[data-testid="tweet"], article[data-testid="tweet"]') → {{text, author, likes, retweets}}
+
+// ТРЕНДЫ (X.com)
+document.querySelectorAll('[data-testid="trend"]') → {{name, tweets}}
+
+// ВСЕ DATA-TESTID (X.com)
+document.querySelectorAll('[data-testid]') → список
+
+// ТЕКСТ
+document.body.innerText
+
+// ВСЯ СТРУКТУРА
+document.body.innerHTML
+
+=== ПРОВЕРКА ВИДИМОСТИ ===
+// Проверить, виден ли элемент
+el.offsetParent !== null
+el.getBoundingClientRect().width > 0
+window.getComputedStyle(el).display !== 'none'
+window.getComputedStyle(el).visibility !== 'hidden'
+
+// Найти только видимые элементы
+Array.from(document.querySelectorAll('button')).filter(el => el.offsetParent !== null)
+
+=== IFRAME ===
+document.querySelectorAll('iframe')
+
+=== LOCALSTORAGE ===
+localStorage.getItem('key')
+localStorage.setItem('key', 'value')
+localStorage.removeItem('key')
+Object.keys(localStorage)
+
+=== FETCH ===
+fetch('https://api.example.com/data').then(r => r.json())
+fetch('https://api.example.com/data', {{
+  method: 'POST',
+  headers: {{'Content-Type': 'application/json'}},
+  body: JSON.stringify({{key: 'value'}})
+}})
+
+=== ОБРАБОТКА ОШИБОК ===
+Если команда не сработала:
+1. Проверь, что страница загружена → document.readyState === 'complete'
+2. Попробуй другой селектор
+3. Добавь задержку → await new Promise(r => setTimeout(r, 2000))
+4. Если ничего не помогает → верни {{"error": "..."}}
+
+=== ОЖИДАНИЕ ЭЛЕМЕНТОВ ===
+// Ждать появления элемента
+await new Promise(r => {{
+  const check = () => {{
+    if (document.querySelector('selector')) r();
+    else setTimeout(check, 100);
+  }};
+  check();
+}})
+
+// Ждать с таймаутом
+await new Promise((r, reject) => {{
+  const start = Date.now();
+  const check = () => {{
+    if (document.querySelector('selector')) r();
+    else if (Date.now() - start > 10000) reject('Timeout');
+    else setTimeout(check, 100);
+  }};
+  check();
+}})
+
+=== СКРОЛЛ ===
+// Скролл вниз
+window.scrollBy(0, 1000)
+
+// Скролл до элемента
+document.querySelector('selector').scrollIntoView()
+
+// Плавный скролл
+window.scrollTo({{top: 1000, behavior: 'smooth'}})
+
+=== АТРИБУТЫ И КЛАССЫ ===
+// Получить атрибут
+el.getAttribute('href')
+el.getAttribute('data-testid')
+
+// Проверить класс
+el.classList.contains('active')
+
+// Получить все классы
+Array.from(el.classList)
+
+=== ФОРМЫ И СОБЫТИЯ ===
+// Найти форму
+document.querySelectorAll('form')
+
+// Отправить форму
+form.submit()
+
+// Вызвать событие
+el.dispatchEvent(new Event('click', {{bubbles: true}}))
+el.dispatchEvent(new Event('change', {{bubbles: true}}))
+el.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter'}}))
 
 === ПРИМЕРЫ ПЛАНОВ ===
 
@@ -319,11 +421,11 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   "edges": [{{"from": "step1", "to": "step2"}}, {{"from": "step2", "to": "step3"}}]
 }}
 
-ПРИМЕР 3: Извлечение данных
+ПРИМЕР 3: Извлечение твитов
 {{
   "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://example.com"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "Array.from(document.querySelectorAll('.item')).map(el => ({{ title: el.querySelector('.title')?.innerText || '', link: el.querySelector('a')?.getAttribute('href') || '' }}))"}}}}
+    {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
+    {{"title": "Runtime.evaluate", "params": {{"expression": "await new Promise(r => setTimeout(r, 3000)); Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).slice(0,5).map(t => ({{ text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '' }}))"}}}}
   ],
   "edges": [{{"from": "step1", "to": "step2"}}]
 }}
@@ -349,6 +451,9 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 6. После выполнения плана заполни narratives.Outcome
 7. Для X.com используй document.querySelectorAll('[data-testid]') для поиска селекторов
 8. Для ожидания загрузки добавь: await new Promise(r => setTimeout(r, 3000))
+9. Если элементов нет → верни {{"error": "Не найдено"}}
+10. Не говори "успешно", если данных нет
+11. Всегда проверяй видимость элементов перед взаимодействием
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
