@@ -15,14 +15,13 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 sys.path.insert(0, "browser-harness/src")
 
-# helpers.py - все хелперы
+# helpers.py - все хелперы (save_screenshot НЕТ!)
 from browser_harness.helpers import (
     new_tab,
     goto_url,
     wait_for_load,
     page_info,
     capture_screenshot,
-    save_screenshot,
     click_at_xy,
     type_text,
     press_key,
@@ -147,7 +146,6 @@ def execute_code(code):
             'wait_for_load': wait_for_load,
             'page_info': page_info,
             'capture_screenshot': capture_screenshot,
-            'save_screenshot': save_screenshot,
             'click_at_xy': click_at_xy,
             'type_text': type_text,
             'press_key': press_key,
