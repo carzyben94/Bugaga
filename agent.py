@@ -222,171 +222,58 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_harness_instruction()
 
-    system_prompt = """Ты агент, управляющий браузером через CDP. Твоя задача — создавать xBRIEF планы для выполнения действий.
+    system_prompt = """Ты агент для CDP браузера. Создавай xBRIEF планы.
 
-=== СТРУКТУРА xBRIEF ПЛАНА ===
+=== СТРУКТУРА ПЛАНА ===
 {
-  "xBRIEFInfo": {
-    "version": "0.8",
-    "author": "agent",
-    "created": "2026-07-17T00:00:00Z"
-  },
+  "xBRIEFInfo": {"version": "0.8", "author": "agent", "created": "2026-07-17T00:00:00Z"},
   "plan": {
-    "title": "Название плана",
+    "title": "...",
     "status": "running",
-    "items": [
-      {"id": "step1", "title": "Page.navigate", "params": {"url": "..."}},
-      {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "..."}},
-      {"id": "step3", "title": "Page.captureScreenshot", "params": {"format": "png"}}
-    ],
-    "edges": [
-      {"from": "step1", "to": "step2", "type": "blocks"},
-      {"from": "step2", "to": "step3", "type": "blocks"}
-    ],
-    "narratives": {
-      "Outcome": "Что получилось",
-      "Lessons": "Что узнали"
-    }
+    "items": [{"id": "step1", "title": "Page.navigate", "params": {"url": "..."}}],
+    "edges": [{"from": "step1", "to": "step2", "type": "blocks"}],
+    "narratives": {"Outcome": "Результат: {{step2.result.count}}"}
   }
 }
 
-=== CDP-КОМАНДЫ ===
-1. Page.navigate — {"url": "https://example.com"}
-2. Page.captureScreenshot — {"format": "png"}
-3. Runtime.evaluate — {"expression": "код"}
-4. Input.dispatchMouseEvent — {"type": "mousePressed", "x": 100, "y": 200}
-5. Input.insertText — {"text": "hello"}
-6. Network.setCookie — {"name": "session", "value": "123", "url": "https://example.com"}
-7. Emulation.setDeviceMetricsOverride — {"width": 375, "height": 812, "mobile": true}
+=== ПРАВИЛА ===
+1. ТОЛЬКО JSON, без пояснений
+2. Для списков: Array.from(...).slice(0,20)
+3. ВСЕГДА return {count: N, items: [...]}
+4. После Page.navigate → добавь wait (selector: body, timeout: 15)
+5. В Outcome: {{stepX.result.count}}
 
-=== КАК ПИСАТЬ EXPRESSION ДЛЯ Runtime.evaluate ===
+=== ГОТОВЫЕ ВЫРАЖЕНИЯ ===
+// ССЫЛКИ
+const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0,20)};
 
-ПРАВИЛО 1: ВСЕГДА используй return
-❌ document.querySelectorAll('a')
-✅ return document.querySelectorAll('a')
+// ТВИТЫ X.COM
+const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(t => ({text: t.querySelector('[data-testid="tweetText"]')?.innerText || '', author: t.querySelector('[data-testid="User-Name"] span')?.innerText || '', likes: t.querySelector('[data-testid="like"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0,10)};
 
-ПРАВИЛО 2: ВСЕГДА преобразуй NodeList в массив через Array.from()
-❌ document.querySelectorAll('a')
-✅ Array.from(document.querySelectorAll('a'))
+// КНОПКИ
+const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).map(b => ({text: b.innerText?.trim() || '', type: b.type || 'button'})); return {count: buttons.length, buttons: buttons.slice(0,20)};
 
-ПРАВИЛО 3: ВСЕГДА возвращай объект с полем count для подсчёта
-✅ return { count: links.length, links: links }
+// ПОЛЯ
+const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea')).map(i => ({name: i.name || '', type: i.type || '', placeholder: i.placeholder || ''})); return {count: inputs.length, inputs: inputs.slice(0,20)};
 
-ПРАВИЛО 4: Для списков используй slice() чтобы не перегружать ответ
-✅ links.slice(0, 20)
-
-=== ГОТОВЫЕ ВЫРАЖЕНИЯ (КОПИРУЙ ИХ) ===
-
-1. СПИСОК ВСЕХ ССЫЛОК:
-const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0, 20)};
-
-2. СПИСОК ВСЕХ КНОПОК:
-const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).map(b => ({text: b.innerText?.trim() || '', type: b.type || 'button'})); return {count: buttons.length, buttons: buttons.slice(0, 20)};
-
-3. СПИСОК ВСЕХ ПОЛЕЙ ВВОДА:
-const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea')).map(i => ({name: i.name || '', type: i.type || '', placeholder: i.placeholder || ''})); return {count: inputs.length, inputs: inputs.slice(0, 20)};
-
-4. СПИСОК ВСЕХ ИЗОБРАЖЕНИЙ:
-const images = Array.from(document.querySelectorAll('img[src]')).map(img => ({src: img.src, alt: img.alt || ''})); return {count: images.length, images: images.slice(0, 20)};
-
-5. ВСЕ ТВИТЫ С X.COM:
-await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(t => ({text: t.querySelector('[data-testid="tweetText"]')?.innerText || '', author: t.querySelector('[data-testid="User-Name"] span')?.innerText || '', likes: t.querySelector('[data-testid="like"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0, 10)};
-
-6. ТЕКСТ СТРАНИЦЫ:
+// ТЕКСТ СТРАНИЦЫ
 return document.body?.innerText || '';
 
-7. ЗАГОЛОВОК СТРАНИЦЫ:
+// ЗАГОЛОВОК
 return document.title || '';
 
-8. ВСЕ DATA-TESTID (X.com):
-const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => ({testid: el.getAttribute('data-testid'), text: el.innerText?.trim() || ''})); return {count: items.length, items: items.slice(0, 20)};
-
-=== ПРИМЕРЫ ПЛАНОВ ===
-
-ПРИМЕР 1: Открыть сайт
-{
-  "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}}
-  ],
-  "edges": []
-}
-
-ПРИМЕР 2: Открыть сайт и сделать скриншот
+=== ПРИМЕР ===
 {
   "items": [
     {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
-    {"id": "step2", "title": "Page.captureScreenshot", "params": {"format": "png"}}
-  ],
-  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}]
-}
-
-ПРИМЕР 3: Найти все ссылки на странице
-{
-  "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
-    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0, 20)};"}}
-  ],
-  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}],
-  "narratives": {
-    "Outcome": "Найдено ссылок: {{step2.result.count}}"
-  }
-}
-
-ПРИМЕР 4: Найти все ссылки и сделать скриншот
-{
-  "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
-    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0, 20)};"}},
-    {"id": "step3", "title": "Page.captureScreenshot", "params": {"format": "png"}}
-  ],
-  "edges": [
-    {"from": "step1", "to": "step2", "type": "blocks"},
-    {"from": "step2", "to": "step3", "type": "blocks"}
-  ],
-  "narratives": {
-    "Outcome": "Найдено ссылок: {{step2.result.count}}"
-  }
-}
-
-ПРИМЕР 5: Найти твиты на X.com
-{
-  "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://x.com/elonmusk"}},
     {"id": "step2", "title": "wait", "params": {"selector": "body", "timeout": 15}},
-    {"id": "step3", "title": "Runtime.evaluate", "params": {"expression": "const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).map(t => ({text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0, 10)};"}}
+    {"id": "step3", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0,20)};"}}
   ],
-  "edges": [
-    {"from": "step1", "to": "step2", "type": "blocks"},
-    {"from": "step2", "to": "step3", "type": "blocks"}
-  ],
-  "narratives": {
-    "Outcome": "Найдено твитов: {{step3.result.count}}"
-  }
+  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}, {"from": "step2", "to": "step3", "type": "blocks"}],
+  "narratives": {"Outcome": "Найдено ссылок: {{step3.result.count}}"}
 }
 
-=== ПОДСТАНОВКА ПЕРЕМЕННЫХ ===
-В narratives.Outcome используй:
-- {{step2.result.count}} — число из шага 2
-- {{step2.result.links}} — массив из шага 2
-- {{step2.result.text}} — текст из шага 2
-
-Если результат = null → напиши "не найдено"
-
-=== ЖЁСТКИЕ ПРАВИЛА ===
-1. Возвращай ТОЛЬКО валидный JSON с xBRIEF планом
-2. НЕ пиши пояснения, только JSON
-3. Каждый шаг — одна CDP-команда
-4. Используй edges для порядка шагов
-5. В expression ВСЕГДА используй return
-6. В expression ВСЕГДА используй Array.from() для NodeList
-7. Для списков ВСЕГДА используй slice(0, 20) чтобы не перегружать ответ
-8. Для подсчёта ВСЕГДА возвращай объект с полем count
-9. Если элементов нет → верни {count: 0}
-10. В narratives.Outcome используй {{stepX.result.поле}}
-11. Если результат = null → "не найдено"
-12. После Page.navigate ВСЕГДА добавляй шаг wait с selector: body
-
-""" + get_harness_instruction()
+""" + harness_instruction
 
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
@@ -400,21 +287,21 @@ const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => (
             result = resp.json()["choices"][0]["message"]["content"]
             add_to_memory("assistant", result)
             
-            # ===== СОХРАНЯЕМ ПЛАН ДЛЯ ОТЛАДКИ =====
+            # ===== СОХРАНЯЕМ ПЛАН =====
             try:
                 os.makedirs("logs", exist_ok=True)
                 parsed = parse_response(result)
                 if parsed:
                     with open("logs/last_plan.json", "w", encoding="utf-8") as f:
                         json.dump(parsed, f, indent=2, ensure_ascii=False)
-                    print(f"📋 План сохранён в logs/last_plan.json")
+                    print(f"📋 План сохранён")
                 else:
                     with open("logs/last_plan_raw.json", "w", encoding="utf-8") as f:
                         json.dump({"raw": result[:1000]}, f, indent=2, ensure_ascii=False)
-                    print(f"📋 Сырой ответ сохранён в logs/last_plan_raw.json")
+                    print(f"📋 Сырой ответ сохранён")
             except Exception as e:
-                print(f"⚠️ Ошибка сохранения плана: {e}")
-            # ===== КОНЕЦ СОХРАНЕНИЯ =====
+                print(f"⚠️ Ошибка сохранения: {e}")
+            # ===== КОНЕЦ =====
             
             return result
     except Exception as e:
