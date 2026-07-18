@@ -12,6 +12,69 @@ from datetime import datetime
 from mask import Mask
 from cookies import get_cookies_for_url
 
+# ===== ЦВЕТА ДЛЯ КОНСОЛИ =====
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    MAGENTA = '\033[95m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+# ===== ЛОГГЕР С РОТАЦИЕЙ =====
+class CDPLogger:
+    def __init__(self, max_entries: int = 500):
+        self.max_entries = max_entries
+        self.log_file = "cdp_logs.json"
+        self.entries = []
+        self._load()
+    
+    def _load(self):
+        try:
+            if os.path.exists(self.log_file):
+                with open(self.log_file, "r", encoding="utf-8") as f:
+                    self.entries = json.load(f)
+                    print(f"📂 Загружено {len(self.entries)} CDP записей из {self.log_file}")
+        except:
+            self.entries = []
+    
+    def add(self, method: str, params: Dict, response: Dict, duration: float):
+        self.entries.append({
+            "timestamp": datetime.now().isoformat(),
+            "method": method,
+            "params": params,
+            "response": response,
+            "duration": duration,
+            "success": "error" not in response
+        })
+        
+        # Ротация
+        if len(self.entries) > self.max_entries:
+            self.entries = self.entries[-self.max_entries:]
+        
+        self._save()
+    
+    def _save(self):
+        try:
+            with open(self.log_file, "w", encoding="utf-8") as f:
+                json.dump(self.entries, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ Ошибка сохранения CDP лога: {e}")
+    
+    def get_last(self, count: int = 20) -> List[Dict]:
+        return self.entries[-count:] if self.entries else []
+    
+    def get_by_method(self, method: str) -> List[Dict]:
+        return [e for e in self.entries if e.get("method") == method]
+    
+    def clear(self):
+        self.entries = []
+        self._save()
+        print("🧹 CDP лог очищен")
+
+# ===== ОСНОВНОЙ КЛАСС =====
 class ChromiumBrowser:
     def __init__(self, port: int = 9222):
         self.port = port
@@ -26,6 +89,7 @@ class ChromiumBrowser:
         self.mask = Mask()
         self._keep_alive_task = None
         self._cookies_set = False
+        self.logger = CDPLogger(max_entries=500)
         
     def _find_chrome(self) -> str:
         possible_names = [
@@ -46,12 +110,12 @@ class ChromiumBrowser:
         for name in possible_names:
             path = shutil.which(name)
             if path:
-                print(f"✅ Найден Chrome (which): {path}")
+                print(f"{Colors.GREEN}✅ Найден Chrome (which): {path}{Colors.RESET}")
                 return path
         
         for path in possible_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
-                print(f"✅ Найден Chrome (путь): {path}")
+                print(f"{Colors.GREEN}✅ Найден Chrome (путь): {path}{Colors.RESET}")
                 return path
         
         try:
@@ -61,7 +125,7 @@ class ChromiumBrowser:
             )
             for line in result.stdout.strip().split('\n'):
                 if line and os.access(line, os.X_OK):
-                    print(f"✅ Найден Chrome (find): {line}")
+                    print(f"{Colors.GREEN}✅ Найден Chrome (find): {line}{Colors.RESET}")
                     return line
         except:
             pass
@@ -71,8 +135,8 @@ class ChromiumBrowser:
     def launch(self, headless: bool = True):
         cmd = Mask.get_launch_args(self.chrome_path, self.port)
         
-        print(f"🚀 Запуск браузера с маскировкой: {self.chrome_path}")
-        print(f"📋 Команда: {' '.join(cmd)}")
+        print(f"{Colors.CYAN}🚀 Запуск браузера с маскировкой: {self.chrome_path}{Colors.RESET}")
+        print(f"{Colors.YELLOW}📋 Команда: {' '.join(cmd)}{Colors.RESET}")
         
         self.process = subprocess.Popen(
             cmd,
@@ -83,7 +147,7 @@ class ChromiumBrowser:
         
         if self.process.poll() is not None:
             raise Exception(f"Браузер упал при запуске (код: {self.process.returncode})")
-        print("✅ Браузер запущен с маскировкой")
+        print(f"{Colors.GREEN}✅ Браузер запущен с маскировкой{Colors.RESET}")
         
     async def get_ws_url(self) -> str:
         async with httpx.AsyncClient() as client:
@@ -95,11 +159,11 @@ class ChromiumBrowser:
                         raise Exception("Нет открытых вкладок")
                     self.page_id = pages[0]["id"]
                     ws_url = pages[0]["webSocketDebuggerUrl"]
-                    print(f"📄 Найдена страница: {self.page_id}")
+                    print(f"{Colors.CYAN}📄 Найдена страница: {self.page_id}{Colors.RESET}")
                     return ws_url
                 except Exception as e:
                     if attempt < 4:
-                        print(f"⏳ Ожидание браузера (попытка {attempt+1}/5)...")
+                        print(f"{Colors.YELLOW}⏳ Ожидание браузера (попытка {attempt+1}/5)...{Colors.RESET}")
                         await asyncio.sleep(1)
                     else:
                         raise Exception(f"Не удалось подключиться к браузеру: {e}")
@@ -111,26 +175,26 @@ class ChromiumBrowser:
                 if self.websocket is not None:
                     await asyncio.sleep(15)
                     await self.websocket.ping()
-                    print("💓 WebSocket ping отправлен")
+                    print(f"{Colors.MAGENTA}💓 WebSocket ping отправлен{Colors.RESET}")
                 else:
-                    print("⏳ WebSocket не инициализирован, keep-alive ждёт...")
+                    print(f"{Colors.YELLOW}⏳ WebSocket не инициализирован, keep-alive ждёт...{Colors.RESET}")
                     await asyncio.sleep(2)
             except websockets.exceptions.ConnectionClosed:
-                print("⚠️ WebSocket закрыт, переподключаюсь...")
+                print(f"{Colors.RED}⚠️ WebSocket закрыт, переподключаюсь...{Colors.RESET}")
                 self.websocket = None
                 try:
                     await self.connect()
                 except Exception as e:
-                    print(f"❌ Ошибка переподключения: {e}")
+                    print(f"{Colors.RED}❌ Ошибка переподключения: {e}{Colors.RESET}")
                     await asyncio.sleep(5)
             except Exception as e:
-                print(f"⚠️ Keep-alive ошибка: {e}")
+                print(f"{Colors.RED}⚠️ Keep-alive ошибка: {e}{Colors.RESET}")
                 await asyncio.sleep(5)
     
     async def set_cookies_for_url(self, url: str):
         cookies = get_cookies_for_url(url)
         if not cookies:
-            print(f"🍪 Нет кук для {url}")
+            print(f"{Colors.YELLOW}🍪 Нет кук для {url}{Colors.RESET}")
             return
         
         cdp_cookies = []
@@ -150,11 +214,11 @@ class ChromiumBrowser:
         
         try:
             result = await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
-            print(f"🍪 Установлено {len(cdp_cookies)} кук для {url}")
+            print(f"{Colors.GREEN}🍪 Установлено {len(cdp_cookies)} кук для {url}{Colors.RESET}")
             self._cookies_set = True
             return result
         except Exception as e:
-            print(f"⚠️ Ошибка установки кук: {e}")
+            print(f"{Colors.RED}⚠️ Ошибка установки кук: {e}{Colors.RESET}")
             return None
     
     async def set_all_cookies(self):
@@ -181,12 +245,12 @@ class ChromiumBrowser:
                     try:
                         await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
                         total += len(cdp_cookies)
-                        print(f"🍪 Установлено {len(cdp_cookies)} кук для {domain}")
+                        print(f"{Colors.GREEN}🍪 Установлено {len(cdp_cookies)} кук для {domain}{Colors.RESET}")
                     except Exception as e:
-                        print(f"⚠️ Ошибка установки кук для {domain}: {e}")
+                        print(f"{Colors.RED}⚠️ Ошибка установки кук для {domain}: {e}{Colors.RESET}")
         
         self._cookies_set = True
-        print(f"🍪 Всего установлено {total} кук")
+        print(f"{Colors.GREEN}🍪 Всего установлено {total} кук{Colors.RESET}")
         return total
     
     async def connect(self):
@@ -199,7 +263,7 @@ class ChromiumBrowser:
             ping_interval=20,
             ping_timeout=60
         )
-        print("🔗 WebSocket подключен (макс. размер: 10 МБ, ping_timeout: 60 сек)")
+        print(f"{Colors.GREEN}🔗 WebSocket подключен (макс. размер: 10 МБ, ping_timeout: 60 сек){Colors.RESET}")
         
         if self._keep_alive_task is None or self._keep_alive_task.done():
             self._keep_alive_task = asyncio.create_task(self._keep_alive())
@@ -210,10 +274,10 @@ class ChromiumBrowser:
         
         await self.set_all_cookies()
         
-        print("🕵️ Применяю JS-маскировку...")
+        print(f"{Colors.CYAN}🕵️ Применяю JS-маскировку...{Colors.RESET}")
         js_mask = Mask.get_js_mask()
         await self.send_command("Page.addScriptToEvaluateOnNewDocument", {"source": js_mask})
-        print("✅ JS-маскировка применена")
+        print(f"{Colors.GREEN}✅ JS-маскировка применена{Colors.RESET}")
         
     async def release_object(self, object_id: str):
         """Освобождает удалённый объект в браузере"""
@@ -263,6 +327,8 @@ class ChromiumBrowser:
         })
     
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
+        start_time = datetime.now()
+        
         try:
             if not self.websocket:
                 await self.connect()
@@ -270,37 +336,103 @@ class ChromiumBrowser:
             self._msg_id += 1
             msg = {"id": self._msg_id, "method": method, "params": params or {}}
             
-            print(f"📤 Отправка: {method} (id={self._msg_id})")
+            # ===== ВЫВОД В КОНСОЛЬ С ЦВЕТОМ =====
+            timestamp = start_time.strftime("%H:%M:%S")
+            print(f"{Colors.BLUE}📤 [{timestamp}] {method}{Colors.RESET}")
+            
+            # Показываем параметры (если есть)
+            if params and len(str(params)) < 500:
+                print(f"{Colors.CYAN}   📋 {json.dumps(params, ensure_ascii=False)[:200]}{Colors.RESET}")
+            
             await self.websocket.send(json.dumps(msg))
             
             while True:
                 response = await self.websocket.recv()
                 data = json.loads(response)
                 if "id" in data:
-                    # ✅ ЛОГИРУЕМ ОТВЕТ CDP
+                    duration = (datetime.now() - start_time).total_seconds()
+                    
+                    # ===== ЛОГИРУЕМ ВСЁ =====
+                    is_error = "error" in data
+                    status_emoji = "❌" if is_error else "✅"
+                    status_color = Colors.RED if is_error else Colors.GREEN
+                    
+                    # 1. Краткий вывод в консоль
+                    print(f"{status_color}   {status_emoji} {method} ({duration:.2f}s){Colors.RESET}")
+                    
+                    if is_error:
+                        print(f"{Colors.RED}   ❌ {data['error']}{Colors.RESET}")
+                    
+                    # 2. Полный лог в JSON-файл (с ротацией)
+                    self.logger.add(method, params, data, duration)
+                    
+                    # 3. Дополнительный лог в текстовый файл (для совместимости)
                     try:
                         log_entry = {
                             "timestamp": datetime.now().isoformat(),
                             "method": method,
                             "params": params,
-                            "response": data
+                            "response": data,
+                            "duration": duration
                         }
                         with open("cdp_responses.log", "a", encoding="utf-8") as f:
                             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-                        print(f"📥 Ответ CDP записан в лог [{method}]")
                     except Exception as e:
-                        print(f"⚠️ Ошибка записи CDP лога: {e}")
-                    # ✅ КОНЕЦ ЛОГИРОВАНИЯ
+                        print(f"{Colors.RED}⚠️ Ошибка записи CDP лога: {e}{Colors.RESET}")
                     
-                    if "error" in data:
+                    # ===== ЕСЛИ ОШИБКА — ЛОГИРУЕМ ОСОБО =====
+                    if is_error:
+                        with open("cdp_errors.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps({
+                                "timestamp": datetime.now().isoformat(),
+                                "method": method,
+                                "params": params,
+                                "error": data["error"]
+                            }, ensure_ascii=False) + "\n")
+                        print(f"{Colors.RED}❌ CDP Error в {method}: {data['error']}{Colors.RESET}")
                         raise Exception(f"CDP Error: {data['error']}")
+                    
+                    # ===== ДЛЯ ВАЖНЫХ МЕТОДОВ — ОТДЕЛЬНЫЙ ЛОГ =====
+                    important_methods = ["Page.navigate", "Page.captureScreenshot", "Runtime.evaluate"]
+                    if method in important_methods:
+                        try:
+                            with open(f"logs/{method}.log", "a", encoding="utf-8") as f:
+                                f.write(json.dumps({
+                                    "timestamp": datetime.now().isoformat(),
+                                    "params": params,
+                                    "response": data
+                                }, ensure_ascii=False) + "\n")
+                        except:
+                            pass
+                    
                     return data
-                print(f"📡 Событие: {data.get('method')}")
+                print(f"{Colors.YELLOW}📡 Событие: {data.get('method')}{Colors.RESET}")
+                
         except (websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
-            print(f"⚠️ WebSocket упал: {e}. Переподключаюсь...")
+            print(f"{Colors.RED}⚠️ WebSocket упал: {e}. Переподключаюсь...{Colors.RESET}")
             self.websocket = None
             await self.connect()
             return await self.send_command(method, params)
+        except Exception as e:
+            print(f"{Colors.RED}❌ {method} failed: {e}{Colors.RESET}")
+            raise
+    
+    # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ЛОГАМИ =====
+    
+    def get_logs(self, count: int = 20) -> List[Dict]:
+        """Получить последние N записей лога"""
+        return self.logger.get_last(count)
+    
+    def get_logs_by_method(self, method: str) -> List[Dict]:
+        """Получить логи по методу"""
+        return self.logger.get_by_method(method)
+    
+    def clear_logs(self):
+        """Очистить логи"""
+        self.logger.clear()
+        if os.path.exists("cdp_responses.log"):
+            os.remove("cdp_responses.log")
+        print("🧹 Все CDP логи очищены")
     
     async def set_viewport(self, width: int = 1280, height: int = 720):
         self.viewport_width = width
@@ -311,11 +443,11 @@ class ChromiumBrowser:
             "screenHeight": height, "positionX": 0, "positionY": 0
         }
         await self.send_command("Emulation.setDeviceMetricsOverride", params)
-        print(f"📐 Установлен размер окна: {width}x{height}")
+        print(f"{Colors.CYAN}📐 Установлен размер окна: {width}x{height}{Colors.RESET}")
     
     async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.3):
         """Умное ожидание с проверкой через JS"""
-        print(f"⏳ Ожидание элемента: {selector}")
+        print(f"{Colors.YELLOW}⏳ Ожидание элемента: {selector}{Colors.RESET}")
         
         js_wait = f"""
         (function() {{
@@ -339,17 +471,17 @@ class ChromiumBrowser:
         try:
             result = await self.evaluate(js_wait, release=True)
             if result:
-                print(f"✅ Элемент найден: {selector}")
+                print(f"{Colors.GREEN}✅ Элемент найден: {selector}{Colors.RESET}")
                 return True
             else:
-                print(f"⚠️ Таймаут: {selector} не найден за {timeout} сек")
+                print(f"{Colors.RED}⚠️ Таймаут: {selector} не найден за {timeout} сек{Colors.RESET}")
                 return False
         except Exception as e:
-            print(f"⚠️ Ошибка ожидания {selector}: {e}")
+            print(f"{Colors.RED}⚠️ Ошибка ожидания {selector}: {e}{Colors.RESET}")
             return False
     
     async def navigate(self, url: str) -> Dict:
-        print(f"🌐 Переход на {url}")
+        print(f"{Colors.CYAN}🌐 Переход на {url}{Colors.RESET}")
         
         if not self._cookies_set:
             await self.set_cookies_for_url(url)
@@ -362,13 +494,13 @@ class ChromiumBrowser:
             try:
                 ready_state = await self.evaluate("document.readyState")
                 if ready_state == "complete":
-                    print(f"✅ Страница загружена (попытка {attempt+1})")
+                    print(f"{Colors.GREEN}✅ Страница загружена (попытка {attempt+1}){Colors.RESET}")
                     break
             except Exception as e:
-                print(f"⏳ Ожидание загрузки... ({attempt+1}/30)")
+                print(f"{Colors.YELLOW}⏳ Ожидание загрузки... ({attempt+1}/30){Colors.RESET}")
         
         if "x.com" in url or "twitter.com" in url:
-            print("🐦 Дополнительное ожидание для X.com (3 сек)...")
+            print(f"{Colors.CYAN}🐦 Дополнительное ожидание для X.com (3 сек)...{Colors.RESET}")
             await asyncio.sleep(3)
             await self.wait_for_element("article[data-testid='tweet']", timeout=10)
         
@@ -378,13 +510,13 @@ class ChromiumBrowser:
     async def extract(self, model_name: str, timeout: int = 10) -> Dict:
         from agent import X_EXTRACTION
         if not X_EXTRACTION:
-            print("⚠️ x-com-extraction.json не загружен")
+            print(f"{Colors.RED}⚠️ x-com-extraction.json не загружен{Colors.RESET}")
             return {}
         
         models = X_EXTRACTION.get("models", {})
         model = models.get(model_name)
         if not model:
-            print(f"⚠️ Модель '{model_name}' не найдена")
+            print(f"{Colors.RED}⚠️ Модель '{model_name}' не найдена{Colors.RESET}")
             return {}
         
         container_selector = model.get("container")
@@ -424,7 +556,7 @@ class ChromiumBrowser:
                         value = value.split("/status/")[-1].split("?")[0]
                 result[field_name] = value
             except Exception as e:
-                print(f"⚠️ Ошибка извлечения {field_name}: {e}")
+                print(f"{Colors.RED}⚠️ Ошибка извлечения {field_name}: {e}{Colors.RESET}")
                 result[field_name] = None
         
         return result
@@ -506,7 +638,7 @@ class ChromiumBrowser:
             raise Exception(f"Неизвестный ответ CDP: {result}")
     
     async def click_human(self, selector: str):
-        print(f"🖱️ Человеческий клик по {selector}")
+        print(f"{Colors.CYAN}🖱️ Человеческий клик по {selector}{Colors.RESET}")
         js_code = Mask.get_human_click_js(selector)
         result = await self.evaluate(js_code, release=True)
         if not result:
@@ -514,7 +646,7 @@ class ChromiumBrowser:
         await asyncio.sleep(0.5)
     
     async def type_human(self, selector: str, text: str):
-        print(f"⌨️ Человеческий ввод: {text}")
+        print(f"{Colors.CYAN}⌨️ Человеческий ввод: {text}{Colors.RESET}")
         js_code = Mask.get_human_type_js(selector, text)
         result = await self.evaluate(js_code, release=True)
         if not result:
@@ -522,7 +654,7 @@ class ChromiumBrowser:
         await asyncio.sleep(0.5)
     
     async def scroll_human(self, distance: int):
-        print(f"📜 Человеческий скролл: {distance}px")
+        print(f"{Colors.CYAN}📜 Человеческий скролл: {distance}px{Colors.RESET}")
         js_code = Mask.get_human_scroll_js(distance)
         result = await self.evaluate(js_code, release=True)
         if not result:
@@ -541,11 +673,11 @@ class ChromiumBrowser:
         if self.websocket:
             await self.websocket.close()
             self.websocket = None
-            print("🔌 WebSocket отключен")
+            print(f"{Colors.CYAN}🔌 WebSocket отключен{Colors.RESET}")
             
     def close(self):
         if self.process:
             self.process.terminate()
             self.process.wait()
             self.process = None
-            print("🛑 Браузер закрыт")
+            print(f"{Colors.CYAN}🛑 Браузер закрыт{Colors.RESET}")
