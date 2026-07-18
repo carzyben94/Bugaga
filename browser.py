@@ -50,7 +50,6 @@ class CDPLogger:
             "success": "error" not in response
         })
         
-        # Ротация
         if len(self.entries) > self.max_entries:
             self.entries = self.entries[-self.max_entries:]
         
@@ -169,7 +168,6 @@ class ChromiumBrowser:
                         raise Exception(f"Не удалось подключиться к браузеру: {e}")
     
     async def _keep_alive(self):
-        """Отправляет пинг каждые 15 секунд с переподключением"""
         while True:
             try:
                 if self.websocket is not None:
@@ -280,7 +278,6 @@ class ChromiumBrowser:
         print(f"{Colors.GREEN}✅ JS-маскировка применена{Colors.RESET}")
         
     async def release_object(self, object_id: str):
-        """Освобождает удалённый объект в браузере"""
         try:
             await self.send_command("Runtime.releaseObject", {"objectId": object_id})
         except:
@@ -289,13 +286,13 @@ class ChromiumBrowser:
     async def evaluate(self, expression: str, release: bool = True) -> Any:
         """
         Выполняет JavaScript на странице через CDP Runtime.evaluate.
-        Настройки по документации CDP:
-        - returnByValue: True — возвращает результат как JSON
-        - awaitPromise: True — ждёт Promise
-        - allowUnsafeEvalBlockedByCSP: True — обходит CSP блокировки
-        - userGesture: True — имитирует действие пользователя
-        - includeCommandLineAPI: False — не подключает API консоли
         """
+        start_time = datetime.now()
+        
+        # ===== ЛОГИРУЕМ ЗАПРОС =====
+        print(f"{Colors.BLUE}📤 [{start_time.strftime('%H:%M:%S')}] Runtime.evaluate{Colors.RESET}")
+        print(f"{Colors.CYAN}   📋 {expression[:200]}{Colors.RESET}")
+        
         params = {
             "expression": expression,
             "returnByValue": True,
@@ -304,12 +301,54 @@ class ChromiumBrowser:
             "userGesture": True,
             "includeCommandLineAPI": False,
         }
+        
         result = await self.send_command("Runtime.evaluate", params)
         
+        duration = (datetime.now() - start_time).total_seconds()
+        
         if "exceptionDetails" in result:
+            print(f"{Colors.RED}❌ JS Error: {result['exceptionDetails']}{Colors.RESET}")
             raise Exception(f"JS Error: {result['exceptionDetails']}")
         
         value = result.get("result", {}).get("result", {}).get("value")
+        
+        # ===== ЛОГИРУЕМ РЕЗУЛЬТАТ =====
+        print(f"{Colors.GREEN}   ✅ Runtime.evaluate ({duration:.2f}s){Colors.RESET}")
+        if value is not None:
+            print(f"{Colors.CYAN}   📊 Результат: {str(value)[:200]}{Colors.RESET}")
+        
+        # ===== ЗАПИСЫВАЕМ В ОТДЕЛЬНЫЙ ФАЙЛ =====
+        try:
+            # Создаём папку если нет
+            os.makedirs("logs", exist_ok=True)
+            
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "type": "evaluate",
+                "expression": expression,
+                "params": params,
+                "result": result,
+                "value": value,
+                "duration": duration,
+                "success": True
+            }
+            
+            # В отдельный файл для eval
+            with open("logs/evaluate.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+            
+            # Также в общий лог
+            with open("cdp_responses.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": datetime.now().isoformat(),
+                    "method": "Runtime.evaluate (user)",
+                    "expression": expression[:500],
+                    "result": value,
+                    "duration": duration
+                }, ensure_ascii=False) + "\n")
+                
+        except Exception as e:
+            print(f"{Colors.RED}⚠️ Ошибка записи eval лога: {e}{Colors.RESET}")
         
         if release and "result" in result and "objectId" in result["result"]:
             object_id = result["result"]["objectId"]
@@ -318,7 +357,6 @@ class ChromiumBrowser:
         return value
     
     async def evaluate_fast(self, expression: str) -> None:
-        """Быстрое выполнение JS без возврата результата"""
         await self.send_command("Runtime.evaluate", {
             "expression": expression,
             "returnByValue": False,
@@ -336,11 +374,9 @@ class ChromiumBrowser:
             self._msg_id += 1
             msg = {"id": self._msg_id, "method": method, "params": params or {}}
             
-            # ===== ВЫВОД В КОНСОЛЬ С ЦВЕТОМ =====
             timestamp = start_time.strftime("%H:%M:%S")
             print(f"{Colors.BLUE}📤 [{timestamp}] {method}{Colors.RESET}")
             
-            # Показываем параметры (если есть)
             if params and len(str(params)) < 500:
                 print(f"{Colors.CYAN}   📋 {json.dumps(params, ensure_ascii=False)[:200]}{Colors.RESET}")
             
@@ -352,21 +388,17 @@ class ChromiumBrowser:
                 if "id" in data:
                     duration = (datetime.now() - start_time).total_seconds()
                     
-                    # ===== ЛОГИРУЕМ ВСЁ =====
                     is_error = "error" in data
                     status_emoji = "❌" if is_error else "✅"
                     status_color = Colors.RED if is_error else Colors.GREEN
                     
-                    # 1. Краткий вывод в консоль
                     print(f"{status_color}   {status_emoji} {method} ({duration:.2f}s){Colors.RESET}")
                     
                     if is_error:
                         print(f"{Colors.RED}   ❌ {data['error']}{Colors.RESET}")
                     
-                    # 2. Полный лог в JSON-файл (с ротацией)
                     self.logger.add(method, params, data, duration)
                     
-                    # 3. Дополнительный лог в текстовый файл (для совместимости)
                     try:
                         log_entry = {
                             "timestamp": datetime.now().isoformat(),
@@ -380,7 +412,6 @@ class ChromiumBrowser:
                     except Exception as e:
                         print(f"{Colors.RED}⚠️ Ошибка записи CDP лога: {e}{Colors.RESET}")
                     
-                    # ===== ЕСЛИ ОШИБКА — ЛОГИРУЕМ ОСОБО =====
                     if is_error:
                         with open("cdp_errors.log", "a", encoding="utf-8") as f:
                             f.write(json.dumps({
@@ -392,10 +423,10 @@ class ChromiumBrowser:
                         print(f"{Colors.RED}❌ CDP Error в {method}: {data['error']}{Colors.RESET}")
                         raise Exception(f"CDP Error: {data['error']}")
                     
-                    # ===== ДЛЯ ВАЖНЫХ МЕТОДОВ — ОТДЕЛЬНЫЙ ЛОГ =====
                     important_methods = ["Page.navigate", "Page.captureScreenshot", "Runtime.evaluate"]
                     if method in important_methods:
                         try:
+                            os.makedirs("logs", exist_ok=True)
                             with open(f"logs/{method}.log", "a", encoding="utf-8") as f:
                                 f.write(json.dumps({
                                     "timestamp": datetime.now().isoformat(),
@@ -417,18 +448,13 @@ class ChromiumBrowser:
             print(f"{Colors.RED}❌ {method} failed: {e}{Colors.RESET}")
             raise
     
-    # ===== МЕТОДЫ ДЛЯ РАБОТЫ С ЛОГАМИ =====
-    
     def get_logs(self, count: int = 20) -> List[Dict]:
-        """Получить последние N записей лога"""
         return self.logger.get_last(count)
     
     def get_logs_by_method(self, method: str) -> List[Dict]:
-        """Получить логи по методу"""
         return self.logger.get_by_method(method)
     
     def clear_logs(self):
-        """Очистить логи"""
         self.logger.clear()
         if os.path.exists("cdp_responses.log"):
             os.remove("cdp_responses.log")
@@ -446,7 +472,6 @@ class ChromiumBrowser:
         print(f"{Colors.CYAN}📐 Установлен размер окна: {width}x{height}{Colors.RESET}")
     
     async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.3):
-        """Умное ожидание с проверкой через JS"""
         print(f"{Colors.YELLOW}⏳ Ожидание элемента: {selector}{Colors.RESET}")
         
         js_wait = f"""
@@ -625,6 +650,8 @@ class ChromiumBrowser:
         return results
     
     async def screenshot(self, format: str = "png") -> bytes:
+        print(f"{Colors.CYAN}📸 Делаю скриншот...{Colors.RESET}")
+        
         await self.set_viewport(self.viewport_width, self.viewport_height)
         result = await self.send_command(
             "Page.captureScreenshot",
