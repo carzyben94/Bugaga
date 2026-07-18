@@ -222,58 +222,58 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_harness_instruction()
 
-    system_prompt = f"""Ты агент, управляющий браузером через CDP.
+    system_prompt = """Ты агент, управляющий браузером через CDP.
 
 Твоя задача — создавать xBRIEF планы для выполнения любых действий в браузере.
 
 === СТРУКТУРА xBRIEF ПЛАНА ===
-{{
-  "xBRIEFInfo": {{
+{
+  "xBRIEFInfo": {
     "version": "0.8",
     "author": "agent",
     "created": "2026-07-17T00:00:00Z"
-  }},
-  "plan": {{
+  },
+  "plan": {
     "title": "Название плана",
     "status": "running",
     "items": [
-      {{"id": "step1", "title": "Page.navigate", "params": {{"url": "..."}}}},
-      {{"id": "step2", "title": "Runtime.evaluate", "params": {{"expression": "..."}}}},
-      {{"id": "step3", "title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+      {"id": "step1", "title": "Page.navigate", "params": {"url": "..."}},
+      {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "..."}},
+      {"id": "step3", "title": "Page.captureScreenshot", "params": {"format": "png"}}
     ],
     "edges": [
-      {{"from": "step1", "to": "step2", "type": "blocks"}},
-      {{"from": "step2", "to": "step3", "type": "blocks"}}
+      {"from": "step1", "to": "step2", "type": "blocks"},
+      {"from": "step2", "to": "step3", "type": "blocks"}
     ],
-    "narratives": {{
+    "narratives": {
       "Outcome": "Что получилось",
       "Lessons": "Что узнали"
-    }}
-  }}
-}}
+    }
+  }
+}
 
 === ОСНОВНЫЕ CDP-КОМАНДЫ ===
 
 1. Page.navigate — открыть URL
-   params: {{"url": "https://example.com"}}
+   params: {"url": "https://example.com"}
 
 2. Page.captureScreenshot — скриншот
-   params: {{"format": "png", "captureBeyondViewport": false}}
+   params: {"format": "png", "captureBeyondViewport": false}
 
 3. Runtime.evaluate — выполнить JavaScript
-   params: {{"expression": "код"}}
+   params: {"expression": "код"}
 
 4. Input.dispatchMouseEvent — клик по координатам
-   params: {{"type": "mousePressed", "x": 100, "y": 200, "button": "left"}}
+   params: {"type": "mousePressed", "x": 100, "y": 200, "button": "left"}
 
 5. Input.insertText — ввести текст
-   params: {{"text": "hello"}}
+   params: {"text": "hello"}
 
 6. Network.setCookie — установить куку
-   params: {{"name": "session", "value": "123", "url": "https://example.com"}}
+   params: {"name": "session", "value": "123", "url": "https://example.com"}
 
 7. Emulation.setDeviceMetricsOverride — эмуляция устройства
-   params: {{"width": 375, "height": 812, "mobile": true, "deviceScaleFactor": 3}}
+   params: {"width": 375, "height": 812, "mobile": true, "deviceScaleFactor": 3}
 
 8. DOM.getDocument — получить DOM
 9. DOM.querySelector — найти элемент
@@ -282,26 +282,26 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 === КАК ИСКАТЬ ЭЛЕМЕНТЫ ===
 
 // ССЫЛКИ
-document.querySelectorAll('a[href]') → {{text, href}}
+document.querySelectorAll('a[href]') → {text, href}
 document.querySelectorAll('[role="link"]')
 
 // КНОПКИ
-document.querySelectorAll('button, [role="button"], input[type="submit"]') → {{text, type, id}}
+document.querySelectorAll('button, [role="button"], input[type="submit"]') → {text, type, id}
 
 // ПОЛЯ
-document.querySelectorAll('input:not([type="hidden"]), textarea, [contenteditable="true"]') → {{name, type, placeholder}}
+document.querySelectorAll('input:not([type="hidden"]), textarea, [contenteditable="true"]') → {name, type, placeholder}
 
 // ИЗОБРАЖЕНИЯ
-document.querySelectorAll('img[src]') → {{src, alt, width, height}}
+document.querySelectorAll('img[src]') → {src, alt, width, height}
 
 // ЗАГОЛОВКИ
-document.querySelectorAll('h1, h2, h3, h4') → {{tag, text}}
+document.querySelectorAll('h1, h2, h3, h4') → {tag, text}
 
 // ТВИТЫ (X.com)
-document.querySelectorAll('[data-testid="tweet"], article[data-testid="tweet"]') → {{text, author, likes, retweets}}
+document.querySelectorAll('[data-testid="tweet"], article[data-testid="tweet"]') → {text, author, likes, retweets}
 
 // ТРЕНДЫ (X.com)
-document.querySelectorAll('[data-testid="trend"]') → {{name, tweets}}
+document.querySelectorAll('[data-testid="trend"]') → {name, tweets}
 
 // ВСЕ DATA-TESTID (X.com)
 document.querySelectorAll('[data-testid]') → список
@@ -333,39 +333,39 @@ Object.keys(localStorage)
 
 === FETCH ===
 fetch('https://api.example.com/data').then(r => r.json())
-fetch('https://api.example.com/data', {{
+fetch('https://api.example.com/data', {
   method: 'POST',
-  headers: {{'Content-Type': 'application/json'}},
-  body: JSON.stringify({{key: 'value'}})
-}})
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({key: 'value'})
+})
 
 === ОБРАБОТКА ОШИБОК ===
 Если команда не сработала:
 1. Проверь, что страница загружена → document.readyState === 'complete'
 2. Попробуй другой селектор
 3. Добавь задержку → await new Promise(r => setTimeout(r, 2000))
-4. Если ничего не помогает → верни {{"error": "..."}}
+4. Если ничего не помогает → верни {"error": "..."}
 
 === ОЖИДАНИЕ ЭЛЕМЕНТОВ ===
 // Ждать появления элемента
-await new Promise(r => {{
-  const check = () => {{
+await new Promise(r => {
+  const check = () => {
     if (document.querySelector('selector')) r();
     else setTimeout(check, 100);
-  }};
+  };
   check();
-}})
+})
 
 // Ждать с таймаутом
-await new Promise((r, reject) => {{
+await new Promise((r, reject) => {
   const start = Date.now();
-  const check = () => {{
+  const check = () => {
     if (document.querySelector('selector')) r();
     else if (Date.now() - start > 10000) reject('Timeout');
     else setTimeout(check, 100);
-  }};
+  };
   check();
-}})
+})
 
 === СКРОЛЛ ===
 // Скролл вниз
@@ -375,7 +375,7 @@ window.scrollBy(0, 1000)
 document.querySelector('selector').scrollIntoView()
 
 // Плавный скролл
-window.scrollTo({{top: 1000, behavior: 'smooth'}})
+window.scrollTo({top: 1000, behavior: 'smooth'})
 
 === АТРИБУТЫ И КЛАССЫ ===
 // Получить атрибут
@@ -396,54 +396,54 @@ document.querySelectorAll('form')
 form.submit()
 
 // Вызвать событие
-el.dispatchEvent(new Event('click', {{bubbles: true}}))
-el.dispatchEvent(new Event('change', {{bubbles: true}}))
-el.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter'}}))
+el.dispatchEvent(new Event('click', {bubbles: true}))
+el.dispatchEvent(new Event('change', {bubbles: true}))
+el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter'}))
 
 === ПРИМЕРЫ ПЛАНОВ ===
 
 ПРИМЕР 1: Открыть сайт и скриншот
-{{
+{
   "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://google.com"}}}},
-    {{"title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+    {"title": "Page.navigate", "params": {"url": "https://google.com"}},
+    {"title": "Page.captureScreenshot", "params": {"format": "png"}}
   ],
-  "edges": [{{"from": "step1", "to": "step2"}}]
-}}
+  "edges": [{"from": "step1", "to": "step2"}]
+}
 
 ПРИМЕР 2: Поиск в Google
-{{
+{
   "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://www.google.com"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "document.querySelector('textarea[name=\"q\"]').value = 'погода'; document.querySelector('input[name=\"btnK\"]')?.click()"}}}},
-    {{"title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+    {"title": "Page.navigate", "params": {"url": "https://www.google.com"}},
+    {"title": "Runtime.evaluate", "params": {"expression": "document.querySelector('textarea[name=\"q\"]').value = 'погода'; document.querySelector('input[name=\"btnK\"]')?.click()"}},
+    {"title": "Page.captureScreenshot", "params": {"format": "png"}}
   ],
-  "edges": [{{"from": "step1", "to": "step2"}}, {{"from": "step2", "to": "step3"}}]
-}}
+  "edges": [{"from": "step1", "to": "step2"}, {"from": "step2", "to": "step3"}]
+}
 
 ПРИМЕР 3: Извлечение твитов (С ПРОВЕРКОЙ РЕЗУЛЬТАТА)
-{{
+{
   "items": [
-    {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')); if (tweets.length === 0) return {{ error: 'Твиты не найдены' }}; return tweets.slice(0,5).map(t => ({{ text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0' }}))"}}}}
+    {"title": "Page.navigate", "params": {"url": "https://x.com/elonmusk"}},
+    {"title": "Runtime.evaluate", "params": {"expression": "await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')); if (tweets.length === 0) return { \"error\": \"Твиты не найдены\" }; return tweets.slice(0,5).map(t => ({ text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0' }))"}}
   ],
-  "edges": [{{"from": "step1", "to": "step2"}}],
-  "narratives": {{
+  "edges": [{"from": "step1", "to": "step2"}],
+  "narratives": {
     "Outcome": "Найдено твитов: {{count}}"
-  }}
-}}
+  }
+}
 
 ПРИМЕР 4: Эмуляция iPhone
-{{
+{
   "items": [
-    {{"title": "Emulation.setDeviceMetricsOverride", "params": {{"width": 375, "height": 812, "deviceScaleFactor": 3, "mobile": true}}}},
-    {{"title": "Page.navigate", "params": {{"url": "https://example.com"}}}},
-    {{"title": "Page.captureScreenshot", "params": {{"format": "png"}}}}
+    {"title": "Emulation.setDeviceMetricsOverride", "params": {"width": 375, "height": 812, "deviceScaleFactor": 3, "mobile": true}},
+    {"title": "Page.navigate", "params": {"url": "https://example.com"}},
+    {"title": "Page.captureScreenshot", "params": {"format": "png"}}
   ],
-  "edges": [{{"from": "step1", "to": "step2"}}, {{"from": "step2", "to": "step3"}}]
-}}
+  "edges": [{"from": "step1", "to": "step2"}, {"from": "step2", "to": "step3"}]
+}
 
-{harness_instruction}
+""" + get_harness_instruction() + """
 
 === ЖЁСТКИЕ ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
