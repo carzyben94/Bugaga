@@ -85,16 +85,16 @@ async def run_harness(code: str) -> tuple[str, str]:
     return stdout.decode(), stderr.decode()
 
 # ============================================================
-# 3. ПРЯМОЙ CDP (ЗАПАСНОЙ СПОСОБ ДЛЯ СКРИНШОТОВ)
+# 3. ПРЯМОЙ CDP (ДЛЯ ПОЛНОРАЗМЕРНЫХ СКРИНШОТОВ)
 # ============================================================
 
 async def screenshot_cdp_direct(url: str) -> bytes:
     """
-    Делает скриншот через прямое подключение к Chrome DevTools Protocol.
+    Делает полноразмерный скриншот через прямое подключение к Chrome DevTools Protocol.
     Обходит browser-harness CLI.
     """
     try:
-        # 1. Получаем WebSocket URL для подключения к браузеру
+        # 1. Получаем WebSocket URL
         with httpx.Client() as client:
             response = client.get("http://localhost:9222/json/version")
             data = response.json()
@@ -115,7 +115,7 @@ async def screenshot_cdp_direct(url: str) -> bytes:
             if not target_id:
                 raise Exception("Не удалось создать вкладку")
             
-            # 4. Получаем WebSocket URL для созданной вкладки
+            # 4. Получаем WebSocket URL для вкладки
             await browser_ws.send(json.dumps({
                 "id": 2,
                 "method": "Target.getTargetInfo",
@@ -132,14 +132,18 @@ async def screenshot_cdp_direct(url: str) -> bytes:
                 await page_ws.send(json.dumps({"id": 3, "method": "Page.enable"}))
                 await page_ws.recv()
                 
-                # Ждем загрузки страницы
+                # Ждем загрузки
                 await asyncio.sleep(3)
                 
-                # 6. Делаем скриншот
+                # 6. Делаем полноразмерный скриншот
                 await page_ws.send(json.dumps({
                     "id": 4,
                     "method": "Page.captureScreenshot",
-                    "params": {"format": "png"}
+                    "params": {
+                        "format": "png",
+                        "quality": 100,
+                        "captureBeyondViewport": True  # Полная страница
+                    }
                 }))
                 screenshot_response = await page_ws.recv()
                 screenshot_data = json.loads(screenshot_response).get("result", {}).get("data")
@@ -154,67 +158,14 @@ async def screenshot_cdp_direct(url: str) -> bytes:
                 }))
                 await browser_ws.recv()
                 
-                # 8. Возвращаем декодированные байты изображения
+                # 8. Возвращаем байты
                 return base64.b64decode(screenshot_data)
                 
     except Exception as e:
-        raise Exception(f"Ошибка при создании скриншота через CDP: {str(e)}")
+        raise Exception(f"Ошибка скриншота через CDP: {str(e)}")
 
 # ============================================================
-# 4. ДИАГНОСТИКА
-# ============================================================
-
-async def debug_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагностика функций скриншота в browser-harness."""
-    code = """
-import base64
-import json
-
-results = {}
-
-# Проверяем capture_screenshot
-try:
-    new_tab("https://example.com")
-    wait_for_load()
-    data = capture_screenshot()
-    results['capture_screenshot'] = f'✅ работает, размер: {len(data)} байт'
-except Exception as e:
-    results['capture_screenshot'] = f'❌ Ошибка: {str(e)[:50]}'
-
-# Проверяем screenshot (возможно другое имя)
-try:
-    data = screenshot()
-    results['screenshot()'] = f'✅ работает, размер: {len(data)} байт'
-except Exception as e:
-    results['screenshot()'] = f'❌ Ошибка: {str(e)[:50]}'
-
-# Проверяем tab.screenshot() (если new_tab возвращает объект)
-try:
-    tab = new_tab("https://example.com")
-    data = tab.screenshot()
-    results['tab.screenshot()'] = f'✅ работает, размер: {len(data)} байт'
-except Exception as e:
-    results['tab.screenshot()'] = f'❌ Ошибка: {str(e)[:50]}'
-
-print(json.dumps(results))
-"""
-    stdout, stderr = await run_harness(code)
-    
-    msg = "🔍 Диагностика скриншотов:\n\n"
-    if stdout:
-        try:
-            data = json.loads(stdout.strip())
-            for key, value in data.items():
-                msg += f"• {key}: {value}\n"
-        except:
-            msg += stdout
-    if stderr:
-        msg += f"\nОшибки CLI: {stderr[:200]}"
-    
-    await update.message.reply_text(msg[:4000])
-
-# ============================================================
-# 5. КОМАНДЫ БОТА
+# 4. КОМАНДЫ БОТА (ПОЛНОСТЬЮ ПО ДОКУМЕНТАЦИИ)
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,9 +178,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Браузер: {status}\n\n"
         f"Доступные команды:\n"
         f"/get_title <url> - получить заголовок страницы\n"
-        f"/screenshot <url> - сделать скриншот (автовыбор способа)\n"
+        f"/screenshot <url> - сделать скриншот\n"
+        f"/search <query> - поиск в Google\n"
         f"/status - статус браузера и CLI\n"
-        f"/debug_screenshot - диагностика API скриншотов"
+        f"/debug_api - диагностика API"
     )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -254,6 +206,72 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"CLI browser-harness: {cli_status}"
     )
 
+async def debug_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Диагностика API browser-harness"""
+    code = """
+import json
+results = {}
+
+# Проверяем все основные функции
+try:
+    new_tab("about:blank")
+    results['new_tab'] = '✅ работает'
+except Exception as e:
+    results['new_tab'] = f'❌ {str(e)[:30]}'
+
+try:
+    goto_url("https://example.com")
+    results['goto_url'] = '✅ работает'
+except Exception as e:
+    results['goto_url'] = f'❌ {str(e)[:30]}'
+
+try:
+    wait_for_load()
+    results['wait_for_load'] = '✅ работает'
+except Exception as e:
+    results['wait_for_load'] = f'❌ {str(e)[:30]}'
+
+try:
+    info = page_info()
+    results['page_info'] = f'✅ работает: {info.get("title", "no title")[:20]}'
+except Exception as e:
+    results['page_info'] = f'❌ {str(e)[:30]}'
+
+try:
+    data = capture_screenshot()
+    results['capture_screenshot'] = f'✅ работает, размер: {len(data)} байт'
+except Exception as e:
+    results['capture_screenshot'] = f'❌ {str(e)[:30]}'
+
+try:
+    tabs = list_tabs()
+    results['list_tabs'] = f'✅ работает, найдено: {len(tabs)}'
+except Exception as e:
+    results['list_tabs'] = f'❌ {str(e)[:30]}'
+
+try:
+    result = js("return document.title")
+    results['js'] = f'✅ работает: {result[:20]}'
+except Exception as e:
+    results['js'] = f'❌ {str(e)[:30]}'
+
+print(json.dumps(results))
+"""
+    stdout, stderr = await run_harness(code)
+    
+    msg = "🔍 Диагностика API:\n\n"
+    if stdout:
+        try:
+            data = json.loads(stdout.strip())
+            for key, value in data.items():
+                msg += f"• {key}: {value}\n"
+        except:
+            msg += stdout
+    if stderr:
+        msg += f"\nОшибки CLI: {stderr[:200]}"
+    
+    await update.message.reply_text(msg[:4000])
+
 async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получает заголовок страницы через browser-harness."""
     if not context.args:
@@ -264,6 +282,7 @@ async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔄 Загружаю {url}...")
     
     try:
+        # Используем page_info() по документации
         code = f"""
 import json
 new_tab("{url}")
@@ -280,7 +299,15 @@ print(json.dumps(info))
         try:
             data = json.loads(stdout.strip())
             title = data.get("title", "Без заголовка")
-            await update.message.reply_text(f"✅ Заголовок: {title}")
+            url_page = data.get("url", url)
+            width = data.get("w", "?")
+            height = data.get("h", "?")
+            
+            await update.message.reply_text(
+                f"✅ **Заголовок:** {title}\n"
+                f"📐 **Размер:** {width}x{height}\n"
+                f"🔗 **URL:** {url_page}"
+            )
         except json.JSONDecodeError:
             await update.message.reply_text(f"✅ Результат: {stdout[:200]}")
             
@@ -290,7 +317,8 @@ print(json.dumps(info))
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Делает скриншот страницы.
-    Сначала пробует browser-harness, при ошибке переключается на прямой CDP.
+    Сначала пробует capture_screenshot() через browser-harness,
+    при ошибке переключается на прямой CDP.
     """
     if not context.args:
         await update.message.reply_text("❗ Укажите URL: /screenshot https://example.com")
@@ -300,49 +328,51 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 Делаю скриншот {url}...")
     
     try:
-        # ПРОБУЕМ СПОСОБ 1: capture_screenshot() через browser-harness
+        # Пробуем capture_screenshot() по документации
         code = f"""
 import base64
 new_tab("{url}")
 wait_for_load()
-try:
-    data = capture_screenshot()
-    print('CAPTURE:', base64.b64encode(data).decode())
-except Exception as e:
-    print('ERROR:', str(e))
+screenshot_data = capture_screenshot()
+print(base64.b64encode(screenshot_data).decode())
 """
         stdout, stderr = await run_harness(code)
         
         if stderr:
-            await update.message.reply_text(f"❌ Ошибка CLI: {stderr[:200]}")
-            return
-        
-        # Проверяем, есть ли ошибка в выводе
-        if stdout.startswith('ERROR:'):
-            error_msg = stdout.split('ERROR:', 1)[1].strip()
-            await update.message.reply_text(f"⚠️ browser-harness не справился: {error_msg[:100]}")
-            await update.message.reply_text("🔄 Пробую альтернативный способ (прямой CDP)...")
+            await update.message.reply_text(f"⚠️ browser-harness: {stderr[:100]}")
+            await update.message.reply_text("🔄 Пробую прямой CDP...")
             
-            # ПРОБУЕМ СПОСОБ 2: Прямой CDP
+            # Запасной вариант: прямой CDP
             try:
                 image_bytes = await screenshot_cdp_direct(url)
                 await update.message.reply_photo(
                     photo=image_bytes,
-                    caption=f"Скриншот {url} (через прямой CDP)"
+                    caption=f"Скриншот {url} (через CDP)"
                 )
                 return
             except Exception as cdp_error:
-                await update.message.reply_text(f"❌ И прямой CDP не сработал: {str(cdp_error)[:200]}")
+                await update.message.reply_text(f"❌ И CDP не сработал: {str(cdp_error)[:200]}")
                 return
         
-        # Обработка успешного скриншота через browser-harness
-        if stdout.startswith('CAPTURE:'):
-            base64_part = stdout.split('CAPTURE:', 1)[1].strip()
+        # Ищем base64 строку
+        match = re.search(r'(iVBORw0KGgo[A-Za-z0-9+/=]+)', stdout)
+        if match:
             try:
-                image_data = base64.b64decode(base64_part)
-                if len(image_data) < 100:
-                    await update.message.reply_text("❌ Получен пустой скриншот")
-                    return
+                image_data = base64.b64decode(match.group(1))
+                if len(image_data) < 10240:  # 10KB
+                    await update.message.reply_text(f"⚠️ Скриншот слишком маленький ({len(image_data)} байт)")
+                    await update.message.reply_text("🔄 Пробую прямой CDP...")
+                    
+                    try:
+                        image_bytes = await screenshot_cdp_direct(url)
+                        await update.message.reply_photo(
+                            photo=image_bytes,
+                            caption=f"Скриншот {url} (через CDP)"
+                        )
+                        return
+                    except Exception as cdp_error:
+                        await update.message.reply_text(f"❌ И CDP не сработал: {str(cdp_error)[:200]}")
+                        return
                 
                 await update.message.reply_photo(
                     photo=image_data,
@@ -351,40 +381,132 @@ except Exception as e:
             except Exception as e:
                 await update.message.reply_text(f"❌ Ошибка декодирования: {str(e)[:100]}")
         else:
-            await update.message.reply_text(f"❌ Неизвестный ответ: {stdout[:100]}")
+            await update.message.reply_text(f"❌ Не удалось извлечь скриншот")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def search_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Поиск в Google через browser-harness.
+    Использует new_tab(), wait_for_load(), js() и capture_screenshot().
+    """
+    if not context.args:
+        await update.message.reply_text("❗ Введите запрос: /search python programming")
+        return
+    
+    query = " ".join(context.args)
+    await update.message.reply_text(f"🔍 Ищу: {query}...")
+    
+    try:
+        # Экранируем кавычки в запросе
+        safe_query = query.replace('"', '\\"')
+        
+        code = f"""
+import json
+import base64
+import time
+
+# Открываем Google
+new_tab("https://www.google.com")
+wait_for_load()
+
+# Вводим запрос через js()
+js('''
+    const input = document.querySelector('input[name="q"]');
+    if (input) {{
+        input.value = "{safe_query}";
+        input.form.submit();
+    }}
+''')
+
+# Ждем результаты
+time.sleep(3)
+wait_for_load()
+
+# Получаем результаты через js()
+results = js('''
+    const titles = document.querySelectorAll('h3');
+    return Array.from(titles)
+        .slice(0, 5)
+        .map(el => el.textContent)
+        .filter(text => text.length > 0);
+''')
+
+# Делаем скриншот
+screenshot_data = capture_screenshot()
+screenshot_b64 = base64.b64encode(screenshot_data).decode()
+
+# Выводим результат
+print(json.dumps({{"results": results, "screenshot": screenshot_b64}}))
+"""
+        stdout, stderr = await run_harness(code)
+        
+        if stderr:
+            await update.message.reply_text(f"❌ Ошибка CLI: {stderr[:200]}")
+            return
+        
+        try:
+            data = json.loads(stdout.strip())
+            results = data.get("results", [])
+            screenshot_b64 = data.get("screenshot", "")
+            
+            # Отправляем результаты текстом
+            if results:
+                msg = "🔍 **Результаты поиска:**\n\n"
+                for i, title in enumerate(results[:5], 1):
+                    msg += f"{i}. {title}\n"
+                await update.message.reply_text(msg)
+            else:
+                await update.message.reply_text("❌ Результатов не найдено")
+            
+            # Отправляем скриншот
+            if screenshot_b64:
+                try:
+                    image_data = base64.b64decode(screenshot_b64)
+                    if len(image_data) > 10240:  # > 10KB
+                        await update.message.reply_photo(
+                            photo=image_data,
+                            caption=f"Скриншот поиска: {query}"
+                        )
+                except:
+                    pass
+                    
+        except json.JSONDecodeError:
+            await update.message.reply_text(f"✅ Результат: {stdout[:200]}")
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 6. ЗАПУСК БОТА
+# 5. ЗАПУСК
 # ============================================================
 
 def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
     
-    # Запускаем браузер
     if not ensure_browser():
         print("⚠️ ПРЕДУПРЕЖДЕНИЕ: Браузер не запустился")
     
-    # Создаём приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("debug_screenshot", debug_screenshot))
+    app.add_handler(CommandHandler("debug_api", debug_api))
     app.add_handler(CommandHandler("get_title", get_title))
     app.add_handler(CommandHandler("screenshot", screenshot))
+    app.add_handler(CommandHandler("search", search_google))
     
     print("🚀 Бот запускается...")
     print("📋 Доступные команды:")
     print("   /start - приветствие")
     print("   /status - статус браузера и CLI")
-    print("   /debug_screenshot - диагностика API скриншотов")
+    print("   /debug_api - диагностика API")
     print("   /get_title <url> - получить заголовок страницы")
-    print("   /screenshot <url> - сделать скриншот (автовыбор способа)")
+    print("   /screenshot <url> - сделать скриншот")
+    print("   /search <query> - поиск в Google")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
