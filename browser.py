@@ -8,6 +8,7 @@ import base64
 import shutil
 import os
 from typing import Optional, Dict, Any, List
+from datetime import datetime
 from mask import Mask
 from cookies import get_cookies_for_url
 
@@ -276,6 +277,21 @@ class ChromiumBrowser:
                 response = await self.websocket.recv()
                 data = json.loads(response)
                 if "id" in data:
+                    # ✅ ЛОГИРУЕМ ОТВЕТ CDP
+                    try:
+                        log_entry = {
+                            "timestamp": datetime.now().isoformat(),
+                            "method": method,
+                            "params": params,
+                            "response": data
+                        }
+                        with open("cdp_responses.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+                        print(f"📥 Ответ CDP записан в лог [{method}]")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка записи CDP лога: {e}")
+                    # ✅ КОНЕЦ ЛОГИРОВАНИЯ
+                    
                     if "error" in data:
                         raise Exception(f"CDP Error: {data['error']}")
                     return data
