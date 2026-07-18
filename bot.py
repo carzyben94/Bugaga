@@ -54,7 +54,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/ping - проверка\n"
         "/info - информация о странице\n"
-        "/screenshot - скриншот google.com"
+        "/screenshot - скриншот google.com\n"
+        "/reset - восстановить сессию"
     )
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -76,53 +77,66 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("📸 Делаю скриншот...")
     try:
-        # 1. Открываем вкладку
+        # 1. Открываем страницу
         new_tab("https://google.com")
-        
-        # 2. Ждём загрузку
         wait_for_load()
-        
-        # 3. Дополнительная задержка
         time.sleep(2)
         
-        # 4. Убеждаемся, что мы в правильной вкладке
-        ensure_real_tab()
+        # 2. Устанавливаем разрешение 1280x720 через CDP
+        cdp("Emulation.setDeviceMetricsOverride", {
+            "width": 1280,
+            "height": 720,
+            "deviceScaleFactor": 1,
+            "mobile": False
+        })
+        time.sleep(1)
         
-        # 5. Используем ВСТРОЕННЫЙ ХЕЛПЕР capture_screenshot()
-        #    вместо cdp("Page.captureScreenshot", ...)
-        img_b64 = capture_screenshot(max_dim=800)
+        # 3. Делаем скриншот (captureBeyondViewport: False)
+        result = cdp("Page.captureScreenshot", {
+            "format": "png",
+            "quality": 80,
+            "captureBeyondViewport": False
+        })
+        screenshot_b64 = result.get("data")
         
-        if not img_b64:
+        if not screenshot_b64:
             raise ValueError("Скриншот пустой")
         
-        # Очищаем base64-строку
-        if ',' in img_b64:
-            img_b64 = img_b64.split(',', 1)[1]
+        # Очищаем base64
+        if ',' in screenshot_b64:
+            screenshot_b64 = screenshot_b64.split(',', 1)[1]
+        screenshot_b64 = screenshot_b64.strip()
         
-        img_b64 = img_b64.strip()
-        missing_padding = len(img_b64) % 4
+        missing_padding = len(screenshot_b64) % 4
         if missing_padding:
-            img_b64 += '=' * (4 - missing_padding)
+            screenshot_b64 += '=' * (4 - missing_padding)
         
-        img_bytes = base64.b64decode(img_b64)
+        img_bytes = base64.b64decode(screenshot_b64)
         
         if len(img_bytes) < 1000:
             raise ValueError("Скриншот слишком маленький")
         
         await update.message.reply_photo(
             photo=img_bytes,
-            caption="📸 Скриншот google.com"
+            caption="📸 Скриншот google.com (1280x720)"
         )
         await status_msg.edit_text("✅ Скриншот отправлен!")
         
     except Exception as e:
         logger.error(f"Ошибка скриншота: {e}")
-        # Восстанавливаем сессию
         try:
             ensure_real_tab()
         except:
             pass
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сброс сессии браузера"""
+    try:
+        ensure_real_tab()
+        await update.message.reply_text("✅ Сессия восстановлена!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка сброса: {str(e)[:200]}")
 
 # ============================================================
 # 5. ЗАПУСК
@@ -143,6 +157,7 @@ def main():
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("screenshot", screenshot))
+    app.add_handler(CommandHandler("reset", reset))
     
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
