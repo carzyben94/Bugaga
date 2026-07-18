@@ -421,13 +421,16 @@ el.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter'}}))
   "edges": [{{"from": "step1", "to": "step2"}}, {{"from": "step2", "to": "step3"}}]
 }}
 
-ПРИМЕР 3: Извлечение твитов
+ПРИМЕР 3: Извлечение твитов (С ПРОВЕРКОЙ РЕЗУЛЬТАТА)
 {{
   "items": [
     {{"title": "Page.navigate", "params": {{"url": "https://x.com/elonmusk"}}}},
-    {{"title": "Runtime.evaluate", "params": {{"expression": "await new Promise(r => setTimeout(r, 3000)); Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).slice(0,5).map(t => ({{ text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '' }}))"}}}}
+    {{"title": "Runtime.evaluate", "params": {{"expression": "await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')); if (tweets.length === 0) return {{ error: 'Твиты не найдены' }}; return tweets.slice(0,5).map(t => ({{ text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0' }}))"}}}}
   ],
-  "edges": [{{"from": "step1", "to": "step2"}}]
+  "edges": [{{"from": "step1", "to": "step2"}}],
+  "narratives": {{
+    "Outcome": "Найдено твитов: {{count}}"
+  }}
 }}
 
 ПРИМЕР 4: Эмуляция iPhone
@@ -442,18 +445,19 @@ el.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter'}}))
 
 {harness_instruction}
 
-=== ПРАВИЛА ===
+=== ЖЁСТКИЕ ПРАВИЛА ===
 1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
 2. НИКОГДА не пиши пояснения, только JSON
 3. Убедись, что все скобки и кавычки закрыты
 4. Каждый шаг — это одна CDP-команда
 5. Используй edges для указания порядка шагов
-6. После выполнения плана заполни narratives.Outcome
+6. После выполнения плана заполни narratives.Outcome на основе РЕАЛЬНЫХ данных
 7. Для X.com используй document.querySelectorAll('[data-testid]') для поиска селекторов
 8. Для ожидания загрузки добавь: await new Promise(r => setTimeout(r, 3000))
-9. Если элементов нет → верни {{"error": "Не найдено"}}
-10. Не говори "успешно", если данных нет
-11. Всегда проверяй видимость элементов перед взаимодействием
+9. ✅ ОБЯЗАТЕЛЬНО проверяй результат! Если элементов нет → верни {"error": "Не найдено"}
+10. ✅ НЕ говори "успешно", если данных нет
+11. ✅ Всегда проверяй видимость элементов перед взаимодействием
+12. ✅ В narratives.Outcome пиши ТОЛЬКО реальный результат (количество найденных элементов)
 """
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
