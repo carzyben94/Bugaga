@@ -228,7 +228,7 @@ async def ask_agnes(messages: list[dict]) -> str:
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# 7. ИСПОЛНИТЕЛЬ КОДА
+# 7. ИСПОЛНИТЕЛЬ КОДА С ИСПРАВЛЕНИЕМ BASE64
 # ============================================================
 
 async def execute_agent_code(code: str, update: Update = None) -> tuple[str, bool]:
@@ -254,16 +254,35 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                         screenshot_b64 = data.get('screenshot')
                         if screenshot_b64:
                             try:
+                                # Если это bytes, конвертируем в str
+                                if isinstance(screenshot_b64, bytes):
+                                    screenshot_b64 = screenshot_b64.decode('utf-8')
+                                
+                                # Удаляем префикс если есть
                                 if ',' in screenshot_b64:
                                     screenshot_b64 = screenshot_b64.split(',', 1)[1]
+                                
+                                # Очищаем от пробелов и переносов строк
+                                screenshot_b64 = screenshot_b64.strip()
+                                
+                                # Добавляем паддинг если нужно
+                                missing_padding = len(screenshot_b64) % 4
+                                if missing_padding:
+                                    screenshot_b64 += '=' * (4 - missing_padding)
+                                
+                                # Декодируем base64 в байты
                                 img_bytes = base64.b64decode(screenshot_b64)
+                                
+                                # Проверяем размер
                                 if len(img_bytes) > 10 * 1024 * 1024:
                                     return "Скриншот слишком большой (>10MB)", False
                                 if len(img_bytes) < 100:
                                     return "Скриншот повреждён или пустой", False
+                                
                                 caption = f"📸 {data.get('source', 'Скриншот')}"
                                 if data.get('note'):
                                     caption += f"\n\n{data.get('note')}"
+                                
                                 await update.message.reply_photo(
                                     photo=img_bytes,
                                     caption=caption[:1024]
