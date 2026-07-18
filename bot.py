@@ -4,6 +4,7 @@ import json
 import base64
 import sys
 import re
+from typing import Dict
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from browser import ChromiumBrowser
@@ -50,7 +51,8 @@ async def start(update: Update, context):
         "/close — закрыть браузер\n"
         "/status — статус\n"
         "/debug_x — диагностика X.com\n"
-        "/logs_cdp — показать CDP логи\n"
+        "/logs_cdp — показать CDP логи (200 записей)\n"
+        "/logs_cdp_full — скачать полный CDP лог файлом\n"
         "/logs_clear_cdp — очистить CDP логи"
     )
 
@@ -478,7 +480,7 @@ async def handle_message(update: Update, context):
 # ===== НОВЫЕ КОМАНДЫ ДЛЯ ЛОГОВ =====
 
 async def download_cdp_logs(update: Update, context):
-    """Скачать CDP логи"""
+    """Скачать CDP логи (последние 200 записей)"""
     try:
         if os.path.exists("cdp_responses.log"):
             with open("cdp_responses.log", "r", encoding="utf-8") as f:
@@ -488,21 +490,44 @@ async def download_cdp_logs(update: Update, context):
                 await update.message.reply_text("📭 CDP лог пуст")
                 return
             
-            if len(content) > 4000:
-                lines = content.split('\n')
-                # Показываем последние 50 записей
-                if len(lines) > 50:
-                    lines = lines[-50:]
+            lines = content.split('\n')
+            total_lines = len(lines)
+            
+            # ✅ ТЕПЕРЬ 200 ЗАПИСЕЙ
+            if total_lines > 200:
+                lines = lines[-200:]
                 content = '\n'.join(lines)
                 await update.message.reply_text(
-                    f"📡 **CDP логи (последние 50 записей):**\n\n```json\n{content[:4000]}\n```",
+                    f"📡 **CDP логи (последние 200 из {total_lines} записей):**\n\n```json\n{content[:4000]}\n```",
                     parse_mode="Markdown"
                 )
             else:
                 await update.message.reply_text(
-                    f"📡 **CDP логи:**\n\n```json\n{content[:4000]}\n```",
+                    f"📡 **CDP логи (все {total_lines} записей):**\n\n```json\n{content[:4000]}\n```",
                     parse_mode="Markdown"
                 )
+        else:
+            await update.message.reply_text("❌ Файл cdp_responses.log не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
+async def download_full_cdp_logs(update: Update, context):
+    """Скачать полный CDP лог файлом"""
+    try:
+        if os.path.exists("cdp_responses.log"):
+            with open("cdp_responses.log", "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            if not content:
+                await update.message.reply_text("📭 CDP лог пуст")
+                return
+            
+            # Отправляем как файл
+            await update.message.reply_document(
+                document=open("cdp_responses.log", "rb"),
+                filename="cdp_responses.log",
+                caption=f"📡 CDP логи ({len(content.split(chr(10)))} записей)"
+            )
         else:
             await update.message.reply_text("❌ Файл cdp_responses.log не найден")
     except Exception as e:
@@ -532,8 +557,9 @@ def main():
     app.add_handler(CommandHandler("close", close_browser_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("debug_x", debug_x))
-    # НОВЫЕ КОМАНДЫ
+    # НОВЫЕ КОМАНДЫ ДЛЯ ЛОГОВ
     app.add_handler(CommandHandler("logs_cdp", download_cdp_logs))
+    app.add_handler(CommandHandler("logs_cdp_full", download_full_cdp_logs))
     app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
     # ОБЫЧНЫЕ КОМАНДЫ
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
