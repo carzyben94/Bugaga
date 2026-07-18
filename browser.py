@@ -214,6 +214,53 @@ class ChromiumBrowser:
         await self.send_command("Page.addScriptToEvaluateOnNewDocument", {"source": js_mask})
         print("✅ JS-маскировка применена")
         
+    async def release_object(self, object_id: str):
+        """Освобождает удалённый объект в браузере"""
+        try:
+            await self.send_command("Runtime.releaseObject", {"objectId": object_id})
+        except:
+            pass
+    
+    async def evaluate(self, expression: str, release: bool = True) -> Any:
+        """
+        Выполняет JavaScript на странице через CDP Runtime.evaluate.
+        Настройки по документации CDP:
+        - returnByValue: True — возвращает результат как JSON
+        - awaitPromise: True — ждёт Promise
+        - allowUnsafeEvalBlockedByCSP: True — обходит CSP блокировки
+        - userGesture: True — имитирует действие пользователя
+        - includeCommandLineAPI: False — не подключает API консоли
+        """
+        params = {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+            "allowUnsafeEvalBlockedByCSP": True,
+            "userGesture": True,
+            "includeCommandLineAPI": False,
+        }
+        result = await self.send_command("Runtime.evaluate", params)
+        
+        if "exceptionDetails" in result:
+            raise Exception(f"JS Error: {result['exceptionDetails']}")
+        
+        value = result.get("result", {}).get("result", {}).get("value")
+        
+        if release and "result" in result and "objectId" in result["result"]:
+            object_id = result["result"]["objectId"]
+            await self.release_object(object_id)
+        
+        return value
+    
+    async def evaluate_fast(self, expression: str) -> None:
+        """Быстрое выполнение JS без возврата результата"""
+        await self.send_command("Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": False,
+            "awaitPromise": True,
+            "userGesture": True,
+        })
+    
     async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
         try:
             if not self.websocket:
@@ -250,21 +297,40 @@ class ChromiumBrowser:
         await self.send_command("Emulation.setDeviceMetricsOverride", params)
         print(f"📐 Установлен размер окна: {width}x{height}")
     
-    async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.5):
+    async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.3):
+        """Умное ожидание с проверкой через JS"""
         print(f"⏳ Ожидание элемента: {selector}")
-        for attempt in range(int(timeout / interval)):
-            try:
-                exists = await self.evaluate(f"!!document.querySelector('{selector}')")
-                if exists:
-                    print(f"✅ Элемент найден: {selector} (попытка {attempt+1})")
-                    return True
-            except:
-                pass
-            if attempt % 4 == 0:
-                print(f"⏳ Ожидание... ({attempt+1}/{int(timeout/interval)})")
-            await asyncio.sleep(interval)
-        print(f"⚠️ Элемент не найден: {selector}")
-        return False
+        
+        js_wait = f"""
+        (function() {{
+            return new Promise((resolve, reject) => {{
+                const start = Date.now();
+                const check = () => {{
+                    const el = document.querySelector('{selector}');
+                    if (el && el.offsetParent !== null) {{
+                        resolve(true);
+                    }} else if (Date.now() - start > {timeout * 1000}) {{
+                        resolve(false);
+                    }} else {{
+                        setTimeout(check, {int(interval * 1000)});
+                    }};
+                }};
+                check();
+            }});
+        }})()
+        """
+        
+        try:
+            result = await self.evaluate(js_wait, release=True)
+            if result:
+                print(f"✅ Элемент найден: {selector}")
+                return True
+            else:
+                print(f"⚠️ Таймаут: {selector} не найден за {timeout} сек")
+                return False
+        except Exception as e:
+            print(f"⚠️ Ошибка ожидания {selector}: {e}")
+            return False
     
     async def navigate(self, url: str) -> Dict:
         print(f"🌐 Переход на {url}")
@@ -292,31 +358,6 @@ class ChromiumBrowser:
         
         await asyncio.sleep(1)
         return result
-    
-    async def evaluate(self, expression: str) -> Any:
-        """
-        Выполняет JavaScript на странице через CDP Runtime.evaluate.
-        Настройки по документации CDP:
-        - returnByValue: True — возвращает результат как JSON
-        - awaitPromise: True — ждёт Promise
-        - allowUnsafeEvalBlockedByCSP: True — обходит CSP блокировки
-        - userGesture: True — имитирует действие пользователя
-        - includeCommandLineAPI: False — не подключает API консоли
-        """
-        params = {
-            "expression": expression,
-            "returnByValue": True,
-            "awaitPromise": True,
-            "allowUnsafeEvalBlockedByCSP": True,
-            "userGesture": True,
-            "includeCommandLineAPI": False,
-        }
-        result = await self.send_command("Runtime.evaluate", params)
-        
-        if "exceptionDetails" in result:
-            raise Exception(f"JS Error: {result['exceptionDetails']}")
-        
-        return result.get("result", {}).get("result", {}).get("value")
     
     async def extract(self, model_name: str, timeout: int = 10) -> Dict:
         from agent import X_EXTRACTION
@@ -353,7 +394,7 @@ class ChromiumBrowser:
             """
             
             try:
-                value = await self.evaluate(js)
+                value = await self.evaluate(js, release=True)
                 if transform == "int":
                     if isinstance(value, str):
                         value = value.replace(',', '').replace('.', '').strip()
@@ -413,7 +454,7 @@ class ChromiumBrowser:
                 """
                 
                 try:
-                    value = await self.evaluate(js)
+                    value = await self.evaluate(js, release=True)
                     if transform == "int":
                         if isinstance(value, str):
                             value = value.replace(',', '').strip()
@@ -451,7 +492,7 @@ class ChromiumBrowser:
     async def click_human(self, selector: str):
         print(f"🖱️ Человеческий клик по {selector}")
         js_code = Mask.get_human_click_js(selector)
-        result = await self.evaluate(js_code)
+        result = await self.evaluate(js_code, release=True)
         if not result:
             raise Exception(f"Не удалось кликнуть по {selector}")
         await asyncio.sleep(0.5)
@@ -459,7 +500,7 @@ class ChromiumBrowser:
     async def type_human(self, selector: str, text: str):
         print(f"⌨️ Человеческий ввод: {text}")
         js_code = Mask.get_human_type_js(selector, text)
-        result = await self.evaluate(js_code)
+        result = await self.evaluate(js_code, release=True)
         if not result:
             raise Exception(f"Не удалось ввести текст в {selector}")
         await asyncio.sleep(0.5)
@@ -467,7 +508,7 @@ class ChromiumBrowser:
     async def scroll_human(self, distance: int):
         print(f"📜 Человеческий скролл: {distance}px")
         js_code = Mask.get_human_scroll_js(distance)
-        result = await self.evaluate(js_code)
+        result = await self.evaluate(js_code, release=True)
         if not result:
             raise Exception("Не удалось выполнить скролл")
         await asyncio.sleep(0.3)
