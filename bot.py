@@ -55,7 +55,8 @@ async def start(update: Update, context):
         "/logs_cdp_full — скачать полный CDP лог файлом\n"
         "/logs_clear_cdp — очистить CDP логи\n"
         "/cdp_stats — статистика CDP команд\n"
-        "/logs_eval — показать последние eval логи"
+        "/logs_eval — показать последние eval логи\n"
+        "/last_plan — показать последний xBRIEF план"
     )
 
 async def status(update: Update, context):
@@ -96,7 +97,8 @@ async def status(update: Update, context):
         f"  • Размер: {cdp_size / 1024:.1f} КБ\n"
         f"  • Команды: /logs_cdp — посмотреть\n"
         f"  • Скачать: /logs_cdp_full\n"
-        f"  • Eval: /logs_eval"
+        f"  • Eval: /logs_eval\n"
+        f"  • План: /last_plan"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -256,15 +258,12 @@ async def format_runtime_result(value) -> str:
     if isinstance(value, dict):
         text = "📊 **Результат:**\n\n"
         
-        # Если есть count — показываем его
         if "count" in value:
             text += f"📊 Количество: **{escape_markdown(str(value['count']))}**\n\n"
         
-        # Если есть error
         if "error" in value:
             text += f"❌ {escape_markdown(value['error'])}\n\n"
         
-        # Показываем остальные поля
         for key, val in value.items():
             if key in ["count", "error"]:
                 continue
@@ -371,12 +370,10 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
             
             item["status"] = "done"
             
-            # ===== СОХРАНЯЕМ РЕЗУЛЬТАТ =====
             if method == "Runtime.evaluate":
                 value = result.get("result", {}).get("result", {}).get("value")
                 results[item_id] = {"result": value}
                 
-                # Логируем в отдельный файл
                 try:
                     os.makedirs("logs", exist_ok=True)
                     with open("logs/evaluate_results.log", "a", encoding="utf-8") as f:
@@ -444,7 +441,6 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 return str(value)
         return match.group(0)
     
-    # Подставляем переменные вида {{step2.result.count}}
     outcome = re.sub(r'{{(.*?)}}', replace_vars, outcome)
     
     if outcome:
@@ -683,6 +679,38 @@ async def show_eval_logs(update: Update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
+# ===== НОВАЯ КОМАНДА ДЛЯ ПРОСМОТРА ПЛАНА =====
+
+async def show_last_plan(update: Update, context):
+    """Показать последний xBRIEF план"""
+    try:
+        if os.path.exists("logs/last_plan.json"):
+            with open("logs/last_plan.json", "r", encoding="utf-8") as f:
+                plan = json.load(f)
+                
+                plan_text = json.dumps(plan, indent=2, ensure_ascii=False)
+                
+                if len(plan_text) > 4000:
+                    plan_text = plan_text[:4000] + "\n... (обрезано)"
+                
+                await update.message.reply_text(
+                    f"📋 **Последний xBRIEF план:**\n\n```json\n{plan_text}\n```",
+                    parse_mode="Markdown"
+                )
+        else:
+            # Проверяем сырой ответ
+            if os.path.exists("logs/last_plan_raw.json"):
+                with open("logs/last_plan_raw.json", "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                    await update.message.reply_text(
+                        f"📋 **Сырой ответ агента (не распарсился):**\n\n```\n{raw.get('raw', '')[:2000]}\n```",
+                        parse_mode="Markdown"
+                    )
+            else:
+                await update.message.reply_text("❌ Нет сохранённого плана. Сначала дай команду боту.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
 # ===== КОНЕЦ КОМАНД =====
 
 def main():
@@ -703,6 +731,7 @@ def main():
     app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
     app.add_handler(CommandHandler("cdp_stats", cdp_stats))
     app.add_handler(CommandHandler("logs_eval", show_eval_logs))
+    app.add_handler(CommandHandler("last_plan", show_last_plan))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
@@ -713,6 +742,7 @@ def main():
     print("  /logs_clear_cdp — очистить CDP логи")
     print("  /cdp_stats — статистика CDP команд")
     print("  /logs_eval — показать eval логи")
+    print("  /last_plan — показать последний xBRIEF план")
     app.run_polling()
 
 if __name__ == "__main__":
