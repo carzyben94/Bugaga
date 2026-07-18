@@ -1,9 +1,10 @@
 FROM python:3.12-slim
 
-# Установка Chromium
+# Установка Chromium и git
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
