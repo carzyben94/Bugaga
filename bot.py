@@ -100,12 +100,10 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 4. Устанавливаем разрешение через CDP с sessionId
         cdp(
             "Emulation.setDeviceMetricsOverride",
-            {
-                "width": 1280,
-                "height": 720,
-                "deviceScaleFactor": 1,
-                "mobile": False
-            },
+            width=1280,
+            height=720,
+            deviceScaleFactor=1,
+            mobile=False,
             session_id=session_id
         )
         time.sleep(1)
@@ -113,11 +111,9 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 5. Делаем скриншот через CDP с sessionId
         result = cdp(
             "Page.captureScreenshot",
-            {
-                "format": "png",
-                "quality": 80,
-                "captureBeyondViewport": False
-            },
+            format="png",
+            quality=80,
+            captureBeyondViewport=False,
             session_id=session_id
         )
         screenshot_b64 = result.get("data")
