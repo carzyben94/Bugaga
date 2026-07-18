@@ -111,7 +111,7 @@ def list_skills() -> list[str]:
     return skills
 
 # ============================================================
-# 4. СИСТЕМНЫЙ ПРОМПТ
+# 4. СИСТЕМНЫЙ ПРОМПТ (ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 SYSTEM_PROMPT = """
@@ -137,6 +137,16 @@ SYSTEM_PROMPT = """
 4. Успешные решения сохраняй как навыки для повторного использования.
 5. Для кликов используй координаты (клик по картинке), а не селекторы.
 6. ВСЕГДА возвращай результат через print().
+
+**🔴 КРИТИЧЕСКИ ВАЖНО для поиска цен и данных:**
+- НЕ возвращай сырой HTML целиком — это бесполезно.
+- ОБЯЗАТЕЛЬНО используй js() для извлечения конкретных данных.
+- После загрузки страницы выполни JavaScript, который парсит цену/текст.
+- Возвращай только ЧИСТЫЙ РЕЗУЛЬТАТ: число, строку или короткий JSON.
+- Пример для цены: js('document.querySelector("[data-price]")?.innerText || document.querySelector(".price")?.innerText || "не найдено"')
+- Всегда проверяй, что данные действительно извлечены, а не весь DOM.
+- Для поиска информации на сайте используй несколько селекторов.
+- Если цена не найдена — попробуй найти другой элемент или обнови страницу.
 
 **ВАЖНО:** Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
 """
@@ -224,7 +234,8 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 'Покажи заголовок example.com'\n"
             "• 'Сделай скриншот github.com'\n"
             "• 'Найди контакты на сайте'\n"
-            "• 'Кликни на кнопку входа'"
+            "• 'Кликни на кнопку входа'\n"
+            "• 'Найди цену iPhone 15 в Германии'"
         )
         return
 
@@ -254,17 +265,25 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if code_match and len(code_match.group(1)) > 50:
                     skill_code = code_match.group(1)
                     domain = "custom"
-                    if "github" in user_query.lower():
+                    if "iphone" in user_query.lower() or "apple" in user_query.lower():
+                        domain = "apple"
+                    elif "github" in user_query.lower():
                         domain = "github"
                     elif "google" in user_query.lower():
                         domain = "google"
                     elif "linkedin" in user_query.lower():
                         domain = "linkedin"
+                    elif "amazon" in user_query.lower():
+                        domain = "amazon"
                     
                     save_skill(domain, skill_code, user_query)
                     await update.message.reply_text(f"💾 Навык сохранён для домена '{domain}'")
                 
-                await update.message.reply_text(f"**Результат:**\n{result[:4000]}")
+                # Если результат слишком длинный или это HTML — обрезаем
+                if len(result) > 4000 or result.strip().startswith('<html'):
+                    await update.message.reply_text(f"**Результат:**\n{result[:3000]}...")
+                else:
+                    await update.message.reply_text(f"**Результат:**\n{result[:4000]}")
             else:
                 await status_msg.edit_text("🔄 Исправляю ошибку...")
                 
@@ -278,7 +297,10 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     result2, success2 = await execute_agent_code(fixed_response)
                     if success2:
                         await status_msg.edit_text("✅ Исправлено!")
-                        await update.message.reply_text(f"**Результат:**\n{result2[:4000]}")
+                        if len(result2) > 4000 or result2.strip().startswith('<html'):
+                            await update.message.reply_text(f"**Результат:**\n{result2[:3000]}...")
+                        else:
+                            await update.message.reply_text(f"**Результат:**\n{result2[:4000]}")
                     else:
                         await update.message.reply_text(f"❌ Не удалось исправить:\n{result2}")
                 else:
