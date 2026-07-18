@@ -97,7 +97,7 @@ def save_skill(domain: str, code: str, description: str = ""):
     os.makedirs(domain_dir, exist_ok=True)
     skill_file = os.path.join(domain_dir, f"{domain}_skill.py")
     with open(skill_file, "w") as f:
-        f.write(f\'"""\\n{description}\\n"""\\n\\n{code}\')
+        f.write(f'"""\n{description}\n"""\n\n{code}')
     return skill_file
 
 def list_skills() -> list[str]:
