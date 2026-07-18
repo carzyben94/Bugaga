@@ -11,8 +11,10 @@ RUN apt-get update && apt-get install -y \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Установка browser-harness через uv
-RUN uv tool install --python 3.12 --upgrade --force browser-harness
+# Установка browser-harness для ВСЕХ пользователей
+RUN uv tool install --python 3.12 --upgrade --force browser-harness && \
+    cp /root/.local/bin/browser-harness /usr/local/bin/ && \
+    chmod +x /usr/local/bin/browser-harness
 
 ENV PYTHONUNBUFFERED=1 \
     DISPLAY=:99 \
@@ -50,4 +52,4 @@ USER appuser
 EXPOSE 9222 9223 8080
 
 # Запуск демона browser-harness и бота
-CMD ["sh", "-c", "browser-harness --daemon & python -u bot.py"]
+CMD ["sh", "-c", "/usr/local/bin/browser-harness --daemon & python -u bot.py"]
