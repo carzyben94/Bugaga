@@ -21,7 +21,7 @@ RUN uv tool install --python 3.12 --upgrade --force browser-harness
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py .
+COPY . .
 
 # Правильный синтаксис CMD
 CMD sh -c "echo '🚀 Запуск Chromium...' && \
