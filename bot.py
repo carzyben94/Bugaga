@@ -24,9 +24,6 @@ logger.info("✅ Браузер готов")
 
 async def start(update, context):
     await update.message.reply_text(
-        "🤖 **Browser Harness Bot**\n\n"
-        "Бот работает!\n"
-        "Используй команды:\n"
         "/ping — проверка\n"
         "/screenshot — скриншот google.com"
     )
