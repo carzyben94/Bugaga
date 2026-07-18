@@ -32,7 +32,6 @@ keep_browser = False
 browser_instance = None
 
 def escape_markdown(text: str) -> str:
-    """Экранирует специальные символы для Telegram Markdown"""
     if not text:
         return text
     if not isinstance(text, str):
@@ -54,7 +53,8 @@ async def start(update: Update, context):
         "/logs_cdp — показать CDP логи (200 записей)\n"
         "/logs_cdp_full — скачать полный CDP лог файлом\n"
         "/logs_clear_cdp — очистить CDP логи\n"
-        "/cdp_stats — статистика CDP команд"
+        "/cdp_stats — статистика CDP команд\n"
+        "/logs_eval — показать последние eval логи"
     )
 
 async def status(update: Update, context):
@@ -63,7 +63,6 @@ async def status(update: Update, context):
     logs = get_logs()
     proto_stats = get_protocols_stats()
     
-    # Проверяем размер CDP лога
     cdp_size = 0
     if os.path.exists("cdp_responses.log"):
         cdp_size = os.path.getsize("cdp_responses.log")
@@ -95,12 +94,12 @@ async def status(update: Update, context):
         f"📝 **CDP лог:**\n"
         f"  • Размер: {cdp_size / 1024:.1f} КБ\n"
         f"  • Команды: /logs_cdp — посмотреть\n"
-        f"  • Скачать: /logs_cdp_full"
+        f"  • Скачать: /logs_cdp_full\n"
+        f"  • Eval: /logs_eval"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def debug_x(update: Update, context):
-    """Диагностика X.com — проверяет куки, селекторы и состояние страницы"""
     global keep_browser, browser_instance
     
     await update.message.reply_text("🔍 Проверяю состояние X.com...")
@@ -113,7 +112,6 @@ async def debug_x(update: Update, context):
     text += "========================\n\n"
     
     try:
-        # ===== 1. КУКИ =====
         cookies_result = await browser_instance.send_command("Network.getCookies")
         all_cookies = cookies_result.get("cookies", [])
         x_cookies = [c for c in all_cookies if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")]
@@ -142,7 +140,6 @@ async def debug_x(update: Update, context):
         
         text += "\n"
         
-        # ===== 2. ТЕКУЩАЯ СТРАНИЦА =====
         url = await browser_instance.evaluate("window.location.href")
         title = await browser_instance.evaluate("document.title")
         body_len = await browser_instance.evaluate("document.body?.innerText?.length || 0")
@@ -159,7 +156,6 @@ async def debug_x(update: Update, context):
             text += "  • ✅ Страница загружена\n"
         text += "\n"
         
-        # ===== 3. ЭЛЕМЕНТЫ X.COM =====
         js = """
         (function() {
             return {
@@ -350,7 +346,6 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
             if not browser:
                 browser = await get_browser()
             
-            # ===== ОБРАБОТКА СПЕЦИАЛЬНЫХ МЕТОДОВ =====
             if method == "extract":
                 model_name = params.get("model")
                 timeout = params.get("timeout", 10)
@@ -381,7 +376,6 @@ async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
                 results.append({"id": item_id, "status": "done"})
                 continue
             
-            # ===== ОБЫЧНЫЕ CDP-КОМАНДЫ =====
             result = await browser.send_command(method, params)
             
             item["status"] = "done"
@@ -487,10 +481,9 @@ async def handle_message(update: Update, context):
     await update.message.reply_text("🤔 Думаю...")
     await execute_with_retry(update, user_text)
 
-# ===== КОМАНДЫ ДЛЯ РАБОТЫ С CDP ЛОГАМИ =====
+# ===== КОМАНДЫ ДЛЯ ЛОГОВ =====
 
 async def download_cdp_logs(update: Update, context):
-    """Показать CDP логи (последние 200 записей)"""
     try:
         if os.path.exists("cdp_responses.log"):
             with open("cdp_responses.log", "r", encoding="utf-8") as f:
@@ -503,7 +496,6 @@ async def download_cdp_logs(update: Update, context):
             lines = content.strip().split('\n')
             total_lines = len(lines)
             
-            # Показываем последние 200 записей (или все, если меньше)
             if total_lines > 200:
                 lines = lines[-200:]
                 content = '\n'.join(lines)
@@ -522,7 +514,6 @@ async def download_cdp_logs(update: Update, context):
         await update.message.reply_text(f"❌ {str(e)}")
 
 async def download_full_cdp_logs(update: Update, context):
-    """Скачать полный CDP лог файлом"""
     try:
         if os.path.exists("cdp_responses.log"):
             with open("cdp_responses.log", "r", encoding="utf-8") as f:
@@ -532,7 +523,6 @@ async def download_full_cdp_logs(update: Update, context):
                 await update.message.reply_text("📭 CDP лог пуст")
                 return
             
-            # Отправляем как файл
             await update.message.reply_document(
                 document=open("cdp_responses.log", "rb"),
                 filename="cdp_responses.log",
@@ -544,7 +534,6 @@ async def download_full_cdp_logs(update: Update, context):
         await update.message.reply_text(f"❌ {str(e)}")
 
 async def clear_cdp_logs(update: Update, context):
-    """Очистить CDP логи"""
     try:
         files_deleted = []
         if os.path.exists("cdp_responses.log"):
@@ -557,7 +546,6 @@ async def clear_cdp_logs(update: Update, context):
             os.remove("cdp_errors.log")
             files_deleted.append("cdp_errors.log")
         
-        # Очищаем папку logs
         if os.path.exists("logs"):
             for f in os.listdir("logs"):
                 os.remove(os.path.join("logs", f))
@@ -571,7 +559,6 @@ async def clear_cdp_logs(update: Update, context):
         await update.message.reply_text(f"❌ {str(e)}")
 
 async def cdp_stats(update: Update, context):
-    """Показать статистику CDP команд"""
     global browser_instance
     
     if not browser_instance:
@@ -579,14 +566,12 @@ async def cdp_stats(update: Update, context):
         return
     
     try:
-        # Получаем логи из браузера
         logs = browser_instance.get_logs(50) if hasattr(browser_instance, 'get_logs') else []
         
         if not logs:
             await update.message.reply_text("📭 Нет CDP логов")
             return
         
-        # Считаем статистику
         methods = {}
         total_duration = 0
         errors = 0
@@ -606,7 +591,6 @@ async def cdp_stats(update: Update, context):
                 methods[method]["errors"] += 1
                 errors += 1
         
-        # Формируем ответ
         text = "📊 **CDP Статистика:**\n"
         text += "========================\n\n"
         text += f"📝 Всего команд: {len(logs)}\n"
@@ -625,13 +609,52 @@ async def cdp_stats(update: Update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
-# ===== КОНЕЦ КОМАНД ДЛЯ ЛОГОВ =====
+# ===== НОВАЯ КОМАНДА ДЛЯ EVAL ЛОГОВ =====
+
+async def show_eval_logs(update: Update, context):
+    """Показать последние eval логи"""
+    try:
+        if os.path.exists("logs/evaluate.log"):
+            with open("logs/evaluate.log", "r", encoding="utf-8") as f:
+                lines = f.readlines()[-20:]
+            
+            if not lines:
+                await update.message.reply_text("📭 Нет eval логов")
+                return
+            
+            text = "🧠 **Последние eval логи:**\n\n"
+            count = 0
+            for line in lines[-10:]:
+                try:
+                    entry = json.loads(line.strip())
+                    expr = entry.get("expression", "")[:100]
+                    value = str(entry.get("value", ""))[:100]
+                    duration = entry.get("duration", 0)
+                    timestamp = entry.get("timestamp", "")[11:19]
+                    text += f"• `{timestamp}` `{duration:.2f}s`\n"
+                    text += f"  📋 {expr}\n"
+                    if value and value != "None":
+                        text += f"  📊 {value}\n"
+                    text += "\n"
+                    count += 1
+                except:
+                    pass
+            
+            if count == 0:
+                await update.message.reply_text("📭 Нет eval логов")
+            else:
+                await update.message.reply_text(text[:4000], parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ Файл logs/evaluate.log не найден")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
+# ===== КОНЕЦ КОМАНД =====
 
 def main():
     add_log("bot_started", "Бот запущен", "success")
     app = Application.builder().token(TOKEN).build()
     
-    # ОСНОВНЫЕ КОМАНДЫ
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("logai", show_logs))
@@ -647,7 +670,9 @@ def main():
     app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
     app.add_handler(CommandHandler("cdp_stats", cdp_stats))
     
-    # ОБЫЧНЫЕ СООБЩЕНИЯ
+    # КОМАНДА ДЛЯ EVAL ЛОГОВ
+    app.add_handler(CommandHandler("logs_eval", show_eval_logs))
+    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот запущен с xBRIEF")
@@ -656,6 +681,7 @@ def main():
     print("  /logs_cdp_full — скачать полный CDP лог")
     print("  /logs_clear_cdp — очистить CDP логи")
     print("  /cdp_stats — статистика CDP команд")
+    print("  /logs_eval — показать eval логи")
     app.run_polling()
 
 if __name__ == "__main__":
