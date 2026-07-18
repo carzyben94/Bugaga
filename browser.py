@@ -107,12 +107,12 @@ class ChromiumBrowser:
         """Отправляет пинг каждые 15 секунд с переподключением"""
         while True:
             try:
-                if self.websocket and not self.websocket.closed:
+                if self.websocket is not None:
                     await asyncio.sleep(15)
                     await self.websocket.ping()
                     print("💓 WebSocket ping отправлен")
                 else:
-                    print("⏳ WebSocket закрыт, keep-alive ждёт...")
+                    print("⏳ WebSocket не инициализирован, keep-alive ждёт...")
                     await asyncio.sleep(2)
             except websockets.exceptions.ConnectionClosed:
                 print("⚠️ WebSocket закрыт, переподключаюсь...")
