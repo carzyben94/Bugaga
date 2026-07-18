@@ -88,13 +88,11 @@ async def ask_agnes(messages):
 def execute_code(code):
     """Выполняет код и перехватывает всё, что выводится через print()"""
     try:
-        # Перехватываем stdout
         stdout_buffer = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
         
         globals_dict = {
-            # helpers.py
             'new_tab': new_tab,
             'goto_url': goto_url,
             'wait_for_load': wait_for_load,
@@ -107,8 +105,6 @@ def execute_code(code):
             'js': js,
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
-            
-            # admin.py
             'ensure_daemon': ensure_daemon,
             'daemon_alive': daemon_alive,
             'restart_daemon': restart_daemon,
@@ -116,18 +112,13 @@ def execute_code(code):
             'stop_remote_daemon': stop_remote_daemon,
             'run_doctor': run_doctor,
             'run_update': run_update,
-            
-            # Встроенные функции
             'print': print,
             '__builtins__': __builtins__,
         }
         
         exec(code, globals_dict)
         
-        # Восстанавливаем stdout
         sys.stdout = old_stdout
-        
-        # Получаем всё, что было напечатано
         output = stdout_buffer.getvalue()
         
         if output:
@@ -135,7 +126,7 @@ def execute_code(code):
         elif 'result' in globals_dict:
             return str(globals_dict['result']), None
         
-        return "✅ Выполнено успешно (без вывода)", None
+        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", None
     except Exception as e:
         return None, str(e)
 
@@ -145,42 +136,8 @@ def execute_code(code):
 
 async def start(update, context):
     await update.message.reply_text(
-        "/ask <запрос> — задать задачу агенту\n"
-        "/screenshot — скриншот google.com"
+        "/ask <запрос> — задать задачу агенту"
     )
-
-async def screenshot(update, context):
-    msg = await update.message.reply_text("📸 Делаю скриншот...")
-    try:
-        new_tab("https://google.com")
-        wait_for_load()
-        time.sleep(2)
-        ensure_real_tab()
-
-        result = cdp("Page.captureScreenshot", format="jpeg", quality=85, captureBeyondViewport=False)
-        screenshot_b64 = result.get("data")
-
-        if not screenshot_b64:
-            raise ValueError("Скриншот пустой")
-
-        if ',' in screenshot_b64:
-            screenshot_b64 = screenshot_b64.split(',', 1)[1]
-        screenshot_b64 = screenshot_b64.strip()
-
-        missing_padding = len(screenshot_b64) % 4
-        if missing_padding:
-            screenshot_b64 += '=' * (4 - missing_padding)
-
-        img_bytes = base64.b64decode(screenshot_b64)
-
-        if len(img_bytes) < 1000:
-            raise ValueError("Скриншот слишком маленький")
-
-        await update.message.reply_photo(photo=img_bytes, caption="📸 Скриншот")
-        await msg.edit_text("✅ Скриншот отправлен!")
-
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def ask(update, context):
     if not context.args:
@@ -193,6 +150,8 @@ async def ask(update, context):
     try:
         system_prompt = """
 You are a browser agent that controls a real browser via browser-harness.
+
+CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
@@ -217,6 +176,7 @@ Rules:
 - Screenshots are your primary way to understand the page
 - For screenshots use cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 - Use js() only for reading DOM data, never for clicks
+- ALWAYS use print() to output the result
 - Wrap code in ```python ... ```
 """
 
@@ -253,7 +213,6 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
-    app.add_handler(CommandHandler("screenshot", screenshot))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
