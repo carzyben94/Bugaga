@@ -192,12 +192,11 @@ class ChromiumBrowser:
         if not self.ws_url:
             self.ws_url = await self.get_ws_url()
         
-        # ✅ Увеличенные таймауты keepalive
         self.websocket = await websockets.connect(
             self.ws_url,
             max_size=10 * 1024 * 1024,
-            ping_interval=20,   # Отправлять Ping каждые 20 секунд
-            ping_timeout=60     # Ждать ответ на Pong до 60 секунд
+            ping_interval=20,
+            ping_timeout=60
         )
         print("🔗 WebSocket подключен (макс. размер: 10 МБ, ping_timeout: 60 сек)")
         
@@ -295,12 +294,28 @@ class ChromiumBrowser:
         return result
     
     async def evaluate(self, expression: str) -> Any:
-        result = await self.send_command(
-            "Runtime.evaluate",
-            {"expression": expression, "returnByValue": True}
-        )
+        """
+        Выполняет JavaScript на странице через CDP Runtime.evaluate.
+        Настройки по документации CDP:
+        - returnByValue: True — возвращает результат как JSON
+        - awaitPromise: True — ждёт Promise
+        - allowUnsafeEvalBlockedByCSP: True — обходит CSP блокировки
+        - userGesture: True — имитирует действие пользователя
+        - includeCommandLineAPI: False — не подключает API консоли
+        """
+        params = {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+            "allowUnsafeEvalBlockedByCSP": True,
+            "userGesture": True,
+            "includeCommandLineAPI": False,
+        }
+        result = await self.send_command("Runtime.evaluate", params)
+        
         if "exceptionDetails" in result:
             raise Exception(f"JS Error: {result['exceptionDetails']}")
+        
         return result.get("result", {}).get("result", {}).get("value")
     
     async def extract(self, model_name: str, timeout: int = 10) -> Dict:
