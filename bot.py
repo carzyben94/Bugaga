@@ -5,6 +5,7 @@ import logging
 import base64
 import re
 import asyncio
+import io
 import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -15,7 +16,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 sys.path.insert(0, "browser-harness/src")
 
-# helpers.py - только то, что там есть!
 from browser_harness.helpers import (
     new_tab,
     goto_url,
@@ -31,7 +31,6 @@ from browser_harness.helpers import (
     ensure_real_tab,
 )
 
-# admin.py - управление daemon
 from browser_harness.admin import (
     ensure_daemon,
     daemon_alive,
@@ -83,12 +82,17 @@ async def ask_agnes(messages):
         return response.json()["choices"][0]["message"]["content"]
 
 # ============================================================
-# 4. ВЫПОЛНЕНИЕ КОДА
+# 4. ВЫПОЛНЕНИЕ КОДА С ПЕРЕХВАТОМ ВЫВОДА
 # ============================================================
 
 def execute_code(code):
-    """Выполняет код напрямую с доступом ко ВСЕМ хелперам"""
+    """Выполняет код и перехватывает всё, что выводится через print()"""
     try:
+        # Перехватываем stdout
+        stdout_buffer = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = stdout_buffer
+        
         globals_dict = {
             # helpers.py
             'new_tab': new_tab,
@@ -120,10 +124,18 @@ def execute_code(code):
         
         exec(code, globals_dict)
         
-        if 'result' in globals_dict:
+        # Восстанавливаем stdout
+        sys.stdout = old_stdout
+        
+        # Получаем всё, что было напечатано
+        output = stdout_buffer.getvalue()
+        
+        if output:
+            return output.strip(), None
+        elif 'result' in globals_dict:
             return str(globals_dict['result']), None
         
-        return "✅ Выполнено успешно", None
+        return "✅ Выполнено успешно (без вывода)", None
     except Exception as e:
         return None, str(e)
 
