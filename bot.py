@@ -10,19 +10,11 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ============================================================
-# 0. НАСТРОЙКА ЛОГИРОВАНИЯ
-# ============================================================
-
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# ============================================================
-# 1. КОНФИГУРАЦИЯ
-# ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
@@ -30,10 +22,6 @@ AGNES_API_URL = os.environ.get("AGNES_API_URL", "https://apihub.agnes-ai.com/v1/
 AI_MODEL = "agnes-2.0-flash"
 
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
-
-# ============================================================
-# 2. УПРАВЛЕНИЕ БРАУЗЕРОМ
-# ============================================================
 
 def check_browser():
     try:
@@ -75,10 +63,6 @@ def ensure_browser():
     logger.error("Не удалось запустить браузер")
     return False
 
-# ============================================================
-# 3. РАБОТА С CLI BROWSER-HARNESS С ТАЙМАУТОМ
-# ============================================================
-
 async def run_harness(code: str) -> tuple[str, str]:
     env = os.environ.copy()
     env["BU_CDP_URL"] = "http://localhost:9222"
@@ -104,10 +88,6 @@ async def run_harness(code: str) -> tuple[str, str]:
     except Exception as e:
         return "", f"Ошибка выполнения: {str(e)}"
 
-# ============================================================
-# 4. ХРАНИЛИЩЕ НАВЫКОВ
-# ============================================================
-
 SKILLS_DIR = "/app/agent-workspace/domain-skills"
 os.makedirs(SKILLS_DIR, exist_ok=True)
 
@@ -129,51 +109,70 @@ def list_skills() -> list[str]:
                     skills.append(f"{domain}/{f[:-3]}")
     return skills
 
-# ============================================================
-# 5. СИСТЕМНЫЙ ПРОМПТ
-# ============================================================
-
 SYSTEM_PROMPT = """
 Ты — ИИ-агент, который управляет браузером через browser-harness.
 
-Доступные хелперы (не требуют импорта):
-- new_tab(url) - открыть новую вкладку
-- wait_for_load() - дождаться загрузки
-- page_info() - получить информацию о странице
-- capture_screenshot(max_dim=800) - сделать скриншот (возвращает base64 строку)
-- click_at_xy(x, y) - кликнуть по координатам
-- type_text(text) - ввести текст
-- press_key(key) - нажать клавишу
-- scroll(x, y) - прокрутить страницу
-- js(script) - выполнить JavaScript
-- goto_url(url) - перейти по URL
-- cdp(method, params) - отправить CDP-команду
+ОСНОВНЫЕ ПРИНЦИПЫ (из документации):
 
-Правила работы:
-1. Если запрос простой — отвечай напрямую красивым текстом.
-2. Если нужен браузер — пиши Python-код с хелперами.
-3. Если функция не сработала — проанализируй ошибку и исправь код.
-4. Успешные решения сохраняй как навыки для повторного использования.
-5. ВСЕГДА возвращай результат через print(json.dumps(...)).
-6. Добавляй try/except с выводом ошибок.
-7. Используй time.sleep() для ожидания динамической загрузки.
+1. Скриншоты — первый шаг: Всегда используй capture_screenshot() чтобы понять текущую страницу. Это позволяет найти видимые цели и решить, нужен ли клик, координаты или дальнейшая навигация.
 
-ФОРМАТ ВЫВОДА (обязательно):
-Возвращай данные в виде понятной структуры JSON с понятными ключами.
-Используй понятные названия ключей на русском или английском.
-Добавляй эмодзи в source для красоты (например, "🍎 Apple", "📱 MediaMarkt").
-Всегда добавляй URL, если он есть.
-Для цен указывай валюту.
+2. Клики по координатам: Скриншот -> прочитай пиксели на изображении -> click_at_xy(x, y) -> сделай ещё один скриншот для проверки. НЕ используй селекторы для кликов. Координаты — это то, что видит пользователь.
+
+3. Скроллинг: Используй scroll(x, y) когда нужно увидеть контент вне области видимости. После скролла делай скриншот для подтверждения.
+
+4. Навигация: Первая навигация на сайт — ВСЕГДА new_tab(url). Переход внутри того же сайта — goto_url(url). После любой навигации всегда wait_for_load().
+
+5. Ввод текста: type_text(text) с последующим press_key("Enter") если нужно отправить форму.
+
+6. JavaScript: Используй js(script) только когда нужно прочитать данные из DOM и координаты не подходят. НЕ используй для кликов и навигации.
+
+7. Информация о странице: page_info() даёт текущий URL, заголовок и размеры.
+
+8. Проверка вкладки: Если сомневаешься, что работаешь в правильной вкладке — используй ensure_real_tab().
+
+9. CDP: Используй cdp(method, params) только если что-то не работает через стандартные хелперы.
+
+ХЕЛПЕРЫ (не требуют импорта):
+new_tab(url) - открыть новую вкладку (ПЕРВАЯ НАВИГАЦИЯ)
+goto_url(url) - перейти по URL в текущей вкладке
+wait_for_load() - дождаться загрузки
+page_info() - получить информацию о странице
+capture_screenshot(max_dim=800) - сделать скриншот (возвращает base64 строку)
+click_at_xy(x, y) - кликнуть по координатам
+type_text(text) - ввести текст
+press_key(key) - нажать клавишу (Enter, Escape, Tab...)
+scroll(x, y) - прокрутить страницу
+js(script) - выполнить JavaScript
+cdp(method, params) - отправить CDP-команду
+ensure_real_tab() - проверить, что мы в реальной вкладке
+
+ФОРМАТ ВЫВОДА:
+ВСЕГДА возвращай результат через print(json.dumps(...))
 
 Для скриншотов:
-1. Используй capture_screenshot(max_dim=800) - она возвращает base64 строку
-2. В JSON добавь поля:
-   - "action": "screenshot_taken"
-   - "screenshot": результат capture_screenshot() (уже base64)
-   - "note": "Описание"
-   - "source": "Название сайта с эмодзи"
+{
+  "action": "screenshot_taken",
+  "screenshot": результат capture_screenshot(),
+  "source": "Название с эмодзи",
+  "note": "Описание"
+}
 
-Пример кода для скриншота:
+Для данных со страницы:
+{
+  "source": "Название с эмодзи",
+  "data": {...},
+  "url": "https://...",
+  "note": "Доп. информация"
+}
+
+Для ошибок:
+{
+  "error": "Описание ошибки"
+}
+
+ПРИМЕРЫ ПРАВИЛЬНОГО КОДА:
+
+Пример 1: Скриншот
 import json
 try:
     new_tab("https://example.com")
@@ -188,16 +187,67 @@ try:
 except Exception as e:
     print(json.dumps({"error": str(e)}))
 
+Пример 2: Клик по координатам
+import json
+try:
+    new_tab("https://example.com")
+    wait_for_load()
+    capture_screenshot()
+    click_at_xy(100, 200)
+    wait_for_load()
+    img2 = capture_screenshot()
+    print(json.dumps({
+        "action": "screenshot_taken",
+        "source": "🌐 Example",
+        "screenshot": img2,
+        "note": "После клика"
+    }))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+
+Пример 3: Получение данных из DOM
+import json
+try:
+    new_tab("https://example.com")
+    wait_for_load()
+    title = js("return document.title")
+    print(json.dumps({
+        "source": "🌐 Example",
+        "data": {"title": title},
+        "url": page_info().get("url")
+    }))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+
+Пример 4: Поиск через координаты
+import json
+try:
+    new_tab("https://google.com")
+    wait_for_load()
+    capture_screenshot()
+    click_at_xy(300, 200)
+    type_text("iPhone 16")
+    press_key("Enter")
+    wait_for_load()
+    img = capture_screenshot()
+    print(json.dumps({
+        "action": "screenshot_taken",
+        "source": "🔍 Google",
+        "screenshot": img,
+        "note": "Результаты поиска"
+    }))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+
 ВАЖНО:
-- Не используй слова "пример", "ориентировочно", "около" без необходимости
-- Если точная цена неизвестна — напиши "цена не найдена"
+- НЕ используй селекторы для кликов — только координаты
+- НЕ используй слова "пример", "ориентировочно" без необходимости
+- ПЕРВАЯ навигация — ТОЛЬКО new_tab()
+- После навигации ВСЕГДА wait_for_load()
+- Скриншоты — основной способ понять страницу
 - Для скриншотов используй max_dim=800 чтобы уменьшить размер
 - Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
 """
-
-# ============================================================
-# 6. LLM-АГЕНТ С ТАЙМАУТОМ
-# ============================================================
 
 async def ask_agnes(messages: list[dict]) -> str:
     if not AGNES_API_KEY:
@@ -227,10 +277,6 @@ async def ask_agnes(messages: list[dict]) -> str:
         logger.error(f"LLM ошибка: {e}")
         return f"Ошибка LLM: {str(e)[:200]}"
 
-# ============================================================
-# 7. ИСПОЛНИТЕЛЬ КОДА С ИСПРАВЛЕНИЕМ BASE64
-# ============================================================
-
 async def execute_agent_code(code: str, update: Update = None) -> tuple[str, bool]:
     try:
         code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
@@ -254,35 +300,24 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                         screenshot_b64 = data.get('screenshot')
                         if screenshot_b64:
                             try:
-                                # Если это bytes, конвертируем в str
                                 if isinstance(screenshot_b64, bytes):
                                     screenshot_b64 = screenshot_b64.decode('utf-8')
-                                
-                                # Удаляем префикс если есть
+                                if len(screenshot_b64) < 1000:
+                                    return "Скриншот слишком маленький (менее 1KB). Возможно страница не загрузилась.", False
                                 if ',' in screenshot_b64:
                                     screenshot_b64 = screenshot_b64.split(',', 1)[1]
-                                
-                                # Очищаем от пробелов и переносов строк
                                 screenshot_b64 = screenshot_b64.strip()
-                                
-                                # Добавляем паддинг если нужно
                                 missing_padding = len(screenshot_b64) % 4
                                 if missing_padding:
                                     screenshot_b64 += '=' * (4 - missing_padding)
-                                
-                                # Декодируем base64 в байты
                                 img_bytes = base64.b64decode(screenshot_b64)
-                                
-                                # Проверяем размер
                                 if len(img_bytes) > 10 * 1024 * 1024:
                                     return "Скриншот слишком большой (>10MB)", False
-                                if len(img_bytes) < 100:
-                                    return "Скриншот повреждён или пустой", False
-                                
+                                if len(img_bytes) < 500:
+                                    return "Скриншот повреждён (менее 500 байт)", False
                                 caption = f"📸 {data.get('source', 'Скриншот')}"
                                 if data.get('note'):
                                     caption += f"\n\n{data.get('note')}"
-                                
                                 await update.message.reply_photo(
                                     photo=img_bytes,
                                     caption=caption[:1024]
@@ -299,10 +334,6 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
     except Exception as e:
         logger.error(f"Ошибка выполнения: {e}")
         return f"Ошибка выполнения: {str(e)[:500]}", False
-
-# ============================================================
-# 8. КОМАНДЫ БОТА
-# ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -338,29 +369,12 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         enhanced_query = f"""{user_query}
 
-ВАЖНЫЕ ТРЕБОВАНИЯ К ФОРМАТУ ВЫВОДА:
+ВАЖНЫЕ ТРЕБОВАНИЯ:
 1. ВСЕГДА выводи результат через print(json.dumps(...))
-2. Используй понятные названия ключей на русском или английском
-3. Добавляй эмодзи в поле source
-4. Всегда добавляй URL, если он есть
-5. Для скриншотов обязательно добавь поле "screenshot" с base64
-6. Для скриншотов добавь поле "action": "screenshot_taken"
-7. Используй capture_screenshot(max_dim=800) для уменьшения размера
-
-Пример правильного кода для скриншота:
-import json
-try:
-    new_tab("https://example.com")
-    wait_for_load()
-    img = capture_screenshot(max_dim=800)
-    print(json.dumps({{
-        "action": "screenshot_taken",
-        "source": "🌐 Example",
-        "screenshot": img,
-        "note": "Скриншот главной страницы"
-    }}))
-except Exception as e:
-    print(json.dumps({{"error": str(e)}}))
+2. Для скриншотов используй capture_screenshot(max_dim=800)
+3. Для кликов используй координаты, НЕ селекторы
+4. ПЕРВАЯ навигация — new_tab(), НЕ goto_url()
+5. После навигации ВСЕГДА wait_for_load()
 """
         
         messages = [
@@ -475,6 +489,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔍 Запускаю диагностику...")
+    
     code1 = '''
 import json
 try:
@@ -486,6 +501,7 @@ except Exception as e:
     print(json.dumps({"test": "navigation", "error": str(e)}))
 '''
     stdout1, stderr1 = await run_harness(code1)
+    
     code2 = '''
 import json
 try:
@@ -496,6 +512,7 @@ except Exception as e:
     print(json.dumps({"test": "javascript", "error": str(e)}))
 '''
     stdout2, stderr2 = await run_harness(code2)
+    
     code3 = '''
 import json
 try:
@@ -507,52 +524,9 @@ except Exception as e:
     print(json.dumps({"test": "screenshot", "error": str(e)}))
 '''
     stdout3, stderr3 = await run_harness(code3)
-    code4 = '''
-import json
-import time
-results = {}
-try:
-    new_tab("https://www.idealo.de/preisvergleich/")
-    wait_for_load()
-    time.sleep(2)
-    search_check = js("""
-        var input = document.querySelector('input[name="q"]');
-        return input ? 'found' : 'not found';
-    """)
-    results["search_input"] = search_check
-    if search_check == "found":
-        js("""
-            var input = document.querySelector('input[name="q"]');
-            if (input) {
-                input.value = 'iPhone 16';
-                input.closest('form').submit();
-            }
-        """)
-        time.sleep(3)
-        prices = js("""
-            var items = document.querySelectorAll('.product-price-value, .product-price, .price');
-            var result = [];
-            for (var i = 0; i < Math.min(items.length, 5); i++) {
-                result.push(items[i].textContent.trim());
-            }
-            return result;
-        """)
-        results["prices"] = prices
-        results["count"] = len(prices)
-    else:
-        results["error"] = "Поле поиска не найдено"
-    results["url"] = page_info().get("url")
-    if not results.get("prices") and not results.get("error"):
-        screenshot = capture_screenshot()
-        results["screenshot_size"] = len(screenshot)
-except Exception as e:
-    import traceback
-    results["error"] = str(e)
-    results["traceback"] = traceback.format_exc()[-200:]
-print(json.dumps(results))
-'''
-    stdout4, stderr4 = await run_harness(code4)
+    
     msg = "🔍 **Результаты диагностики:**\n\n"
+    
     try:
         data1 = json.loads(stdout1) if stdout1 else {'error': 'пустой ответ'}
         msg += f"1️⃣ **Навигация:** "
@@ -562,6 +536,7 @@ print(json.dumps(results))
             msg += f"✅ {data1.get('title', 'ok')}\n"
     except:
         msg += f"1️⃣ **Навигация:** ⚠️ {stdout1[:50]}\n"
+    
     try:
         data2 = json.loads(stdout2) if stdout2 else {'error': 'пустой ответ'}
         msg += f"2️⃣ **JavaScript:** "
@@ -571,6 +546,7 @@ print(json.dumps(results))
             msg += f"✅ {data2.get('result', 'ok')}\n"
     except:
         msg += f"2️⃣ **JavaScript:** ⚠️ {stdout2[:50]}\n"
+    
     try:
         data3 = json.loads(stdout3) if stdout3 else {'error': 'пустой ответ'}
         msg += f"3️⃣ **Скриншот:** "
@@ -580,33 +556,17 @@ print(json.dumps(results))
             msg += f"✅ {data3.get('bytes', 0)} байт\n"
     except:
         msg += f"3️⃣ **Скриншот:** ⚠️ {stdout3[:50]}\n"
-    msg += "\n4️⃣ **Поиск на Idealo:**\n"
-    try:
-        data4 = json.loads(stdout4) if stdout4 else {'error': 'пустой ответ'}
-        if 'error' in data4:
-            msg += f"   ❌ Ошибка: {data4['error']}\n"
-        else:
-            msg += f"   🔗 URL: {data4.get('url', 'неизвестно')}\n"
-            msg += f"   🔍 Поле поиска: {data4.get('search_input', 'не найдено')}\n"
-            if data4.get('prices'):
-                msg += f"   💰 Цены: {', '.join(data4['prices'][:3])}\n"
-                msg += f"   📊 Всего: {data4.get('count', 0)}\n"
-            else:
-                msg += "   ⚠️ Цены не найдены\n"
-            if data4.get('screenshot_size'):
-                msg += f"   📸 Скриншот сделан ({data4['screenshot_size']} байт)\n"
-        if 'traceback' in data4:
-            msg += f"   📋 Traceback: {data4['traceback']}\n"
-    except Exception as e:
-        msg += f"   ⚠️ Ошибка парсинга: {str(e)[:100]}\n"
-        msg += f"   📄 stdout: {stdout4[:200]}\n"
-    if stderr4:
-        msg += f"\n⚠️ **STDERR:** {stderr4[:200]}"
+    
+    if stderr1 or stderr2 or stderr3:
+        msg += f"\n⚠️ **Ошибки:**"
+        if stderr1:
+            msg += f"\n• {stderr1[:100]}"
+        if stderr2:
+            msg += f"\n• {stderr2[:100]}"
+        if stderr3:
+            msg += f"\n• {stderr3[:100]}"
+    
     await status_msg.edit_text(msg[:4000])
-
-# ============================================================
-# 9. ЗАПУСК
-# ============================================================
 
 def main():
     if not TELEGRAM_TOKEN:
