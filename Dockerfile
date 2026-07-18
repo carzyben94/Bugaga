@@ -1,36 +1,46 @@
 FROM python:3.12-slim
 
-# Устанавливаем Chromium и необходимые зависимости
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
     git \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Настройки окружения
 ENV PYTHONUNBUFFERED=1
 ENV CHROMIUM_PATH=/usr/bin/chromium
-ENV BU_CDP_URL=http://localhost:9222
 
 WORKDIR /app
 
-# Копируем и устанавливаем зависимости
+# Устанавливаем uv
+RUN pip install --no-cache-dir uv
+
+# Устанавливаем browser-harness как CLI-инструмент
+RUN uv tool install --python 3.12 --upgrade --force browser-harness
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код бота
 COPY bot.py .
 
-# Скрипт для запуска (исправленный)
 CMD ["/bin/bash", "-c", \
-    "chromium --headless --no-sandbox \
+    "echo '🚀 Запуск Chromium...' && \
+    /usr/bin/chromium \
+        --headless \
+        --no-sandbox \
+        --disable-dev-shm-usage \
+        --disable-gpu \
         --remote-debugging-port=9222 \
         --remote-debugging-address=0.0.0.0 \
-        --disable-gpu \
-        --disable-dev-shm-usage \
-        --disable-software-rasterizer \
-        --disable-features=IsolateOrigins,site-per-process \
-        & \
-     sleep 8 && \
-     python -u bot.py"]
+        --user-data-dir=/tmp/chrome-profile \
+        about:blank > /tmp/chrome.log 2>&1 & \
+    echo '⏳ Ожидание инициализации Chromium...' && \
+    for i in {1..30}; do \
+        if curl -s http://localhost:9222/json/version > /dev/null 2>&1; then \
+            echo '✅ Chromium готов!' && \
+            break; \
+        fi; \
+        echo -n '.' && sleep 1; \
+    done && \
+    echo '🚀 Запуск бота...' && \
+    export PATH="/root/.local/bin:$PATH" && \
+    python -u bot.py"]
