@@ -24,12 +24,8 @@ logger.info("✅ Браузер готов")
 
 async def start(update, context):
     await update.message.reply_text(
-        "/ping — проверка\n"
-        "/screenshot — скриншот google.com"
+        "/screenshot — скриншот"
     )
-
-async def ping(update, context):
-    await update.message.reply_text("🏓 Pong!")
 
 async def screenshot(update, context):
     msg = await update.message.reply_text("📸 Делаю скриншот...")
@@ -66,7 +62,7 @@ async def screenshot(update, context):
         
         await update.message.reply_photo(
             photo=img_bytes,
-            caption="📸 Скриншот google.com (JPEG, 85%)"
+            caption="📸 Скриншот"
         )
         await msg.edit_text("✅ Скриншот отправлен!")
         
@@ -77,7 +73,6 @@ async def screenshot(update, context):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("screenshot", screenshot))
     
     logger.info("🚀 Бот запущен!")
