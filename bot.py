@@ -10,12 +10,11 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-os.environ["BU_CDP_URL"] = "http://localhost:9222"  # Явно указываем браузер
+os.environ["BU_CDP_URL"] = "http://localhost:9222"
 
 # ========== Управление браузером ==========
 
 def check_browser():
-    """Проверяет браузер через HTTP-запрос"""
     try:
         with httpx.Client() as client:
             response = client.get("http://localhost:9222/json/version", timeout=3.0)
@@ -24,7 +23,6 @@ def check_browser():
         return False
 
 def ensure_browser():
-    """Запускает браузер и ждет готовности"""
     chrome_path = "/usr/bin/chromium"
     
     if check_browser():
@@ -98,7 +96,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     browser_ok = check_browser()
     status = "✅ работает" if browser_ok else "❌ не отвечает"
     
-    # Проверяем доступность CLI
     try:
         process = await asyncio.create_subprocess_exec(
             "browser-harness", "--version",
@@ -125,18 +122,13 @@ async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔄 Загружаю {url}...")
     
     try:
-        # Правильный скрипт для browser-harness
+        # ПРАВИЛЬНЫЙ синтаксис по документации
         code = f"""
-# Открываем новую вкладку
-new_tab("{url}")
-
-# Ждем загрузки страницы
-import time
-time.sleep(2)
-
-# Получаем информацию о странице
-info = page_info()
-print(info)
+with new_tab() as tab:
+    tab.get("{url}")
+    import time
+    time.sleep(2)
+    print({{"title": tab.title(), "url": tab.url}})
 """
         stdout, stderr = await run_harness(code)
         
@@ -144,25 +136,16 @@ print(info)
             await update.message.reply_text(f"❌ Ошибка CLI: {stderr[:200]}")
             return
         
-        # Парсим JSON из вывода
+        # Парсим JSON
         try:
-            # Ищем JSON объект в выводе
             match = re.search(r'\{[^{}]*\}', stdout)
             if match:
                 data = json.loads(match.group())
                 title = data.get("title", "Без заголовка")
-                url_page = data.get("url", url)
-                width = data.get("w", "?")
-                height = data.get("h", "?")
-                
-                await update.message.reply_text(
-                    f"✅ **Заголовок:** {title}\n"
-                    f"📐 **Размер:** {width}x{height}\n"
-                    f"🔗 **URL:** {url_page}"
-                )
+                await update.message.reply_text(f"✅ Заголовок: {title}")
             else:
                 await update.message.reply_text(f"✅ Результат: {stdout[:200]}")
-        except json.JSONDecodeError:
+        except:
             await update.message.reply_text(f"✅ Результат: {stdout[:200]}")
             
     except Exception as e:
@@ -177,20 +160,15 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 Делаю скриншот {url}...")
     
     try:
-        # Правильный скрипт для скриншота
+        # ПРАВИЛЬНЫЙ синтаксис для скриншота
         code = f"""
-# Открываем новую вкладку
-new_tab("{url}")
-
-# Ждем загрузки страницы
-import time
-time.sleep(3)
-
-# Делаем скриншот
-screenshot_data = capture_screenshot()
-
-# Выводим результат
-print(screenshot_data)
+import base64
+with new_tab() as tab:
+    tab.get("{url}")
+    import time
+    time.sleep(3)
+    screenshot = tab.screenshot()
+    print(base64.b64encode(screenshot).decode())
 """
         stdout, stderr = await run_harness(code)
         
@@ -198,19 +176,15 @@ print(screenshot_data)
             await update.message.reply_text(f"❌ Ошибка CLI: {stderr[:200]}")
             return
         
-        # Ищем base64 строку в выводе
-        # PNG начинается с iVBOR
+        # Ищем base64 строку
         match = re.search(r'(iVBORw0KGgo[A-Za-z0-9+/=]+)', stdout)
         
         if not match:
-            # Пробуем найти любую длинную base64 строку
             match = re.search(r'([A-Za-z0-9+/=]{100,})', stdout)
         
         if match:
             try:
-                base64_data = match.group(1)
-                image_data = base64.b64decode(base64_data)
-                
+                image_data = base64.b64decode(match.group(1))
                 if len(image_data) < 100:
                     await update.message.reply_text("❌ Получен пустой скриншот")
                     return
@@ -222,11 +196,10 @@ print(screenshot_data)
             except Exception as e:
                 await update.message.reply_text(f"❌ Ошибка декодирования: {str(e)[:100]}")
         else:
-            # Показываем первые символы для отладки
             preview = stdout[:200].replace('\n', ' ').strip()
             await update.message.reply_text(
                 f"❌ Не удалось извлечь скриншот\n"
-                f"Ответ начинается с: {preview[:50]}..."
+                f"Ответ: {preview[:50]}..."
             )
             
     except Exception as e:
@@ -238,21 +211,16 @@ def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
     
-    # Запускаем браузер
     if not ensure_browser():
         print("⚠️ ПРЕДУПРЕЖДЕНИЕ: Браузер не запустился")
     
-    # Создаем приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("get_title", get_title))
     app.add_handler(CommandHandler("screenshot", screenshot))
     
     print("🚀 Бот запускается...")
-    print("📋 Доступные команды: /start, /status, /get_title, /screenshot")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
