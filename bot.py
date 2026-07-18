@@ -1,5 +1,5 @@
 
-code = '''import os
+import os
 import subprocess
 import asyncio
 import json
