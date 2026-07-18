@@ -82,28 +82,29 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 2. Ждём загрузку
         wait_for_load()
         
-        # 3. Дополнительная задержка для полного рендеринга
+        # 3. Дополнительная задержка
         time.sleep(2)
         
         # 4. Убеждаемся, что мы в правильной вкладке
         ensure_real_tab()
         
-        # 5. Делаем скриншот через CDP
-        result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
-        screenshot_b64 = result.get("data")
+        # 5. Используем ВСТРОЕННЫЙ ХЕЛПЕР capture_screenshot()
+        #    вместо cdp("Page.captureScreenshot", ...)
+        img_b64 = capture_screenshot(max_dim=800)
         
-        if not screenshot_b64:
+        if not img_b64:
             raise ValueError("Скриншот пустой")
         
-        if ',' in screenshot_b64:
-            screenshot_b64 = screenshot_b64.split(',', 1)[1]
+        # Очищаем base64-строку
+        if ',' in img_b64:
+            img_b64 = img_b64.split(',', 1)[1]
         
-        screenshot_b64 = screenshot_b64.strip()
-        missing_padding = len(screenshot_b64) % 4
+        img_b64 = img_b64.strip()
+        missing_padding = len(img_b64) % 4
         if missing_padding:
-            screenshot_b64 += '=' * (4 - missing_padding)
+            img_b64 += '=' * (4 - missing_padding)
         
-        img_bytes = base64.b64decode(screenshot_b64)
+        img_bytes = base64.b64decode(img_b64)
         
         if len(img_bytes) < 1000:
             raise ValueError("Скриншот слишком маленький")
@@ -116,6 +117,11 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Ошибка скриншота: {e}")
+        # Восстанавливаем сессию
+        try:
+            ensure_real_tab()
+        except:
+            pass
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
