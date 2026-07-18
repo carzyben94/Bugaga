@@ -123,7 +123,7 @@ def list_skills() -> list[str]:
     return skills
 
 # ============================================================
-# 5. СИСТЕМНЫЙ ПРОМПТ (исправлен)
+# 5. СИСТЕМНЫЙ ПРОМПТ
 # ============================================================
 
 SYSTEM_PROMPT = """
@@ -133,7 +133,7 @@ SYSTEM_PROMPT = """
 - new_tab(url) - открыть новую вкладку
 - wait_for_load() - дождаться загрузки
 - page_info() - получить информацию о странице
-- capture_screenshot(max_dim=1800) - сделать скриншот
+- capture_screenshot(max_dim=1800) - сделать скриншот (возвращает base64 строку)
 - click_at_xy(x, y) - кликнуть по координатам
 - type_text(text) - ввести текст
 - press_key(key) - нажать клавишу
@@ -159,16 +159,15 @@ SYSTEM_PROMPT = """
 Для цен указывай валюту.
 
 Для скриншотов:
-1. Используй capture_screenshot() и возвращай результат как JSON
+1. Используй capture_screenshot() - она уже возвращает base64 строку
 2. В JSON добавь поля:
    - "action": "screenshot_taken"
-   - "screenshot": "<base64-кодированное изображение>"
+   - "screenshot": результат capture_screenshot() (уже base64)
    - "note": "Описание"
    - "source": "Название сайта с эмодзи"
 
 Пример кода для скриншота:
 import json
-import base64
 try:
     new_tab("https://example.com")
     wait_for_load()
@@ -176,7 +175,7 @@ try:
     print(json.dumps({{
         "action": "screenshot_taken",
         "source": "🌐 Example",
-        "screenshot": base64.b64encode(img).decode(),
+        "screenshot": img,
         "note": "Скриншот главной страницы"
     }}))
 except Exception as e:
@@ -185,7 +184,7 @@ except Exception as e:
 ВАЖНО:
 - Не используй слова "пример", "ориентировочно", "около" без необходимости
 - Если точная цена неизвестна — напиши "цена не найдена"
-- Для скриншотов всегда возвращай base64
+- Для скриншотов возвращай screenshot как есть (уже base64)
 - Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
 """
 
@@ -245,6 +244,7 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                         screenshot_b64 = data.get('screenshot')
                         if screenshot_b64:
                             try:
+                                # Декодируем base64 строку в байты для отправки
                                 img_bytes = base64.b64decode(screenshot_b64)
                                 caption = f"📸 {data.get('source', 'Скриншот')}"
                                 if data.get('note'):
@@ -311,7 +311,6 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Пример правильного кода для скриншота:
 import json
-import base64
 try:
     new_tab("https://example.com")
     wait_for_load()
@@ -319,7 +318,7 @@ try:
     print(json.dumps({{
         "action": "screenshot_taken",
         "source": "🌐 Example",
-        "screenshot": base64.b64encode(img).decode(),
+        "screenshot": img,
         "note": "Скриншот главной страницы"
     }}))
 except Exception as e:
