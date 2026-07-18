@@ -1,844 +1,732 @@
-import os
-import asyncio
+import subprocess
+import time
 import json
+import asyncio
+import httpx
+import websockets
 import base64
-import sys
-import re
-from typing import Dict
+import shutil
+import os
+from typing import Optional, Dict, Any, List
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from browser import ChromiumBrowser
-from agent import (
-    get_response,
-    parse_response,
-    parse_command,
-    clear_memory,
-    add_log,
-    get_logs,
-    clear_logs,
-    get_memory_stats,
-    flush_pending_saves,
-    get_protocols_stats,
-    parse_xbrief_plan,
-    parse_simple_command
-)
+from mask import Mask
+from cookies import get_cookies_for_url
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    print("❌ TELEGRAM_BOT_TOKEN не задан")
-    exit(1)
+# ===== ЦВЕТА ДЛЯ КОНСОЛИ =====
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    MAGENTA = '\033[95m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
 
-keep_browser = False
-browser_instance = None
+# ===== ЛОГГЕР С РОТАЦИЕЙ =====
+class CDPLogger:
+    def __init__(self, max_entries: int = 500):
+        self.max_entries = max_entries
+        self.log_file = "cdp_logs.json"
+        self.entries = []
+        self._load()
+    
+    def _load(self):
+        try:
+            if os.path.exists(self.log_file):
+                with open(self.log_file, "r", encoding="utf-8") as f:
+                    self.entries = json.load(f)
+                    print(f"📂 Загружено {len(self.entries)} CDP записей из {self.log_file}")
+        except:
+            self.entries = []
+    
+    def add(self, method: str, params: Dict, response: Dict, duration: float):
+        self.entries.append({
+            "timestamp": datetime.now().isoformat(),
+            "method": method,
+            "params": params,
+            "response": response,
+            "duration": duration,
+            "success": "error" not in response
+        })
+        
+        if len(self.entries) > self.max_entries:
+            self.entries = self.entries[-self.max_entries:]
+        
+        self._save()
+    
+    def _save(self):
+        try:
+            with open(self.log_file, "w", encoding="utf-8") as f:
+                json.dump(self.entries, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ Ошибка сохранения CDP лога: {e}")
+    
+    def get_last(self, count: int = 20) -> List[Dict]:
+        return self.entries[-count:] if self.entries else []
+    
+    def get_by_method(self, method: str) -> List[Dict]:
+        return [e for e in self.entries if e.get("method") == method]
+    
+    def clear(self):
+        self.entries = []
+        self._save()
+        print("🧹 CDP лог очищен")
 
-def escape_markdown(text: str) -> str:
-    if not text:
-        return text
-    if not isinstance(text, str):
-        text = str(text)
-    special_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(special_chars)}])', r'\\\1', text)
-
-async def start(update: Update, context):
-    await update.message.reply_text(
-        "👋 Бот-агент с xBRIEF\n\n"
-        "/start — справка\n"
-        "/clear — очистить память\n"
-        "/logai — логи\n"
-        "/logclear — очистить логи\n"
-        "/keep — удержание браузера\n"
-        "/close — закрыть браузер\n"
-        "/status — статус\n"
-        "/debug_x — диагностика X.com\n"
-        "/logs_cdp — показать CDP логи (200 записей)\n"
-        "/logs_cdp_full — скачать полный CDP лог файлом\n"
-        "/logs_clear_cdp — очистить CDP логи\n"
-        "/cdp_stats — статистика CDP команд\n"
-        "/logs_eval — показать последние eval логи\n"
-        "/last_plan — показать последний xBRIEF план\n"
-        "/debug_logs — показать отладочные логи"
-    )
-
-async def status(update: Update, context):
-    global keep_browser, browser_instance
-    stats = get_memory_stats()
-    logs = get_logs()
-    proto_stats = get_protocols_stats()
-    
-    cdp_size = 0
-    if os.path.exists("cdp_responses.log"):
-        cdp_size = os.path.getsize("cdp_responses.log")
-    
-    text = (
-        f"📊 **Статус бота**\n"
-        f"========================\n\n"
-        f"🧠 **Агент:**\n"
-        f"  • Память: {stats['history_count']}/{stats['max_history']}\n"
-        f"  • Ошибок: {'Есть ❌' if stats['last_error'] else 'Нет ✅'}\n"
-        f"  • Логов: {len(logs)}\n\n"
-        f"📁 **Протоколы:**\n"
-        f"  • CDP Browser: {'✅' if proto_stats['browser']['loaded'] else '❌'} "
-        f"({proto_stats['browser']['domains']} доменов, {proto_stats['browser']['commands']} команд)\n"
-        f"  • CDP JS: {'✅' if proto_stats['js']['loaded'] else '❌'} "
-        f"({proto_stats['js']['domains']} доменов, {proto_stats['js']['commands']} команд)\n"
-        f"  • xBRIEF: {'✅' if proto_stats['xbrief']['loaded'] else '❌'}\n"
-        f"  • browser-logic: {'✅' if proto_stats['browser_logic']['loaded'] else '❌'}\n"
-        f"  • browser-harness: {'✅' if proto_stats['browser_harness']['loaded'] else '❌'} "
-        f"({proto_stats['browser_harness']['total_methods']} методов, {proto_stats['browser_harness']['total_domains']} доменов)\n"
-        f"  • x-com-extraction: {'✅' if proto_stats['x_extraction']['loaded'] else '❌'}\n\n"
-        f"🌐 **Браузер:**\n"
-        f"  • Удержание: {'ВКЛ ✅' if keep_browser else 'ВЫКЛ ❌'}\n"
-        f"  • Экземпляр: {'Запущен ✅' if browser_instance else 'Не запущен ⚪'}\n\n"
-        f"📦 **Система:**\n"
-        f"  • Python: {sys.version.split()[0]}\n"
-        f"  • GitHub: {'✅' if os.environ.get('GITHUB_TOKEN') else '❌'}\n"
-        f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n\n"
-        f"📝 **CDP лог:**\n"
-        f"  • Размер: {cdp_size / 1024:.1f} КБ\n"
-        f"  • Команды: /logs_cdp — посмотреть\n"
-        f"  • Скачать: /logs_cdp_full\n"
-        f"  • Eval: /logs_eval\n"
-        f"  • План: /last_plan\n"
-        f"  • Отладка: /debug_logs"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def debug_x(update: Update, context):
-    global keep_browser, browser_instance
-    
-    await update.message.reply_text("🔍 Проверяю состояние X.com...")
-    
-    if not browser_instance or not browser_instance.websocket:
-        await update.message.reply_text("❌ Браузер не запущен. Используй /keep для запуска.")
-        return
-    
-    text = "📊 **ДИАГНОСТИКА X.COM**\n"
-    text += "========================\n\n"
-    
-    try:
-        cookies_result = await browser_instance.send_command("Network.getCookies")
-        all_cookies = cookies_result.get("cookies", [])
-        x_cookies = [c for c in all_cookies if "x.com" in c.get("domain", "") or "twitter.com" in c.get("domain", "")]
+# ===== ОСНОВНОЙ КЛАСС =====
+class ChromiumBrowser:
+    def __init__(self, port: int = 9222):
+        self.port = port
+        self.process = None
+        self.websocket = None
+        self.ws_url = None
+        self.page_id = None
+        self.viewport_width = 1280
+        self.viewport_height = 720
+        self.chrome_path = self._find_chrome()
+        self._msg_id = 0
+        self.mask = Mask()
+        self._keep_alive_task = None
+        self._cookies_set = False
+        self.logger = CDPLogger(max_entries=500)
+        self._load_event_future = None  # Для ожидания загрузки страницы
         
-        text += "🍪 **Куки для X.com:**\n"
-        text += f"  • Всего кук: {len(x_cookies)}\n"
+    def _find_chrome(self) -> str:
+        possible_names = [
+            "chromium", "chromium-browser", "chrome", "google-chrome",
+            "google-chrome-stable", "chrome-browser"
+        ]
+        possible_paths = [
+            "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/chrome",
+            "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+            "/snap/bin/chromium", "/snap/bin/chrome",
+            "/usr/local/bin/chromium", "/usr/local/bin/chrome",
+            "/opt/google/chrome/chrome", "/opt/chromium/chrome",
+            "/usr/lib/chromium-browser/chromium-browser",
+            "/usr/lib/chromium/chromium", "/app/chromium/chrome",
+            "/usr/lib/google-chrome/chrome", "/usr/lib64/google-chrome/chrome"
+        ]
         
-        auth_cookie = next((c for c in x_cookies if c.get("name") == "auth_token"), None)
-        if auth_cookie:
-            text += f"  • auth_token: ✅ есть\n"
-            text += f"    ({auth_cookie.get('value')[:30]}...)\n"
-        else:
-            text += f"  • auth_token: ❌ НЕТ\n"
+        for name in possible_names:
+            path = shutil.which(name)
+            if path:
+                print(f"{Colors.GREEN}✅ Найден Chrome (which): {path}{Colors.RESET}")
+                return path
         
-        ct0_cookie = next((c for c in x_cookies if c.get("name") == "ct0"), None)
-        if ct0_cookie:
-            text += f"  • ct0: ✅ есть\n"
-        else:
-            text += f"  • ct0: ❌ НЕТ\n"
-        
-        guest_cookie = next((c for c in x_cookies if c.get("name") == "guest_id"), None)
-        if guest_cookie:
-            text += f"  • guest_id: ✅ есть\n"
-        else:
-            text += f"  • guest_id: ❌ НЕТ\n"
-        
-        text += "\n"
-        
-        url = await browser_instance.evaluate("window.location.href")
-        title = await browser_instance.evaluate("document.title")
-        body_len = await browser_instance.evaluate("document.body?.innerText?.length || 0")
-        has_login = await browser_instance.evaluate("document.body?.innerText?.includes('Sign in') || document.body?.innerText?.includes('Войти') || false")
-        
-        text += "📄 **Текущая страница:**\n"
-        text += f"  • URL: {url}\n"
-        text += f"  • Заголовок: {title}\n"
-        text += f"  • Текст: {body_len:,} символов\n"
-        
-        if has_login:
-            text += "  • ⚠️ Страница требует ВХОДА!\n"
-        else:
-            text += "  • ✅ Страница загружена\n"
-        text += "\n"
-        
-        js = """
-        (function() {
-            return {
-                hasUserName: !!document.querySelector('[data-testid="User-Name"]'),
-                hasUserDescription: !!document.querySelector('[data-testid="UserDescription"]'),
-                hasFollowers: !!document.querySelector('a[href$="/followers"]'),
-                hasFollowing: !!document.querySelector('a[href$="/following"]'),
-                hasTweet: !!document.querySelector('article[data-testid="tweet"]'),
-                tweetCount: document.querySelectorAll('article[data-testid="tweet"]').length,
-                hasSearchInput: !!document.querySelector('[data-testid="SearchBox"]'),
-                hasProfileAvatar: !!document.querySelector('img[alt*="avatar"]'),
-                bodyText: document.body?.innerText?.slice(0, 200) || ''
-            };
-        })()
-        """
-        elements = await browser_instance.evaluate(js)
-        
-        text += "🔍 **Элементы X.com:**\n"
-        text += f"  • User-Name: {'✅' if elements.get('hasUserName') else '❌'}\n"
-        text += f"  • UserDescription: {'✅' if elements.get('hasUserDescription') else '❌'}\n"
-        text += f"  • Followers: {'✅' if elements.get('hasFollowers') else '❌'}\n"
-        text += f"  • Following: {'✅' if elements.get('hasFollowing') else '❌'}\n"
-        text += f"  • Tweet: {'✅' if elements.get('hasTweet') else '❌'} ({elements.get('tweetCount', 0)})\n"
-        text += f"  • SearchBox: {'✅' if elements.get('hasSearchInput') else '❌'}\n"
-        text += f"  • ProfileAvatar: {'✅' if elements.get('hasProfileAvatar') else '❌'}\n"
-        
-        body_preview = elements.get('bodyText', '')[:100]
-        if body_preview:
-            text += f"\n📝 **Текст страницы (первые 100 символов):**\n"
-            text += f"  {body_preview}...\n"
-        
-    except Exception as e:
-        text += f"\n❌ **Ошибка диагностики:**\n{str(e)}"
-    
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def toggle_keep_browser(update: Update, context):
-    global keep_browser
-    keep_browser = not keep_browser
-    await update.message.reply_text(f"🔄 Удержание: {'ВКЛ' if keep_browser else 'ВЫКЛ'}")
-
-async def close_browser_command(update: Update, context):
-    global browser_instance, keep_browser
-    if browser_instance:
-        await browser_instance.disconnect()
-        browser_instance.close()
-        browser_instance = None
-        keep_browser = False
-        add_log("browser_closed", "Закрыт", "info")
-        flush_pending_saves()
-        await update.message.reply_text("🛑 Браузер закрыт, данные сохранены")
-    else:
-        await update.message.reply_text("❌ Браузер не запущен")
-
-async def clear(update: Update, context):
-    clear_memory()
-    await update.message.reply_text("🧹 Память очищена")
-
-async def show_logs(update: Update, context):
-    logs = get_logs()
-    if not logs:
-        await update.message.reply_text("📭 Логов нет")
-        return
-    lines = []
-    for log in logs[-20:]:
-        timestamp = log.get("timestamp", "")[11:19]
-        action = log.get("action", "")
-        details = log.get("details", "")
-        status = log.get("status", "")
-        emoji = "✅" if status == "success" else "❌" if status == "error" else "ℹ️"
-        lines.append(f"{timestamp} {emoji} {action}: {details}")
-    await update.message.reply_text("\n".join(lines))
-
-async def clear_logs_command(update: Update, context):
-    clear_logs()
-    await update.message.reply_text("🧹 Логи очищены")
-
-async def get_browser():
-    global browser_instance
-    if keep_browser:
-        if browser_instance is None:
-            browser_instance = ChromiumBrowser()
-            browser_instance.launch(headless=True)
-            await browser_instance.connect()
-            add_log("browser_kept", "Удержан", "success")
-        return browser_instance
-    else:
-        browser = ChromiumBrowser()
-        browser.launch(headless=True)
-        await browser.connect()
-        return browser
-
-async def format_runtime_result(value) -> str:
-    if value is None:
-        return "📊 Результат: пусто"
-    
-    if isinstance(value, dict):
-        text = "📊 **Результат:**\n\n"
-        
-        if "count" in value:
-            text += f"📊 Количество: **{escape_markdown(str(value['count']))}**\n\n"
-        
-        if "error" in value:
-            text += f"❌ {escape_markdown(value['error'])}\n\n"
-        
-        for key, val in value.items():
-            if key in ["count", "error"]:
-                continue
-            if isinstance(val, (int, float)):
-                text += f"• **{escape_markdown(key)}**: {val:,}\n"
-            elif isinstance(val, list):
-                text += f"• **{escape_markdown(key)}**: {len(val)} элементов\n"
-                if val and len(val) <= 10:
-                    for i, item in enumerate(val[:10], 1):
-                        if isinstance(item, dict):
-                            item_str = json.dumps(item, ensure_ascii=False)[:100]
-                            text += f"  {i}. {escape_markdown(item_str)}\n"
-                        else:
-                            text += f"  {i}. {escape_markdown(str(item)[:100])}\n"
-                elif val:
-                    text += f"  (первые 10 из {len(val)})\n"
-            else:
-                text += f"• **{escape_markdown(key)}**: {escape_markdown(str(val)[:100])}\n"
-        return text
-    
-    elif isinstance(value, list):
-        if not value:
-            return "📊 Результат: пусто"
-        
-        text = "📊 **Результат:**\n\n"
-        for i, item in enumerate(value[:10], 1):
-            if isinstance(item, dict):
-                item_str = json.dumps(item, ensure_ascii=False)[:100]
-                text += f"{i}. {escape_markdown(item_str)}\n"
-            else:
-                text += f"{i}. {escape_markdown(str(item)[:100])}\n"
-        
-        if len(value) > 10:
-            text += f"\n... и ещё {len(value) - 10} результатов"
-        return text
-    
-    else:
-        return f"📊 {escape_markdown(str(value))}"
-
-async def execute_xbrief_plan(update: Update, plan: Dict) -> bool:
-    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-    try:
-        os.makedirs("logs", exist_ok=True)
-        with open("logs/debug.log", "a", encoding="utf-8") as f:
-            f.write(f"\n{'='*60}\n")
-            f.write(f"TIMESTAMP: {datetime.now().isoformat()}\n")
-            f.write(f"ПЛАН:\n{json.dumps(plan, indent=2, ensure_ascii=False)[:2000]}\n")
-            f.write(f"{'='*60}\n")
-    except Exception as e:
-        print(f"⚠️ Ошибка записи debug лога: {e}")
-    # ===== КОНЕЦ =====
-    
-    items = plan.get("plan", {}).get("items", [])
-    edges = plan.get("plan", {}).get("edges", [])
-    
-    # Логируем план в консоль для отладки
-    print(f"📋 Выполнение плана: {json.dumps(plan, indent=2, ensure_ascii=False)[:500]}")
-    
-    order = []
-    if edges:
-        for edge in edges:
-            if edge.get("type") == "blocks":
-                if edge["from"] not in order:
-                    order.append(edge["from"])
-                if edge["to"] not in order:
-                    order.append(edge["to"])
-    else:
-        order = [item["id"] for item in items]
-    
-    print(f"📋 Порядок выполнения: {order}")
-    
-    browser = None
-    results = {}
-    
-    for item_id in order:
-        item = next((i for i in items if i["id"] == item_id), None)
-        if not item:
-            print(f"⚠️ Шаг {item_id} не найден в items")
-            continue
-        
-        if item.get("status") == "done":
-            print(f"⏭️ Шаг {item_id} уже выполнен")
-            continue
-            
-        method = item.get("title")
-        params = item.get("params", {})
-        
-        await update.message.reply_text(f"⚡ {method} (шаг {order.index(item_id) + 1}/{len(order)})")
+        for path in possible_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                print(f"{Colors.GREEN}✅ Найден Chrome (путь): {path}{Colors.RESET}")
+                return path
         
         try:
-            if not browser:
-                browser = await get_browser()
-            
-            if method == "extract":
-                model_name = params.get("model")
-                timeout = params.get("timeout", 10)
-                result = await browser.extract(model_name, timeout)
-                formatted = await format_runtime_result(result)
-                await update.message.reply_text(formatted, parse_mode="Markdown")
-                item["status"] = "done"
-                results[item_id] = {"result": result}
-                
-                # ===== ЗАПИСЬ РЕЗУЛЬТАТА В DEBUG ЛОГ =====
-                try:
-                    with open("logs/debug.log", "a", encoding="utf-8") as f:
-                        f.write(f"STEP {item_id} RESULT: {json.dumps(result, ensure_ascii=False)[:500]}\n")
-                except:
-                    pass
-                # ===== КОНЕЦ =====
-                continue
-            
-            elif method == "extract_all":
-                model_name = params.get("model")
-                limit = params.get("limit", 20)
-                timeout = params.get("timeout", 10)
-                result = await browser.extract_all(model_name, timeout, limit)
-                formatted = await format_runtime_result(result)
-                await update.message.reply_text(formatted, parse_mode="Markdown")
-                item["status"] = "done"
-                results[item_id] = {"result": result}
-                continue
-            
-            elif method == "wait":
-                selector = params.get("selector")
-                timeout = params.get("timeout", 10)
-                await browser.wait_for_element(selector, timeout)
-                await update.message.reply_text(f"⏳ Элемент найден: {selector}")
-                item["status"] = "done"
-                results[item_id] = {"result": True}
-                continue
-            
-            result = await browser.send_command(method, params)
-            
-            item["status"] = "done"
-            
-            if method == "Runtime.evaluate":
-                value = result.get("result", {}).get("result", {}).get("value")
-                results[item_id] = {"result": value}
-                
-                # Отладочный вывод в консоль
-                print(f"🔍 Runtime.evaluate результат: {value}")
-                
-                # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-                try:
-                    with open("logs/debug.log", "a", encoding="utf-8") as f:
-                        f.write(f"STEP {item_id} (Runtime.evaluate):\n")
-                        f.write(f"  expression: {params.get('expression', '')[:200]}\n")
-                        f.write(f"  result: {json.dumps(value, ensure_ascii=False)[:500]}\n")
-                except:
-                    pass
-                # ===== КОНЕЦ =====
-                
-                try:
-                    os.makedirs("logs", exist_ok=True)
-                    with open("logs/evaluate_results.log", "a", encoding="utf-8") as f:
-                        f.write(json.dumps({
-                            "timestamp": datetime.now().isoformat(),
-                            "step_id": item_id,
-                            "expression": params.get("expression", ""),
-                            "result": value
-                        }, ensure_ascii=False) + "\n")
-                except:
-                    pass
-            else:
-                results[item_id] = {"result": result}
-            
-            if method == "Page.captureScreenshot":
-                if "result" in result and "data" in result["result"]:
-                    img_data = base64.b64decode(result["result"]["data"])
-                    await update.message.reply_photo(photo=img_data, caption="📸 Скриншот")
-                else:
-                    await update.message.reply_text("✅ Скриншот сделан")
-            elif method == "Page.navigate":
-                await asyncio.sleep(1)
-                title = await browser.evaluate("document.title")
-                await update.message.reply_text(f"✅ {params.get('url')}\n📄 {title}")
-            elif method == "Runtime.evaluate":
-                value = result.get("result", {}).get("result", {}).get("value")
-                formatted = await format_runtime_result(value)
-                await update.message.reply_text(formatted, parse_mode="Markdown")
-            else:
-                await update.message.reply_text("✅ Выполнено")
-                
-        except Exception as e:
-            item["status"] = "failed"
-            await update.message.reply_text(f"❌ Ошибка в шаге {item_id}: {str(e)}")
-            
-            # ===== ЗАПИСЬ ОШИБКИ В DEBUG ЛОГ =====
-            try:
-                with open("logs/debug.log", "a", encoding="utf-8") as f:
-                    f.write(f"STEP {item_id} ERROR: {str(e)}\n")
-            except:
-                pass
-            # ===== КОНЕЦ =====
-            
-            if browser and not keep_browser:
-                await browser.disconnect()
-                browser.close()
-            return False
-    
-    if browser and not keep_browser:
-        await browser.disconnect()
-        browser.close()
-    
-    # ===== ПОДСТАНОВКА ПЕРЕМЕННЫХ В OUTCOME =====
-    narratives = plan.get("plan", {}).get("narratives", {})
-    outcome = narratives.get("Outcome", "")
-    
-    print(f"📋 Исходный Outcome: {outcome}")
-    print(f"📋 Результаты шагов: {json.dumps(results, indent=2, ensure_ascii=False)[:500]}")
-    
-    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-    try:
-        with open("logs/debug.log", "a", encoding="utf-8") as f:
-            f.write(f"RESULTS: {json.dumps(results, indent=2, ensure_ascii=False)[:1000]}\n")
-            f.write(f"OUTCOME BEFORE: {outcome}\n")
-    except:
-        pass
-    # ===== КОНЕЦ =====
-    
-    def replace_vars(match):
-        var_path = match.group(1).strip()
-        parts = var_path.split('.')
-        
-        if len(parts) >= 2:
-            step_id = parts[0]
-            field = '.'.join(parts[1:])
-            
-            if step_id in results:
-                value = results[step_id]
-                for key in field.split('.'):
-                    if isinstance(value, dict) and key in value:
-                        value = value[key]
-                    else:
-                        print(f"⚠️ Не найден ключ {key} в {value}")
-                        return "не найдено"
-                if value is None:
-                    return "не найдено"
-                print(f"✅ Подстановка: {var_path} → {value}")
-                return str(value)
-        print(f"⚠️ Не удалось распарсить переменную: {var_path}")
-        return match.group(0)
-    
-    outcome = re.sub(r'{{(.*?)}}', replace_vars, outcome)
-    
-    print(f"📋 Итоговый Outcome: {outcome}")
-    
-    # ===== ЗАПИСЬ В DEBUG ЛОГ =====
-    try:
-        with open("logs/debug.log", "a", encoding="utf-8") as f:
-            f.write(f"OUTCOME AFTER: {outcome}\n")
-            f.write(f"{'='*60}\n\n")
-    except:
-        pass
-    # ===== КОНЕЦ =====
-    
-    if outcome:
-        await update.message.reply_text(f"📋 **Итог:** {outcome}")
-    
-    return True
-
-async def execute_with_retry(update: Update, user_text: str, max_retries: int = 2) -> bool:
-    add_log("user_input", user_text, "info")
-    for attempt in range(max_retries + 1):
-        try:
-            agent_response = await get_response(user_text)
-            parsed = parse_response(agent_response)
-            
-            if not parsed:
-                add_log("agent_response", agent_response[:100], "info")
-                await update.message.reply_text(agent_response)
-                return True
-            
-            if parsed.get("type") == "xbrief":
-                add_log("xbrief_plan", "Получен xBRIEF план", "info")
-                return await execute_xbrief_plan(update, parsed["data"])
-            else:
-                cmd = parsed["data"]
-                method = cmd.get("method")
-                params = cmd.get("params", {})
-                
-                add_log("command", f"{method}", "info")
-                await update.message.reply_text(f"⚡ {method}")
-                
-                browser = await get_browser()
-                result = await browser.send_command(method, params)
-                add_log("success", method, "success")
-                
-                if method == "Page.captureScreenshot":
-                    if "result" in result and "data" in result["result"]:
-                        img_data = base64.b64decode(result["result"]["data"])
-                        await update.message.reply_photo(photo=img_data, caption="📸 Скриншот")
-                    else:
-                        await update.message.reply_text("✅ Скриншот сделан")
-                elif method == "Page.navigate":
-                    await asyncio.sleep(1)
-                    title = await browser.evaluate("document.title")
-                    await update.message.reply_text(f"✅ {params.get('url')}\n📄 {title}")
-                elif method == "Runtime.evaluate":
-                    value = result.get("result", {}).get("result", {}).get("value")
-                    formatted = await format_runtime_result(value)
-                    await update.message.reply_text(formatted, parse_mode="Markdown")
-                else:
-                    await update.message.reply_text("✅ Выполнено")
-                
-                if not keep_browser:
-                    await browser.disconnect()
-                    browser.close()
-                return True
-                
-        except Exception as e:
-            error_msg = str(e)
-            add_log("error", error_msg[:150], "error")
-            await update.message.reply_text(f"❌ {error_msg}")
-            if attempt < max_retries:
-                await update.message.reply_text(f"🔄 Попытка {attempt+2}/{max_retries+1}")
-            else:
-                await update.message.reply_text("❌ Не удалось выполнить")
-            continue
-    return False
-
-async def handle_message(update: Update, context):
-    user_text = update.message.text
-    await update.message.reply_text("🤔 Думаю...")
-    await execute_with_retry(update, user_text)
-
-# ===== КОМАНДЫ ДЛЯ ЛОГОВ =====
-
-async def download_cdp_logs(update: Update, context):
-    try:
-        if os.path.exists("cdp_responses.log"):
-            with open("cdp_responses.log", "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            if not content:
-                await update.message.reply_text("📭 CDP лог пуст")
-                return
-            
-            lines = content.strip().split('\n')
-            total_lines = len(lines)
-            
-            if total_lines > 200:
-                lines = lines[-200:]
-                content = '\n'.join(lines)
-                await update.message.reply_text(
-                    f"📡 **CDP логи (последние 200 из {total_lines} записей):**\n\n```json\n{content[:4000]}\n```",
-                    parse_mode="Markdown"
-                )
-            else:
-                await update.message.reply_text(
-                    f"📡 **CDP логи (все {total_lines} записей):**\n\n```json\n{content[:4000]}\n```",
-                    parse_mode="Markdown"
-                )
-        else:
-            await update.message.reply_text("❌ Файл cdp_responses.log не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def download_full_cdp_logs(update: Update, context):
-    try:
-        if os.path.exists("cdp_responses.log"):
-            with open("cdp_responses.log", "r", encoding="utf-8") as f:
-                content = f.read()
-            
-            if not content:
-                await update.message.reply_text("📭 CDP лог пуст")
-                return
-            
-            await update.message.reply_document(
-                document=open("cdp_responses.log", "rb"),
-                filename="cdp_responses.log",
-                caption=f"📡 CDP логи ({len(content.strip().split(chr(10)))} записей)"
+            result = subprocess.run(
+                ["find", "/", "-name", "chromium", "-type", "f", "-executable"],
+                capture_output=True, text=True, timeout=5
             )
-        else:
-            await update.message.reply_text("❌ Файл cdp_responses.log не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def clear_cdp_logs(update: Update, context):
-    try:
-        files_deleted = []
-        if os.path.exists("cdp_responses.log"):
-            os.remove("cdp_responses.log")
-            files_deleted.append("cdp_responses.log")
-        if os.path.exists("cdp_logs.json"):
-            os.remove("cdp_logs.json")
-            files_deleted.append("cdp_logs.json")
-        if os.path.exists("cdp_errors.log"):
-            os.remove("cdp_errors.log")
-            files_deleted.append("cdp_errors.log")
+            for line in result.stdout.strip().split('\n'):
+                if line and os.access(line, os.X_OK):
+                    print(f"{Colors.GREEN}✅ Найден Chrome (find): {line}{Colors.RESET}")
+                    return line
+        except:
+            pass
         
-        if os.path.exists("logs"):
-            for f in os.listdir("logs"):
-                os.remove(os.path.join("logs", f))
-            files_deleted.append("logs/*")
-        
-        if files_deleted:
-            await update.message.reply_text(f"🧹 CDP логи очищены: {', '.join(files_deleted)}")
-        else:
-            await update.message.reply_text("📭 CDP лог-файлы не найдены")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def cdp_stats(update: Update, context):
-    global browser_instance
+        raise Exception("Chromium/Chrome не найден! Установи через: apt-get install chromium")
     
-    if not browser_instance:
-        await update.message.reply_text("❌ Браузер не запущен")
-        return
-    
-    try:
-        logs = browser_instance.get_logs(50) if hasattr(browser_instance, 'get_logs') else []
+    def launch(self, headless: bool = True):
+        cmd = Mask.get_launch_args(self.chrome_path, self.port)
         
-        if not logs:
-            await update.message.reply_text("📭 Нет CDP логов")
+        print(f"{Colors.CYAN}🚀 Запуск браузера с маскировкой: {self.chrome_path}{Colors.RESET}")
+        print(f"{Colors.YELLOW}📋 Команда: {' '.join(cmd)}{Colors.RESET}")
+        
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(3)
+        
+        if self.process.poll() is not None:
+            raise Exception(f"Браузер упал при запуске (код: {self.process.returncode})")
+        print(f"{Colors.GREEN}✅ Браузер запущен с маскировкой{Colors.RESET}")
+        
+    async def get_ws_url(self) -> str:
+        async with httpx.AsyncClient() as client:
+            for attempt in range(5):
+                try:
+                    resp = await client.get(f"http://localhost:{self.port}/json/list")
+                    pages = resp.json()
+                    if not pages:
+                        raise Exception("Нет открытых вкладок")
+                    self.page_id = pages[0]["id"]
+                    ws_url = pages[0]["webSocketDebuggerUrl"]
+                    print(f"{Colors.CYAN}📄 Найдена страница: {self.page_id}{Colors.RESET}")
+                    return ws_url
+                except Exception as e:
+                    if attempt < 4:
+                        print(f"{Colors.YELLOW}⏳ Ожидание браузера (попытка {attempt+1}/5)...{Colors.RESET}")
+                        await asyncio.sleep(1)
+                    else:
+                        raise Exception(f"Не удалось подключиться к браузеру: {e}")
+    
+    async def _keep_alive(self):
+        while True:
+            try:
+                if self.websocket is not None:
+                    await asyncio.sleep(15)
+                    await self.websocket.ping()
+                    print(f"{Colors.MAGENTA}💓 WebSocket ping отправлен{Colors.RESET}")
+                else:
+                    print(f"{Colors.YELLOW}⏳ WebSocket не инициализирован, keep-alive ждёт...{Colors.RESET}")
+                    await asyncio.sleep(2)
+            except websockets.exceptions.ConnectionClosed:
+                print(f"{Colors.RED}⚠️ WebSocket закрыт, переподключаюсь...{Colors.RESET}")
+                self.websocket = None
+                try:
+                    await self.connect()
+                except Exception as e:
+                    print(f"{Colors.RED}❌ Ошибка переподключения: {e}{Colors.RESET}")
+                    await asyncio.sleep(5)
+            except Exception as e:
+                print(f"{Colors.RED}⚠️ Keep-alive ошибка: {e}{Colors.RESET}")
+                await asyncio.sleep(5)
+    
+    async def set_cookies_for_url(self, url: str):
+        cookies = get_cookies_for_url(url)
+        if not cookies:
+            print(f"{Colors.YELLOW}🍪 Нет кук для {url}{Colors.RESET}")
             return
         
-        methods = {}
-        total_duration = 0
-        errors = 0
+        cdp_cookies = []
+        for cookie in cookies:
+            cdp_cookie = {
+                "name": cookie.get("name"),
+                "value": cookie.get("value"),
+                "domain": cookie.get("domain"),
+                "path": cookie.get("path", "/"),
+                "secure": cookie.get("secure", False),
+                "httpOnly": cookie.get("httpOnly", False),
+                "sameSite": cookie.get("sameSite", "unspecified")
+            }
+            if not cookie.get("session", True):
+                cdp_cookie["expires"] = cookie.get("expirationDate", 0)
+            cdp_cookies.append(cdp_cookie)
         
-        for log in logs:
-            method = log.get("method", "unknown")
-            duration = log.get("duration", 0)
-            success = log.get("success", True)
+        try:
+            result = await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
+            print(f"{Colors.GREEN}🍪 Установлено {len(cdp_cookies)} кук для {url}{Colors.RESET}")
+            self._cookies_set = True
+            return result
+        except Exception as e:
+            print(f"{Colors.RED}⚠️ Ошибка установки кук: {e}{Colors.RESET}")
+            return None
+    
+    async def set_all_cookies(self):
+        from cookies import SITE_COOKIES
+        total = 0
+        for domain, cookies in SITE_COOKIES.items():
+            if cookies:
+                cdp_cookies = []
+                for cookie in cookies:
+                    cdp_cookie = {
+                        "name": cookie.get("name"),
+                        "value": cookie.get("value"),
+                        "domain": cookie.get("domain"),
+                        "path": cookie.get("path", "/"),
+                        "secure": cookie.get("secure", False),
+                        "httpOnly": cookie.get("httpOnly", False),
+                        "sameSite": cookie.get("sameSite", "unspecified")
+                    }
+                    if not cookie.get("session", True):
+                        cdp_cookie["expires"] = cookie.get("expirationDate", 0)
+                    cdp_cookies.append(cdp_cookie)
+                
+                if cdp_cookies:
+                    try:
+                        await self.send_command("Network.setCookies", {"cookies": cdp_cookies})
+                        total += len(cdp_cookies)
+                        print(f"{Colors.GREEN}🍪 Установлено {len(cdp_cookies)} кук для {domain}{Colors.RESET}")
+                    except Exception as e:
+                        print(f"{Colors.RED}⚠️ Ошибка установки кук для {domain}: {e}{Colors.RESET}")
+        
+        self._cookies_set = True
+        print(f"{Colors.GREEN}🍪 Всего установлено {total} кук{Colors.RESET}")
+        return total
+    
+    async def connect(self):
+        if not self.ws_url:
+            self.ws_url = await self.get_ws_url()
+        
+        self.websocket = await websockets.connect(
+            self.ws_url,
+            max_size=10 * 1024 * 1024,
+            ping_interval=20,
+            ping_timeout=60
+        )
+        print(f"{Colors.GREEN}🔗 WebSocket подключен (макс. размер: 10 МБ, ping_timeout: 60 сек){Colors.RESET}")
+        
+        if self._keep_alive_task is None or self._keep_alive_task.done():
+            self._keep_alive_task = asyncio.create_task(self._keep_alive())
+        
+        await self.send_command("Page.enable")
+        await self.send_command("Runtime.enable")
+        await self.send_command("Network.enable")
+        
+        await self.set_all_cookies()
+        
+        print(f"{Colors.CYAN}🕵️ Применяю JS-маскировку...{Colors.RESET}")
+        js_mask = Mask.get_js_mask()
+        await self.send_command("Page.addScriptToEvaluateOnNewDocument", {"source": js_mask})
+        print(f"{Colors.GREEN}✅ JS-маскировка применена{Colors.RESET}")
+        
+    async def release_object(self, object_id: str):
+        try:
+            await self.send_command("Runtime.releaseObject", {"objectId": object_id})
+        except:
+            pass
+    
+    async def evaluate(self, expression: str, release: bool = True) -> Any:
+        """
+        Выполняет JavaScript на странице через CDP Runtime.evaluate.
+        """
+        start_time = datetime.now()
+        
+        # ===== ЛОГИРУЕМ ЗАПРОС =====
+        print(f"{Colors.BLUE}📤 [{start_time.strftime('%H:%M:%S')}] Runtime.evaluate{Colors.RESET}")
+        print(f"{Colors.CYAN}   📋 {expression[:200]}{Colors.RESET}")
+        
+        params = {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+            "allowUnsafeEvalBlockedByCSP": True,
+            "userGesture": True,
+            "includeCommandLineAPI": False,
+        }
+        
+        result = await self.send_command("Runtime.evaluate", params)
+        
+        duration = (datetime.now() - start_time).total_seconds()
+        
+        if "exceptionDetails" in result:
+            print(f"{Colors.RED}❌ JS Error: {result['exceptionDetails']}{Colors.RESET}")
+            raise Exception(f"JS Error: {result['exceptionDetails']}")
+        
+        value = result.get("result", {}).get("result", {}).get("value")
+        
+        # ===== ЛОГИРУЕМ РЕЗУЛЬТАТ =====
+        print(f"{Colors.GREEN}   ✅ Runtime.evaluate ({duration:.2f}s){Colors.RESET}")
+        if value is not None:
+            print(f"{Colors.CYAN}   📊 Результат: {str(value)[:200]}{Colors.RESET}")
+        
+        # ===== ЗАПИСЫВАЕМ В ОТДЕЛЬНЫЙ ФАЙЛ =====
+        try:
+            os.makedirs("logs", exist_ok=True)
             
-            if method not in methods:
-                methods[method] = {"count": 0, "total_time": 0, "errors": 0}
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "type": "evaluate",
+                "expression": expression,
+                "params": params,
+                "result": result,
+                "value": value,
+                "duration": duration,
+                "success": True
+            }
             
-            methods[method]["count"] += 1
-            methods[method]["total_time"] += duration
-            total_duration += duration
-            if not success:
-                methods[method]["errors"] += 1
-                errors += 1
-        
-        text = "📊 **CDP Статистика:**\n"
-        text += "========================\n\n"
-        text += f"📝 Всего команд: {len(logs)}\n"
-        text += f"⏱️ Общее время: {total_duration:.2f}s\n"
-        text += f"❌ Ошибок: {errors}\n"
-        text += f"✅ Успешно: {len(logs) - errors}\n\n"
-        
-        text += "📋 **Команды:**\n"
-        for method, data in sorted(methods.items(), key=lambda x: x[1]["count"], reverse=True)[:10]:
-            avg_time = data["total_time"] / data["count"] if data["count"] > 0 else 0
-            status = "✅" if data["errors"] == 0 else f"⚠️ {data['errors']} ошиб."
-            text += f"  {status} `{method}`: {data['count']} раз, ø {avg_time:.2f}s\n"
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
-        
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def show_eval_logs(update: Update, context):
-    """Показать последние eval логи"""
-    try:
-        if os.path.exists("logs/evaluate.log"):
-            with open("logs/evaluate.log", "r", encoding="utf-8") as f:
-                lines = f.readlines()[-20:]
+            with open("logs/evaluate.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
             
-            if not lines:
-                await update.message.reply_text("📭 Нет eval логов")
-                return
+            with open("cdp_responses.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "timestamp": datetime.now().isoformat(),
+                    "method": "Runtime.evaluate (user)",
+                    "expression": expression[:500],
+                    "result": value,
+                    "duration": duration
+                }, ensure_ascii=False) + "\n")
+                
+        except Exception as e:
+            print(f"{Colors.RED}⚠️ Ошибка записи eval лога: {e}{Colors.RESET}")
+        
+        if release and "result" in result and "objectId" in result["result"]:
+            object_id = result["result"]["objectId"]
+            await self.release_object(object_id)
+        
+        return value
+    
+    async def evaluate_fast(self, expression: str) -> None:
+        await self.send_command("Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": False,
+            "awaitPromise": True,
+            "userGesture": True,
+        })
+    
+    async def send_command(self, method: str, params: Dict[str, Any] = None) -> Dict:
+        start_time = datetime.now()
+        
+        try:
+            if not self.websocket:
+                await self.connect()
             
-            text = "🧠 **Последние eval логи:**\n\n"
-            count = 0
-            for line in lines[-10:]:
+            self._msg_id += 1
+            msg = {"id": self._msg_id, "method": method, "params": params or {}}
+            
+            timestamp = start_time.strftime("%H:%M:%S")
+            print(f"{Colors.BLUE}📤 [{timestamp}] {method}{Colors.RESET}")
+            
+            if params and len(str(params)) < 500:
+                print(f"{Colors.CYAN}   📋 {json.dumps(params, ensure_ascii=False)[:200]}{Colors.RESET}")
+            
+            await self.websocket.send(json.dumps(msg))
+            
+            while True:
+                response = await self.websocket.recv()
+                data = json.loads(response)
+                
+                # ===== ОБРАБОТКА СОБЫТИЙ =====
+                if "method" in data:
+                    if data["method"] == "Page.loadEventFired":
+                        print(f"{Colors.MAGENTA}📡 Получено событие Page.loadEventFired{Colors.RESET}")
+                        if self._load_event_future and not self._load_event_future.done():
+                            self._load_event_future.set_result(data)
+                    print(f"{Colors.YELLOW}📡 Событие: {data.get('method')}{Colors.RESET}")
+                    continue
+                # ===== КОНЕЦ ОБРАБОТКИ СОБЫТИЙ =====
+                
+                if "id" in data:
+                    duration = (datetime.now() - start_time).total_seconds()
+                    
+                    is_error = "error" in data
+                    status_emoji = "❌" if is_error else "✅"
+                    status_color = Colors.RED if is_error else Colors.GREEN
+                    
+                    print(f"{status_color}   {status_emoji} {method} ({duration:.2f}s){Colors.RESET}")
+                    
+                    if is_error:
+                        print(f"{Colors.RED}   ❌ {data['error']}{Colors.RESET}")
+                    
+                    self.logger.add(method, params, data, duration)
+                    
+                    try:
+                        log_entry = {
+                            "timestamp": datetime.now().isoformat(),
+                            "method": method,
+                            "params": params,
+                            "response": data,
+                            "duration": duration
+                        }
+                        with open("cdp_responses.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+                    except Exception as e:
+                        print(f"{Colors.RED}⚠️ Ошибка записи CDP лога: {e}{Colors.RESET}")
+                    
+                    if is_error:
+                        with open("cdp_errors.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps({
+                                "timestamp": datetime.now().isoformat(),
+                                "method": method,
+                                "params": params,
+                                "error": data["error"]
+                            }, ensure_ascii=False) + "\n")
+                        print(f"{Colors.RED}❌ CDP Error в {method}: {data['error']}{Colors.RESET}")
+                        raise Exception(f"CDP Error: {data['error']}")
+                    
+                    important_methods = ["Page.navigate", "Page.captureScreenshot", "Runtime.evaluate"]
+                    if method in important_methods:
+                        try:
+                            os.makedirs("logs", exist_ok=True)
+                            with open(f"logs/{method}.log", "a", encoding="utf-8") as f:
+                                f.write(json.dumps({
+                                    "timestamp": datetime.now().isoformat(),
+                                    "params": params,
+                                    "response": data
+                                }, ensure_ascii=False) + "\n")
+                        except:
+                            pass
+                    
+                    return data
+                
+        except (websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
+            print(f"{Colors.RED}⚠️ WebSocket упал: {e}. Переподключаюсь...{Colors.RESET}")
+            self.websocket = None
+            await self.connect()
+            return await self.send_command(method, params)
+        except Exception as e:
+            print(f"{Colors.RED}❌ {method} failed: {e}{Colors.RESET}")
+            raise
+    
+    def get_logs(self, count: int = 20) -> List[Dict]:
+        return self.logger.get_last(count)
+    
+    def get_logs_by_method(self, method: str) -> List[Dict]:
+        return self.logger.get_by_method(method)
+    
+    def clear_logs(self):
+        self.logger.clear()
+        if os.path.exists("cdp_responses.log"):
+            os.remove("cdp_responses.log")
+        print("🧹 Все CDP логи очищены")
+    
+    async def set_viewport(self, width: int = 1280, height: int = 720):
+        self.viewport_width = width
+        self.viewport_height = height
+        params = {
+            "width": width, "height": height, "deviceScaleFactor": 1,
+            "mobile": False, "scale": 1, "screenWidth": width,
+            "screenHeight": height, "positionX": 0, "positionY": 0
+        }
+        await self.send_command("Emulation.setDeviceMetricsOverride", params)
+        print(f"{Colors.CYAN}📐 Установлен размер окна: {width}x{height}{Colors.RESET}")
+    
+    async def wait_for_element(self, selector: str, timeout: int = 15, interval: float = 0.3):
+        print(f"{Colors.YELLOW}⏳ Ожидание элемента: {selector}{Colors.RESET}")
+        
+        js_wait = f"""
+        (function() {{
+            return new Promise((resolve, reject) => {{
+                const start = Date.now();
+                const check = () => {{
+                    const el = document.querySelector('{selector}');
+                    if (el && el.offsetParent !== null) {{
+                        resolve(true);
+                    }} else if (Date.now() - start > {timeout * 1000}) {{
+                        resolve(false);
+                    }} else {{
+                        setTimeout(check, {int(interval * 1000)});
+                    }};
+                }};
+                check();
+            }});
+        }})()
+        """
+        
+        try:
+            result = await self.evaluate(js_wait, release=True)
+            if result:
+                print(f"{Colors.GREEN}✅ Элемент найден: {selector}{Colors.RESET}")
+                return True
+            else:
+                print(f"{Colors.RED}⚠️ Таймаут: {selector} не найден за {timeout} сек{Colors.RESET}")
+                return False
+        except Exception as e:
+            print(f"{Colors.RED}⚠️ Ошибка ожидания {selector}: {e}{Colors.RESET}")
+            return False
+    
+    async def navigate(self, url: str) -> Dict:
+        print(f"{Colors.CYAN}🌐 Переход на {url}{Colors.RESET}")
+        
+        if not self._cookies_set:
+            await self.set_cookies_for_url(url)
+        
+        # ===== ВКЛЮЧАЕМ СОБЫТИЯ PAGE =====
+        await self.send_command("Page.enable")
+        
+        # ===== СОЗДАЁМ FUTURE ДЛЯ ОЖИДАНИЯ ЗАГРУЗКИ =====
+        self._load_event_future = asyncio.Future()
+        # ===== КОНЕЦ =====
+        
+        result = await self.send_command("Page.navigate", {"url": url})
+        
+        # ===== ЖДЁМ СОБЫТИЕ ЗАГРУЗКИ =====
+        try:
+            await asyncio.wait_for(self._load_event_future, timeout=30.0)
+            print(f"{Colors.GREEN}✅ Страница загружена (Page.loadEventFired){Colors.RESET}")
+        except asyncio.TimeoutError:
+            print(f"{Colors.YELLOW}⚠️ Таймаут Page.loadEventFired, пробуем readyState{Colors.RESET}")
+            # Фолбэк: проверяем readyState
+            for attempt in range(10):
                 try:
-                    entry = json.loads(line.strip())
-                    expr = entry.get("expression", "")[:100]
-                    value = str(entry.get("value", ""))[:100]
-                    duration = entry.get("duration", 0)
-                    timestamp = entry.get("timestamp", "")[11:19]
-                    text += f"• `{timestamp}` `{duration:.2f}s`\n"
-                    text += f"  📋 {expr}\n"
-                    if value and value != "None":
-                        text += f"  📊 {value}\n"
-                    text += "\n"
-                    count += 1
+                    ready_state = await self.evaluate("document.readyState")
+                    if ready_state == "complete":
+                        print(f"{Colors.GREEN}✅ Страница загружена (readyState, попытка {attempt+1}){Colors.RESET}")
+                        break
                 except:
                     pass
+                await asyncio.sleep(0.5)
+        # ===== КОНЕЦ =====
+        
+        if "x.com" in url or "twitter.com" in url:
+            print(f"{Colors.CYAN}🐦 Дополнительное ожидание для X.com (3 сек)...{Colors.RESET}")
+            await asyncio.sleep(3)
+            await self.wait_for_element("article[data-testid='tweet']", timeout=10)
+        
+        await asyncio.sleep(1)
+        return result
+    
+    async def extract(self, model_name: str, timeout: int = 10) -> Dict:
+        from agent import X_EXTRACTION
+        if not X_EXTRACTION:
+            print(f"{Colors.RED}⚠️ x-com-extraction.json не загружен{Colors.RESET}")
+            return {}
+        
+        models = X_EXTRACTION.get("models", {})
+        model = models.get(model_name)
+        if not model:
+            print(f"{Colors.RED}⚠️ Модель '{model_name}' не найдена{Colors.RESET}")
+            return {}
+        
+        container_selector = model.get("container")
+        if container_selector:
+            await self.wait_for_element(container_selector, timeout=timeout)
+        
+        fields = model.get("fields", {})
+        result = {}
+        
+        for field_name, field_config in fields.items():
+            selector = field_config.get("selector")
+            transform = field_config.get("transform")
+            if not selector:
+                continue
             
-            if count == 0:
-                await update.message.reply_text("📭 Нет eval логов")
-            else:
-                await update.message.reply_text(text[:4000], parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Файл logs/evaluate.log не найден")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def show_last_plan(update: Update, context):
-    """Показать последний xBRIEF план"""
-    try:
-        if os.path.exists("logs/last_plan.json"):
-            with open("logs/last_plan.json", "r", encoding="utf-8") as f:
-                plan = json.load(f)
-                
-                plan_text = json.dumps(plan, indent=2, ensure_ascii=False)
-                
-                if len(plan_text) > 4000:
-                    plan_text = plan_text[:4000] + "\n... (обрезано)"
-                
-                await update.message.reply_text(
-                    f"📋 **Последний xBRIEF план:**\n\n```json\n{plan_text}\n```",
-                    parse_mode="Markdown"
-                )
-        else:
-            if os.path.exists("logs/last_plan_raw.json"):
-                with open("logs/last_plan_raw.json", "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                    await update.message.reply_text(
-                        f"📋 **Сырой ответ агента (не распарсился):**\n\n```\n{raw.get('raw', '')[:2000]}\n```",
-                        parse_mode="Markdown"
-                    )
-            else:
-                await update.message.reply_text("❌ Нет сохранённого плана. Сначала дай команду боту.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-async def show_debug_logs(update: Update, context):
-    """Показать последние отладочные логи"""
-    try:
-        if os.path.exists("logs/debug.log"):
-            with open("logs/debug.log", "r", encoding="utf-8") as f:
-                lines = f.readlines()[-50:]
+            js = f"""
+            (function() {{
+                const el = document.querySelector('{selector}');
+                if (!el) return '';
+                if (el.tagName === 'IMG') return el.src || '';
+                return el.innerText?.trim() || el.value || el.placeholder || '';
+            }})()
+            """
             
-            if lines:
-                text = "🐞 **Отладочные логи (последние 50 строк):**\n\n```\n" + "".join(lines[-40:]) + "\n```"
-                await update.message.reply_text(text[:4000], parse_mode="Markdown")
+            try:
+                value = await self.evaluate(js, release=True)
+                if transform == "int":
+                    if isinstance(value, str):
+                        value = value.replace(',', '').replace('.', '').strip()
+                    value = int(value) if value else 0
+                elif transform == "exists":
+                    value = bool(value)
+                elif transform == "list":
+                    value = [value] if value else []
+                elif transform == "extract_tweet_id":
+                    if value and "/status/" in value:
+                        value = value.split("/status/")[-1].split("?")[0]
+                result[field_name] = value
+            except Exception as e:
+                print(f"{Colors.RED}⚠️ Ошибка извлечения {field_name}: {e}{Colors.RESET}")
+                result[field_name] = None
+        
+        return result
+    
+    async def extract_all(self, model_name: str, timeout: int = 10, limit: int = 20) -> List[Dict]:
+        from agent import X_EXTRACTION
+        if not X_EXTRACTION:
+            return []
+        
+        models = X_EXTRACTION.get("models", {})
+        model = models.get(model_name)
+        if not model:
+            return []
+        
+        container_selector = model.get("container")
+        if not container_selector:
+            return [await self.extract(model_name, timeout)]
+        
+        await self.wait_for_element(container_selector, timeout=timeout)
+        
+        fields = model.get("fields", {})
+        results = []
+        
+        for i in range(limit):
+            item_result = {}
+            has_value = False
+            
+            for field_name, field_config in fields.items():
+                selector = field_config.get("selector")
+                transform = field_config.get("transform")
+                if not selector:
+                    continue
+                
+                js = f"""
+                (function() {{
+                    const items = document.querySelectorAll('{container_selector}');
+                    if (items.length <= {i}) return '';
+                    const el = items[{i}].querySelector('{selector}');
+                    if (!el) return '';
+                    if (el.tagName === 'IMG') return el.src || '';
+                    return el.innerText?.trim() || el.value || el.placeholder || '';
+                }})()
+                """
+                
+                try:
+                    value = await self.evaluate(js, release=True)
+                    if transform == "int":
+                        if isinstance(value, str):
+                            value = value.replace(',', '').strip()
+                        value = int(value) if value else 0
+                    elif transform == "exists":
+                        value = bool(value)
+                    elif transform == "list":
+                        value = [value] if value else []
+                    item_result[field_name] = value
+                    if value:
+                        has_value = True
+                except:
+                    item_result[field_name] = None
+            
+            if has_value:
+                results.append(item_result)
             else:
-                await update.message.reply_text("📭 Файл debug.log пуст")
+                break
+        
+        return results
+    
+    async def screenshot(self, format: str = "png") -> bytes:
+        print(f"{Colors.CYAN}📸 Делаю скриншот...{Colors.RESET}")
+        
+        await self.set_viewport(self.viewport_width, self.viewport_height)
+        result = await self.send_command(
+            "Page.captureScreenshot",
+            {"format": format, "captureBeyondViewport": False}
+        )
+        if "result" in result and "data" in result["result"]:
+            return base64.b64decode(result["result"]["data"])
+        elif "data" in result:
+            return base64.b64decode(result["data"])
         else:
-            await update.message.reply_text("❌ Файл logs/debug.log не найден. Сначала дай команду боту.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)}")
-
-# ===== КОНЕЦ КОМАНД =====
-
-def main():
-    add_log("bot_started", "Бот запущен", "success")
-    app = Application.builder().token(TOKEN).build()
+            raise Exception(f"Неизвестный ответ CDP: {result}")
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("logai", show_logs))
-    app.add_handler(CommandHandler("logclear", clear_logs_command))
-    app.add_handler(CommandHandler("keep", toggle_keep_browser))
-    app.add_handler(CommandHandler("close", close_browser_command))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("debug_x", debug_x))
+    async def click_human(self, selector: str):
+        print(f"{Colors.CYAN}🖱️ Человеческий клик по {selector}{Colors.RESET}")
+        js_code = Mask.get_human_click_js(selector)
+        result = await self.evaluate(js_code, release=True)
+        if not result:
+            raise Exception(f"Не удалось кликнуть по {selector}")
+        await asyncio.sleep(0.5)
     
-    app.add_handler(CommandHandler("logs_cdp", download_cdp_logs))
-    app.add_handler(CommandHandler("logs_cdp_full", download_full_cdp_logs))
-    app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
-    app.add_handler(CommandHandler("cdp_stats", cdp_stats))
-    app.add_handler(CommandHandler("logs_eval", show_eval_logs))
-    app.add_handler(CommandHandler("last_plan", show_last_plan))
-    app.add_handler(CommandHandler("debug_logs", show_debug_logs))
+    async def type_human(self, selector: str, text: str):
+        print(f"{Colors.CYAN}⌨️ Человеческий ввод: {text}{Colors.RESET}")
+        js_code = Mask.get_human_type_js(selector, text)
+        result = await self.evaluate(js_code, release=True)
+        if not result:
+            raise Exception(f"Не удалось ввести текст в {selector}")
+        await asyncio.sleep(0.5)
     
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    async def scroll_human(self, distance: int):
+        print(f"{Colors.CYAN}📜 Человеческий скролл: {distance}px{Colors.RESET}")
+        js_code = Mask.get_human_scroll_js(distance)
+        result = await self.evaluate(js_code, release=True)
+        if not result:
+            raise Exception("Не удалось выполнить скролл")
+        await asyncio.sleep(0.3)
     
-    print("✅ Бот запущен с xBRIEF")
-    print("📋 Команды:")
-    print("  /logs_cdp — показать CDP логи")
-    print("  /logs_cdp_full — скачать полный CDP лог")
-    print("  /logs_clear_cdp — очистить CDP логи")
-    print("  /cdp_stats — статистика CDP команд")
-    print("  /logs_eval — показать eval логи")
-    print("  /last_plan — показать последний xBRIEF план")
-    print("  /debug_logs — показать отладочные логи")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    async def disconnect(self):
+        if self._keep_alive_task and not self._keep_alive_task.done():
+            self._keep_alive_task.cancel()
+            try:
+                await self._keep_alive_task
+            except:
+                pass
+            self._keep_alive_task = None
+        
+        if self.websocket:
+            await self.websocket.close()
+            self.websocket = None
+            print(f"{Colors.CYAN}🔌 WebSocket отключен{Colors.RESET}")
+            
+    def close(self):
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+            self.process = None
+            print(f"{Colors.CYAN}🛑 Браузер закрыт{Colors.RESET}")
