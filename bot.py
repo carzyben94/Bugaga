@@ -53,7 +53,8 @@ async def start(update: Update, context):
         "/debug_x — диагностика X.com\n"
         "/logs_cdp — показать CDP логи (200 записей)\n"
         "/logs_cdp_full — скачать полный CDP лог файлом\n"
-        "/logs_clear_cdp — очистить CDP логи"
+        "/logs_clear_cdp — очистить CDP логи\n"
+        "/cdp_stats — статистика CDP команд"
     )
 
 async def status(update: Update, context):
@@ -61,6 +62,11 @@ async def status(update: Update, context):
     stats = get_memory_stats()
     logs = get_logs()
     proto_stats = get_protocols_stats()
+    
+    # Проверяем размер CDP лога
+    cdp_size = 0
+    if os.path.exists("cdp_responses.log"):
+        cdp_size = os.path.getsize("cdp_responses.log")
     
     text = (
         f"📊 **Статус бота**\n"
@@ -85,7 +91,11 @@ async def status(update: Update, context):
         f"📦 **Система:**\n"
         f"  • Python: {sys.version.split()[0]}\n"
         f"  • GitHub: {'✅' if os.environ.get('GITHUB_TOKEN') else '❌'}\n"
-        f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}"
+        f"  • Agnes API: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n\n"
+        f"📝 **CDP лог:**\n"
+        f"  • Размер: {cdp_size / 1024:.1f} КБ\n"
+        f"  • Команды: /logs_cdp — посмотреть\n"
+        f"  • Скачать: /logs_cdp_full"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -477,10 +487,10 @@ async def handle_message(update: Update, context):
     await update.message.reply_text("🤔 Думаю...")
     await execute_with_retry(update, user_text)
 
-# ===== НОВЫЕ КОМАНДЫ ДЛЯ ЛОГОВ =====
+# ===== КОМАНДЫ ДЛЯ РАБОТЫ С CDP ЛОГАМИ =====
 
 async def download_cdp_logs(update: Update, context):
-    """Скачать CDP логи (последние 200 записей)"""
+    """Показать CDP логи (последние 200 записей)"""
     try:
         if os.path.exists("cdp_responses.log"):
             with open("cdp_responses.log", "r", encoding="utf-8") as f:
@@ -490,10 +500,10 @@ async def download_cdp_logs(update: Update, context):
                 await update.message.reply_text("📭 CDP лог пуст")
                 return
             
-            lines = content.split('\n')
+            lines = content.strip().split('\n')
             total_lines = len(lines)
             
-            # ✅ ТЕПЕРЬ 200 ЗАПИСЕЙ
+            # Показываем последние 200 записей (или все, если меньше)
             if total_lines > 200:
                 lines = lines[-200:]
                 content = '\n'.join(lines)
@@ -526,7 +536,7 @@ async def download_full_cdp_logs(update: Update, context):
             await update.message.reply_document(
                 document=open("cdp_responses.log", "rb"),
                 filename="cdp_responses.log",
-                caption=f"📡 CDP логи ({len(content.split(chr(10)))} записей)"
+                caption=f"📡 CDP логи ({len(content.strip().split(chr(10)))} записей)"
             )
         else:
             await update.message.reply_text("❌ Файл cdp_responses.log не найден")
@@ -536,19 +546,92 @@ async def download_full_cdp_logs(update: Update, context):
 async def clear_cdp_logs(update: Update, context):
     """Очистить CDP логи"""
     try:
+        files_deleted = []
         if os.path.exists("cdp_responses.log"):
             os.remove("cdp_responses.log")
-            await update.message.reply_text("🧹 CDP логи очищены")
+            files_deleted.append("cdp_responses.log")
+        if os.path.exists("cdp_logs.json"):
+            os.remove("cdp_logs.json")
+            files_deleted.append("cdp_logs.json")
+        if os.path.exists("cdp_errors.log"):
+            os.remove("cdp_errors.log")
+            files_deleted.append("cdp_errors.log")
+        
+        # Очищаем папку logs
+        if os.path.exists("logs"):
+            for f in os.listdir("logs"):
+                os.remove(os.path.join("logs", f))
+            files_deleted.append("logs/*")
+        
+        if files_deleted:
+            await update.message.reply_text(f"🧹 CDP логи очищены: {', '.join(files_deleted)}")
         else:
-            await update.message.reply_text("📭 Файл cdp_responses.log не найден")
+            await update.message.reply_text("📭 CDP лог-файлы не найдены")
     except Exception as e:
         await update.message.reply_text(f"❌ {str(e)}")
 
-# ===== КОНЕЦ НОВЫХ КОМАНД =====
+async def cdp_stats(update: Update, context):
+    """Показать статистику CDP команд"""
+    global browser_instance
+    
+    if not browser_instance:
+        await update.message.reply_text("❌ Браузер не запущен")
+        return
+    
+    try:
+        # Получаем логи из браузера
+        logs = browser_instance.get_logs(50) if hasattr(browser_instance, 'get_logs') else []
+        
+        if not logs:
+            await update.message.reply_text("📭 Нет CDP логов")
+            return
+        
+        # Считаем статистику
+        methods = {}
+        total_duration = 0
+        errors = 0
+        
+        for log in logs:
+            method = log.get("method", "unknown")
+            duration = log.get("duration", 0)
+            success = log.get("success", True)
+            
+            if method not in methods:
+                methods[method] = {"count": 0, "total_time": 0, "errors": 0}
+            
+            methods[method]["count"] += 1
+            methods[method]["total_time"] += duration
+            total_duration += duration
+            if not success:
+                methods[method]["errors"] += 1
+                errors += 1
+        
+        # Формируем ответ
+        text = "📊 **CDP Статистика:**\n"
+        text += "========================\n\n"
+        text += f"📝 Всего команд: {len(logs)}\n"
+        text += f"⏱️ Общее время: {total_duration:.2f}s\n"
+        text += f"❌ Ошибок: {errors}\n"
+        text += f"✅ Успешно: {len(logs) - errors}\n\n"
+        
+        text += "📋 **Команды:**\n"
+        for method, data in sorted(methods.items(), key=lambda x: x[1]["count"], reverse=True)[:10]:
+            avg_time = data["total_time"] / data["count"] if data["count"] > 0 else 0
+            status = "✅" if data["errors"] == 0 else f"⚠️ {data['errors']} ошиб."
+            text += f"  {status} `{method}`: {data['count']} раз, ø {avg_time:.2f}s\n"
+        
+        await update.message.reply_text(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ {str(e)}")
+
+# ===== КОНЕЦ КОМАНД ДЛЯ ЛОГОВ =====
 
 def main():
     add_log("bot_started", "Бот запущен", "success")
     app = Application.builder().token(TOKEN).build()
+    
+    # ОСНОВНЫЕ КОМАНДЫ
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("logai", show_logs))
@@ -557,13 +640,22 @@ def main():
     app.add_handler(CommandHandler("close", close_browser_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("debug_x", debug_x))
-    # НОВЫЕ КОМАНДЫ ДЛЯ ЛОГОВ
+    
+    # КОМАНДЫ ДЛЯ CDP ЛОГОВ
     app.add_handler(CommandHandler("logs_cdp", download_cdp_logs))
     app.add_handler(CommandHandler("logs_cdp_full", download_full_cdp_logs))
     app.add_handler(CommandHandler("logs_clear_cdp", clear_cdp_logs))
-    # ОБЫЧНЫЕ КОМАНДЫ
+    app.add_handler(CommandHandler("cdp_stats", cdp_stats))
+    
+    # ОБЫЧНЫЕ СООБЩЕНИЯ
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     print("✅ Бот запущен с xBRIEF")
+    print("📋 Команды:")
+    print("  /logs_cdp — показать CDP логи")
+    print("  /logs_cdp_full — скачать полный CDP лог")
+    print("  /logs_clear_cdp — очистить CDP логи")
+    print("  /cdp_stats — статистика CDP команд")
     app.run_polling()
 
 if __name__ == "__main__":
