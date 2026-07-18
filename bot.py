@@ -74,8 +74,6 @@ logger.info("✅ Браузер готов")
 # ============================================================
 
 async def ask_agnes(messages):
-    """Запрос к Agnes AI с полным логированием"""
-    # Логируем ВСЁ сообщение
     logger.info("=" * 60)
     logger.info("📤 ОТПРАВКА В AGNES AI:")
     for msg in messages:
@@ -105,7 +103,6 @@ async def ask_agnes(messages):
             data = response.json()
             content = data["choices"][0]["message"]["content"]
             
-            # Логируем ВЕСЬ ответ
             logger.info("=" * 60)
             logger.info("📥 ОТВЕТ ОТ AGNES AI:")
             logger.info(f"  {content}")
@@ -117,11 +114,10 @@ async def ask_agnes(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# 4. ВЫПОЛНЕНИЕ КОДА С ПЕРЕХВАТОМ ВЫВОДА
+# 4. ВЫПОЛНЕНИЕ КОДА
 # ============================================================
 
 def execute_code(code):
-    """Выполняет код и перехватывает всё, что выводится через print()"""
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
     try:
         stdout_buffer = io.StringIO()
@@ -183,7 +179,7 @@ async def start(update, context):
     )
 
 async def log(update, context):
-    """Показывает последние 50 строк логов"""
+    """Показывает последние 30 строк логов (без Markdown)"""
     logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
@@ -193,13 +189,13 @@ async def log(update, context):
         
         with open(log_file, 'r') as f:
             lines = f.readlines()
-            last_lines = lines[-50:] if len(lines) > 50 else lines
+            last_lines = lines[-30:] if len(lines) > 30 else lines
             
-            msg = "📋 **Последние логи:**\n\n```\n"
+            msg = "📋 Последние логи:\n\n"
             msg += ''.join(last_lines)
-            msg += "```"
             
-            await update.message.reply_text(msg[:4000], parse_mode='Markdown')
+            # Отправляем БЕЗ parse_mode
+            await update.message.reply_text(msg[:4000])
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -219,6 +215,17 @@ async def ask(update, context):
 You are a browser agent that controls a real browser via browser-harness.
 
 🚨 CRITICAL RULE: ALWAYS use print() to output the result. Without print(), the user will see nothing.
+
+WRONG (no output):
+new_tab("https://google.com")
+wait_for_load()
+page_info()  # ← ничего не выводит!
+
+CORRECT (with output):
+new_tab("https://google.com")
+wait_for_load()
+info = page_info()
+print(info)  # ← ВСЕГДА используй print()!
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
