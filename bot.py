@@ -4,6 +4,7 @@ import subprocess
 import time
 import json
 import shutil
+import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
@@ -12,87 +13,72 @@ if not TOKEN:
     print("❌ TELEGRAM_BOT_TOKEN не задан")
     exit(1)
 
+# ===== УНИВЕРСАЛЬНЫЙ ИМПОРТ BROWSER-HARNESS =====
+HARNESS_AVAILABLE = False
+BH = None
+
+try:
+    import browser_harness
+    print(f"📦 browser-harness загружен: {browser_harness.__file__}")
+    print(f"📋 Доступно: {[x for x in dir(browser_harness) if not x.startswith('_')]}")
+    
+    # Пробуем разные варианты
+    if hasattr(browser_harness, 'helpers'):
+        BH = browser_harness.helpers
+        print("✅ Использую browser_harness.helpers")
+    elif hasattr(browser_harness, 'cdp'):
+        BH = browser_harness
+        print("✅ Использую browser_harness.cdp")
+    else:
+        # Пробуем импортировать напрямую
+        try:
+            from browser_harness import helpers
+            BH = helpers
+            print("✅ Использую helpers напрямую")
+        except ImportError:
+            # Последний вариант — использовать как есть
+            BH = browser_harness
+            print("✅ Использую browser_harness напрямую")
+    
+    HARNESS_AVAILABLE = True
+    
+except ImportError as e:
+    print(f"⚠️ browser-harness не найден: {e}")
+
 # ===== НАДЁЖНЫЙ ПОИСК БРАУЗЕРА =====
 def find_chrome():
-    """Ищет Chrome/Chromium по 20+ путям"""
-    
-    # Имена исполняемых файлов
     possible_names = [
         "chromium", "chromium-browser", "chrome", "google-chrome",
         "google-chrome-stable", "chrome-browser"
     ]
     
-    # Возможные пути
     possible_paths = [
-        # Стандартные пути
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chrome",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/local/bin/chromium",
-        "/usr/local/bin/chrome",
-        "/usr/local/bin/google-chrome",
-        # Snap-пути
-        "/snap/bin/chromium",
-        "/snap/bin/chrome",
-        # Docker-пути
-        "/app/chromium/chrome",
-        "/app/chrome/chrome",
-        # Другие
-        "/opt/google/chrome/chrome",
-        "/opt/chromium/chrome",
-        "/usr/lib/chromium-browser/chromium-browser",
-        "/usr/lib/chromium/chromium",
-        "/usr/lib/google-chrome/chrome",
-        "/usr/lib64/google-chrome/chrome",
-        # macOS
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        # Windows (WSL)
-        "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
-        "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/chrome",
+        "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+        "/usr/local/bin/chromium", "/usr/local/bin/chrome",
+        "/usr/local/bin/google-chrome", "/snap/bin/chromium", "/snap/bin/chrome",
+        "/opt/google/chrome/chrome", "/opt/chromium/chrome",
+        "/usr/lib/chromium-browser/chromium-browser", "/usr/lib/chromium/chromium",
+        "/usr/lib/google-chrome/chrome", "/usr/lib64/google-chrome/chrome",
     ]
     
-    # Проверяем через which
     for name in possible_names:
         path = shutil.which(name)
         if path and os.path.exists(path) and os.access(path, os.X_OK):
-            print(f"✅ Найден Chrome через which: {path}")
+            print(f"✅ Найден Chrome: {path}")
             return path
     
-    # Проверяем пути
     for path in possible_paths:
         if os.path.exists(path) and os.access(path, os.X_OK):
-            print(f"✅ Найден Chrome по пути: {path}")
+            print(f"✅ Найден Chrome: {path}")
             return path
-    
-    # Пробуем find (медленно, но надёжно)
-    try:
-        result = subprocess.run(
-            ["find", "/", "-name", "chromium", "-type", "f", "-executable", "2>/dev/null"],
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        for line in result.stdout.strip().split('\n'):
-            if line and os.access(line, os.X_OK):
-                print(f"✅ Найден Chrome через find: {line}")
-                return line
-    except:
-        pass
     
     print("❌ Браузер не найден!")
     return None
 
 # ===== ЗАПУСК БРАУЗЕРА =====
 def start_browser():
-    """Запускает браузер с CDP-портом"""
-    
-    # Проверяем, не запущен ли уже браузер
     try:
-        import httpx
         resp = httpx.get("http://localhost:9222/json/version", timeout=1)
         if resp.status_code == 200:
             print("✅ Браузер уже запущен")
@@ -102,7 +88,6 @@ def start_browser():
     
     chrome_path = find_chrome()
     if not chrome_path:
-        print("❌ Браузер не найден!")
         return False
     
     cmd = [
@@ -113,12 +98,10 @@ def start_browser():
         "--disable-dev-shm-usage",
         "--disable-setuid-sandbox",
         "--remote-debugging-port=9222",
-        "--remote-debugging-address=0.0.0.0",
         "--user-data-dir=/tmp/chrome-profile",
     ]
     
-    print(f"🚀 Запуск браузера: {chrome_path}")
-    print(f"📋 Команда: {' '.join(cmd)}")
+    print(f"🚀 Запуск: {chrome_path}")
     
     try:
         subprocess.Popen(
@@ -131,50 +114,67 @@ def start_browser():
         print(f"❌ Ошибка запуска: {e}")
         return False
     
-    # Ждём запуска
     for attempt in range(15):
         time.sleep(1)
         try:
-            import httpx
             resp = httpx.get("http://localhost:9222/json/version", timeout=1)
             if resp.status_code == 200:
-                print(f"✅ Браузер запущен (попытка {attempt+1})")
+                print(f"✅ Браузер запущен ({attempt+1})")
                 return True
         except:
-            print(f"⏳ Ожидание браузера... ({attempt+1}/15)")
+            print(f"⏳ Ожидание... ({attempt+1}/15)")
     
-    print("❌ Не удалось запустить браузер")
     return False
 
-# ===== ЗАПУСК БРАУЗЕРА ПРИ СТАРТЕ =====
 print("🚀 Инициализация...")
 browser_started = start_browser()
 
-# ===== ИМПОРТ BROWSER-HARNESS =====
-try:
-    from browser_harness import helpers as BH
-    HARNESS_AVAILABLE = True
-    print("✅ browser-harness загружен")
-except ImportError:
-    HARNESS_AVAILABLE = False
-    print("⚠️ browser-harness не найден")
-
-# ===== КЛАСС БРАУЗЕРА =====
+# ===== УНИВЕРСАЛЬНЫЙ КЛАСС БРАУЗЕРА =====
 class HarnessBrowser:
     def __init__(self):
         self.connected = False
+        self._bh = BH
+    
+    def _call(self, func_name, *args, **kwargs):
+        """Универсальный вызов функций browser-harness"""
+        if not HARNESS_AVAILABLE:
+            raise Exception("browser-harness не доступен")
+        
+        # Пробуем найти функцию
+        if hasattr(self._bh, func_name):
+            return getattr(self._bh, func_name)(*args, **kwargs)
+        
+        # Пробуем в helpers
+        try:
+            from browser_harness import helpers
+            if hasattr(helpers, func_name):
+                return getattr(helpers, func_name)(*args, **kwargs)
+        except:
+            pass
+        
+        # Пробуем через cdp
+        if hasattr(self._bh, 'cdp') and func_name == 'goto_url':
+            return self._bh.cdp("Page.navigate", url=args[0])
+        
+        raise Exception(f"Функция {func_name} не найдена")
     
     async def connect(self):
         if not HARNESS_AVAILABLE:
             return "❌ browser-harness не доступен"
         try:
-            if BH and hasattr(BH, 'ensure_real_tab'):
-                BH.ensure_real_tab()
-            elif BH and hasattr(BH, 'ensure_tab'):
-                BH.ensure_tab()
+            # Пробуем разные способы
+            if hasattr(self._bh, 'ensure_real_tab'):
+                self._bh.ensure_real_tab()
+            elif hasattr(self._bh, 'ensure_tab'):
+                self._bh.ensure_tab()
             else:
-                from browser_harness import ensure_real_tab
-                ensure_real_tab()
+                # Пробуем через helpers
+                try:
+                    from browser_harness import helpers
+                    if hasattr(helpers, 'ensure_real_tab'):
+                        helpers.ensure_real_tab()
+                except:
+                    pass
             self.connected = True
             print("✅ Браузер подключен")
             return "✅ Браузер подключен"
@@ -185,11 +185,17 @@ class HarnessBrowser:
         if not self.connected:
             await self.connect()
         try:
-            if BH and hasattr(BH, 'goto_url'):
-                BH.goto_url(url)
+            if hasattr(self._bh, 'goto_url'):
+                self._bh.goto_url(url)
             else:
-                from browser_harness import goto_url
-                goto_url(url)
+                try:
+                    from browser_harness import helpers
+                    if hasattr(helpers, 'goto_url'):
+                        helpers.goto_url(url)
+                    else:
+                        self._call('cdp', "Page.navigate", url=url)
+                except:
+                    self._call('cdp', "Page.navigate", url=url)
             return {"success": True, "url": url}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -198,11 +204,22 @@ class HarnessBrowser:
         if not self.connected:
             await self.connect()
         try:
-            if BH and hasattr(BH, 'js'):
-                return BH.js(expression)
+            if hasattr(self._bh, 'js'):
+                return self._bh.js(expression)
             else:
-                from browser_harness import js
-                return js(expression)
+                try:
+                    from browser_harness import helpers
+                    if hasattr(helpers, 'js'):
+                        return helpers.js(expression)
+                except:
+                    pass
+                # Через CDP
+                result = await self._call('cdp', "Runtime.evaluate", 
+                                          expression=expression, 
+                                          returnByValue=True)
+                if result and 'result' in result and 'result' in result['result']:
+                    return result['result']['result'].get('value')
+                return result
         except Exception as e:
             return {"error": str(e)}
 
@@ -212,24 +229,25 @@ browser = HarnessBrowser()
 async def start(update: Update, context):
     await update.message.reply_text(
         "👋 **Бот с browser-harness**\n\n"
-        f"📦 **browser-harness:** {'✅ Доступен' if HARNESS_AVAILABLE else '❌ Не установлен'}\n"
+        f"📦 **browser-harness:** {'✅ Доступен' if HARNESS_AVAILABLE else '❌ Не доступен'}\n"
         f"🌐 **Браузер:** {'✅ Запущен' if browser_started else '❌ Не запущен'}\n\n"
         "Команды:\n"
-        "/start — справка\n"
         "/status — статус\n"
-        "/connect — подключиться к браузеру\n"
-        "/open <url> — открыть страницу\n"
+        "/connect — подключиться\n"
+        "/open <url> — открыть\n"
         "/js <код> — выполнить JS\n\n"
-        "Или просто напиши:\n"
+        "Или просто:\n"
         "• `открой google.com`\n"
         "• `js: document.title`",
         parse_mode="Markdown"
     )
 
 async def status(update: Update, context):
-    text = f"🔗 **Статус подключения:** {'✅ Подключен' if browser.connected else '❌ Не подключен'}\n"
+    text = f"🔗 **Статус:** {'✅ Подключен' if browser.connected else '❌ Не подключен'}\n"
     text += f"🌐 **Браузер:** {'✅ Запущен' if browser_started else '❌ Не запущен'}\n"
-    text += f"📦 **browser-harness:** {'✅ Доступен' if HARNESS_AVAILABLE else '❌ Не установлен'}\n"
+    text += f"📦 **browser-harness:** {'✅ Доступен' if HARNESS_AVAILABLE else '❌ Не доступен'}\n"
+    if BH:
+        text += f"📋 **Доступно:** {[x for x in dir(BH) if not x.startswith('_')][:5]}...\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def connect(update: Update, context):
@@ -238,7 +256,7 @@ async def connect(update: Update, context):
 
 async def open_url(update: Update, context):
     if not context.args:
-        await update.message.reply_text("❌ Укажи URL: `/open https://example.com`")
+        await update.message.reply_text("❌ Укажи URL")
         return
     url = context.args[0]
     if not url.startswith("http"):
@@ -248,14 +266,14 @@ async def open_url(update: Update, context):
     if result.get("success"):
         await update.message.reply_text(f"✅ {url}")
     else:
-        await update.message.reply_text(f"❌ {result.get('error', 'Ошибка')}")
+        await update.message.reply_text(f"❌ {result.get('error')}")
 
 async def execute_js(update: Update, context):
     if not context.args:
-        await update.message.reply_text("❌ Укажи JS код: `/js document.title`")
+        await update.message.reply_text("❌ Укажи JS код")
         return
     expression = " ".join(context.args)
-    await update.message.reply_text(f"⚡ Выполняю JS...")
+    await update.message.reply_text(f"⚡ Выполняю...")
     result = await browser.evaluate(expression)
     if isinstance(result, dict) and "error" in result:
         await update.message.reply_text(f"❌ {result['error']}")
@@ -264,37 +282,33 @@ async def execute_js(update: Update, context):
 
 async def handle_message(update: Update, context):
     text = update.message.text.lower()
-    
     if text.startswith("открой "):
         url = text[7:].strip()
         if not url.startswith("http"):
             url = "https://" + url
-        await update.message.reply_text(f"🌐 Открываю {url}...")
         result = await browser.navigate(url)
         if result.get("success"):
             await update.message.reply_text(f"✅ {url}")
         else:
-            await update.message.reply_text(f"❌ {result.get('error', 'Ошибка')}")
+            await update.message.reply_text(f"❌ {result.get('error')}")
         return
     
     if text.startswith("js:") or text.startswith("выполни js:"):
         expression = text.split(":", 1)[1].strip()
-        await update.message.reply_text(f"⚡ Выполняю JS...")
         result = await browser.evaluate(expression)
         if isinstance(result, dict) and "error" in result:
             await update.message.reply_text(f"❌ {result['error']}")
         else:
             await update.message.reply_text(f"📊 Результат:\n```json\n{json.dumps(result, indent=2, ensure_ascii=False)[:4000]}\n```", parse_mode="Markdown")
         return
-    
-    await update.message.reply_text("❓ Не понял. Попробуй `открой google.com` или `/help`")
 
-# ===== ЗАПУСК =====
 def main():
     if HARNESS_AVAILABLE and browser_started:
         try:
-            from browser_harness import ensure_real_tab
-            ensure_real_tab()
+            if hasattr(BH, 'ensure_real_tab'):
+                BH.ensure_real_tab()
+            elif hasattr(BH, 'ensure_tab'):
+                BH.ensure_tab()
             browser.connected = True
             print("✅ Браузер подключен при старте")
         except Exception as e:
