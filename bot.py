@@ -71,7 +71,6 @@ def ensure_browser():
 # ============================================================
 
 async def run_harness(code: str) -> tuple[str, str]:
-    """Выполняет Python-код через CLI browser-harness."""
     env = os.environ.copy()
     env["BU_CDP_URL"] = "http://localhost:9222"
     
@@ -86,14 +85,13 @@ async def run_harness(code: str) -> tuple[str, str]:
     return stdout.decode(), stderr.decode()
 
 # ============================================================
-# 3. ХРАНИЛИЩЕ НАВЫКОВ (как в документации)
+# 3. ХРАНИЛИЩЕ НАВЫКОВ
 # ============================================================
 
 SKILLS_DIR = "/app/agent-workspace/domain-skills"
 os.makedirs(SKILLS_DIR, exist_ok=True)
 
 def save_skill(domain: str, code: str, description: str = ""):
-    """Сохраняет навык для конкретного домена."""
     domain_dir = os.path.join(SKILLS_DIR, domain)
     os.makedirs(domain_dir, exist_ok=True)
     
@@ -103,7 +101,6 @@ def save_skill(domain: str, code: str, description: str = ""):
     return skill_file
 
 def list_skills() -> list[str]:
-    """Возвращает список доступных навыков."""
     skills = []
     for domain in os.listdir(SKILLS_DIR):
         domain_path = os.path.join(SKILLS_DIR, domain)
@@ -114,7 +111,7 @@ def list_skills() -> list[str]:
     return skills
 
 # ============================================================
-# 4. СИСТЕМНЫЙ ПРОМПТ (инструктируем агента)
+# 4. СИСТЕМНЫЙ ПРОМПТ
 # ============================================================
 
 SYSTEM_PROMPT = """
@@ -133,12 +130,13 @@ SYSTEM_PROMPT = """
 - goto_url(url) - перейти по URL
 - cdp(method, params) - отправить CDP-команду
 
-**Правила работы (из документации browser-harness):**
+**Правила работы:**
 1. Если запрос простой — отвечай напрямую.
 2. Если нужен браузер — пиши Python-код с хелперами.
 3. Если функция не сработала — проанализируй ошибку и исправь код.
 4. Успешные решения сохраняй как навыки для повторного использования.
 5. Для кликов используй координаты (клик по картинке), а не селекторы.
+6. ВСЕГДА возвращай результат через print().
 
 **ВАЖНО:** Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
 """
@@ -148,7 +146,6 @@ SYSTEM_PROMPT = """
 # ============================================================
 
 async def ask_agnes(messages: list[dict]) -> str:
-    """Отправляет запрос к Agnes AI."""
     if not AGNES_API_KEY:
         return "❌ Ошибка: AGNES_API_KEY не задан."
 
@@ -181,23 +178,19 @@ async def ask_agnes(messages: list[dict]) -> str:
 # ============================================================
 
 async def execute_agent_code(code: str) -> tuple[str, bool]:
-    """Выполняет код агента через browser-harness."""
     try:
-        # Извлекаем код из markdown
         code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
         if code_match:
             code = code_match.group(1)
         
-        # Если код пустой или нет хелперов — это не код
         if not any(h in code for h in ['new_tab', 'page_info', 'capture_screenshot', 'click_at_xy', 'js', 'cdp']):
-            return code, True  # Это обычный текст
+            return code, True
         
         stdout, stderr = await run_harness(code)
         if stderr:
             return f"❌ Ошибка: {stderr[:500]}", False
         
         if stdout:
-            # Пытаемся распарсить JSON, если есть
             try:
                 data = json.loads(stdout.strip())
                 return json.dumps(data, indent=2, ensure_ascii=False), True
@@ -208,11 +201,22 @@ async def execute_agent_code(code: str) -> tuple[str, bool]:
         return f"❌ Ошибка выполнения: {str(e)[:500]}", False
 
 # ============================================================
-# 7. ОБРАБОТЧИК ЗАПРОСОВ АГЕНТА
+# 7. КОМАНДЫ БОТА
 # ============================================================
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 **Агент с browser-harness**\n\n"
+        "Я умею управлять браузером по твоим командам.\n"
+        "Просто напиши, что нужно сделать.\n\n"
+        "📋 Команды:\n"
+        "/ask <запрос> - задать задачу\n"
+        "/skills - список сохранённых навыков\n"
+        "/status - статус системы\n"
+        "/debug - диагностика"
+    )
+
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главная команда — агент сам решает, что делать."""
     if not context.args:
         await update.message.reply_text(
             "🤖 **ИИ-агент с browser-harness**\n\n"
@@ -228,12 +232,8 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text(f"🤔 Думаю над задачей...")
 
     try:
-        # Проверяем, есть ли подходящий навык
         skills = list_skills()
-        if skills:
-            context_text = f"\n\nДоступные навыки: {', '.join(skills)}"
-        else:
-            context_text = "\n\nНавыков пока нет — я создам новые по мере работы."
+        context_text = f"\n\nДоступные навыки: {', '.join(skills)}" if skills else "\n\nНавыков пока нет."
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT + context_text},
@@ -242,7 +242,6 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response = await ask_agnes(messages)
         
-        # Проверяем, есть ли код в ответе
         if "```python" in response:
             await status_msg.edit_text("⚙️ Выполняю код...")
             
@@ -251,11 +250,9 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if success:
                 await status_msg.edit_text("✅ Готово!")
                 
-                # Сохраняем навык, если это полезный код
                 code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
                 if code_match and len(code_match.group(1)) > 50:
                     skill_code = code_match.group(1)
-                    # Определяем домен из запроса
                     domain = "custom"
                     if "github" in user_query.lower():
                         domain = "github"
@@ -269,7 +266,6 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 await update.message.reply_text(f"**Результат:**\n{result[:4000]}")
             else:
-                # Самоисцеление: пробуем исправить ошибку
                 await status_msg.edit_text("🔄 Исправляю ошибку...")
                 
                 error_messages = messages + [
@@ -288,7 +284,6 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await update.message.reply_text(f"❌ Агент не смог исправить ошибку:\n{result}")
         else:
-            # Обычный ответ
             await status_msg.edit_text("💬 Ответ:")
             if len(response) > 4000:
                 for i in range(0, len(response), 4000):
@@ -298,22 +293,6 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# 8. ДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ
-# ============================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 **Агент с browser-harness**\n\n"
-        "Я умею управлять браузером по твоим командам.\n"
-        "Просто напиши, что нужно сделать.\n\n"
-        "📋 Команды:\n"
-        "/ask <запрос> - задать задачу\n"
-        "/skills - список сохранённых навыков\n"
-        "/status - статус системы\n"
-        "/debug - диагностика"
-    )
 
 async def skills_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     skills = list_skills()
@@ -388,7 +367,7 @@ print(json.dumps(results))
     await update.message.reply_text(msg[:4000])
 
 # ============================================================
-# 9. ЗАПУСК
+# 8. ЗАПУСК
 # ============================================================
 
 def main():
