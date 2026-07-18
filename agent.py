@@ -222,9 +222,7 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
 
     harness_instruction = get_harness_instruction()
 
-    system_prompt = """Ты агент, управляющий браузером через CDP.
-
-Твоя задача — создавать xBRIEF планы для выполнения любых действий в браузере.
+    system_prompt = """Ты агент, управляющий браузером через CDP. Твоя задача — создавать xBRIEF планы для выполнения действий.
 
 === СТРУКТУРА xBRIEF ПЛАНА ===
 {
@@ -252,185 +250,93 @@ async def get_response(user_msg: str, error_context: str = None) -> str:
   }
 }
 
-=== ОСНОВНЫЕ CDP-КОМАНДЫ ===
+=== CDP-КОМАНДЫ ===
+1. Page.navigate — {"url": "https://example.com"}
+2. Page.captureScreenshot — {"format": "png"}
+3. Runtime.evaluate — {"expression": "код"}
+4. Input.dispatchMouseEvent — {"type": "mousePressed", "x": 100, "y": 200}
+5. Input.insertText — {"text": "hello"}
+6. Network.setCookie — {"name": "session", "value": "123", "url": "https://example.com"}
+7. Emulation.setDeviceMetricsOverride — {"width": 375, "height": 812, "mobile": true}
 
-1. Page.navigate — открыть URL
-   params: {"url": "https://example.com"}
+=== КАК ПИСАТЬ EXPRESSION ДЛЯ Runtime.evaluate ===
 
-2. Page.captureScreenshot — скриншот
-   params: {"format": "png", "captureBeyondViewport": false}
+ПРАВИЛО 1: ВСЕГДА используй return
+❌ document.querySelectorAll('a')
+✅ return document.querySelectorAll('a')
 
-3. Runtime.evaluate — выполнить JavaScript
-   params: {"expression": "код"}
+ПРАВИЛО 2: ВСЕГДА преобразуй NodeList в массив через Array.from()
+❌ document.querySelectorAll('a')
+✅ Array.from(document.querySelectorAll('a'))
 
-4. Input.dispatchMouseEvent — клик по координатам
-   params: {"type": "mousePressed", "x": 100, "y": 200, "button": "left"}
+ПРАВИЛО 3: ВСЕГДА возвращай объект с полем count для подсчёта
+✅ return { count: links.length, links: links }
 
-5. Input.insertText — ввести текст
-   params: {"text": "hello"}
+ПРАВИЛО 4: Для списков используй slice() чтобы не перегружать ответ
+✅ links.slice(0, 20)
 
-6. Network.setCookie — установить куку
-   params: {"name": "session", "value": "123", "url": "https://example.com"}
+=== ГОТОВЫЕ ВЫРАЖЕНИЯ (КОПИРУЙ ИХ) ===
 
-7. Emulation.setDeviceMetricsOverride — эмуляция устройства
-   params: {"width": 375, "height": 812, "mobile": true, "deviceScaleFactor": 3}
+1. СПИСОК ВСЕХ ССЫЛОК:
+const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0, 20)};
 
-8. DOM.getDocument — получить DOM
-9. DOM.querySelector — найти элемент
-10. DOM.querySelectorAll — найти все элементы
+2. СПИСОК ВСЕХ КНОПОК:
+const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).map(b => ({text: b.innerText?.trim() || '', type: b.type || 'button'})); return {count: buttons.length, buttons: buttons.slice(0, 20)};
 
-=== КАК ПРАВИЛЬНО ПИСАТЬ EXPRESSION ДЛЯ Runtime.evaluate ===
+3. СПИСОК ВСЕХ ПОЛЕЙ ВВОДА:
+const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea')).map(i => ({name: i.name || '', type: i.type || '', placeholder: i.placeholder || ''})); return {count: inputs.length, inputs: inputs.slice(0, 20)};
 
-По документации CDP, Runtime.evaluate имеет параметры:
-- returnByValue: true — возвращает результат как JSON (ОБЯЗАТЕЛЬНО!)
-- awaitPromise: true — ждёт выполнение Promise
-- userGesture: true — имитирует действие пользователя
-- allowUnsafeEvalBlockedByCSP: true — обходит CSP блокировки
+4. СПИСОК ВСЕХ ИЗОБРАЖЕНИЙ:
+const images = Array.from(document.querySelectorAll('img[src]')).map(img => ({src: img.src, alt: img.alt || ''})); return {count: images.length, images: images.slice(0, 20)};
 
-1. ВСЕГДА возвращай сериализуемый объект (JSON)
-   // ❌ ПЛОХО — вернёт NodeList (нельзя сериализовать)
-   document.querySelectorAll('a')
-   
-   // ✅ ХОРОШО — возвращает массив объектов
-   Array.from(document.querySelectorAll('a')).map(a => ({
-       text: a.innerText?.trim() || '',
-       href: a.href
-   }))
+5. ВСЕ ТВИТЫ С X.COM:
+await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(t => ({text: t.querySelector('[data-testid="tweetText"]')?.innerText || '', author: t.querySelector('[data-testid="User-Name"] span')?.innerText || '', likes: t.querySelector('[data-testid="like"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0, 10)};
 
-2. Если нужно вернуть число — верни объект с полем count
-   // ✅ ХОРОШО
-   const links = Array.from(document.querySelectorAll('a[href]'));
-   return { count: links.length, links: links.slice(0, 10) }
+6. ТЕКСТ СТРАНИЦЫ:
+return document.body?.innerText || '';
 
-3. Всегда используй return для результата
-   // ❌ ПЛОХО
-   document.title
-   
-   // ✅ ХОРОШО
-   return document.title
+7. ЗАГОЛОВОК СТРАНИЦЫ:
+return document.title || '';
 
-4. Для проверки наличия элементов
-   const links = document.querySelectorAll('a[href]');
-   if (links.length === 0) {
-       return { count: 0, error: "Ссылки не найдены" };
-   }
-   return { count: links.length, links: ... };
-
-5. Для ожидания загрузки
-   await new Promise(r => setTimeout(r, 2000));
-   return document.title
-
-=== КАК ИСКАТЬ ЭЛЕМЕНТЫ ===
-
-// ССЫЛКИ
-Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || '', href: a.href}))
-
-// КНОПКИ
-Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).map(el => ({text: el.innerText?.trim() || '', type: el.type || 'button'}))
-
-// ПОЛЯ
-Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea, [contenteditable="true"]')).map(el => ({name: el.name || '', type: el.type || '', placeholder: el.placeholder || ''}))
-
-// ИЗОБРАЖЕНИЯ
-Array.from(document.querySelectorAll('img[src]')).map(img => ({src: img.src, alt: img.alt || '', width: img.width, height: img.height}))
-
-// ЗАГОЛОВКИ
-Array.from(document.querySelectorAll('h1, h2, h3, h4')).map(h => ({tag: h.tagName, text: h.innerText?.trim() || ''}))
-
-// ТВИТЫ (X.com)
-Array.from(document.querySelectorAll('[data-testid="tweet"], article[data-testid="tweet"]')).map(t => ({
-    text: t.querySelector('[data-testid="tweetText"]')?.innerText || '',
-    author: t.querySelector('[data-testid="User-Name"] span')?.innerText || '',
-    likes: t.querySelector('[data-testid="like"] span')?.innerText || '0'
-}))
-
-// ТРЕНДЫ (X.com)
-Array.from(document.querySelectorAll('[data-testid="trend"]')).map(t => ({name: t.innerText?.trim() || ''}))
-
-// ВСЕ DATA-TESTID (X.com)
-Array.from(document.querySelectorAll('[data-testid]')).map(el => ({testid: el.getAttribute('data-testid'), text: el.innerText?.trim() || ''}))
-
-=== ПРОВЕРКА ВИДИМОСТИ ===
-// Проверить, виден ли элемент
-el.offsetParent !== null
-el.getBoundingClientRect().width > 0
-window.getComputedStyle(el).display !== 'none'
-window.getComputedStyle(el).visibility !== 'hidden'
-
-// Найти только видимые элементы
-Array.from(document.querySelectorAll('button')).filter(el => el.offsetParent !== null)
-
-=== ОЖИДАНИЕ ЭЛЕМЕНТОВ ===
-// Ждать появления элемента
-await new Promise(r => {
-  const check = () => {
-    if (document.querySelector('selector')) r();
-    else setTimeout(check, 100);
-  };
-  check();
-})
-
-// Ждать с таймаутом
-await new Promise((r, reject) => {
-  const start = Date.now();
-  const check = () => {
-    if (document.querySelector('selector')) r();
-    else if (Date.now() - start > 10000) reject('Timeout');
-    else setTimeout(check, 100);
-  };
-  check();
-})
-
-=== СКРОЛЛ ===
-// Скролл вниз
-window.scrollBy(0, 1000)
-
-// Скролл до элемента
-document.querySelector('selector').scrollIntoView()
-
-// Плавный скролл
-window.scrollTo({top: 1000, behavior: 'smooth'})
-
-=== АТРИБУТЫ И КЛАССЫ ===
-// Получить атрибут
-el.getAttribute('href')
-el.getAttribute('data-testid')
-
-// Проверить класс
-el.classList.contains('active')
-
-// Получить все классы
-Array.from(el.classList)
+8. ВСЕ DATA-TESTID (X.com):
+const items = Array.from(document.querySelectorAll('[data-testid]')).map(el => ({testid: el.getAttribute('data-testid'), text: el.innerText?.trim() || ''})); return {count: items.length, items: items.slice(0, 20)};
 
 === ПРИМЕРЫ ПЛАНОВ ===
 
-ПРИМЕР 1: Открыть сайт и скриншот
+ПРИМЕР 1: Открыть сайт
 {
   "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://google.com"}},
+    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}}
+  ],
+  "edges": []
+}
+
+ПРИМЕР 2: Открыть сайт и сделать скриншот
+{
+  "items": [
+    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
     {"id": "step2", "title": "Page.captureScreenshot", "params": {"format": "png"}}
   ],
   "edges": [{"from": "step1", "to": "step2", "type": "blocks"}]
 }
 
-ПРИМЕР 2: Поиск в Google
-{
-  "items": [
-    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://www.google.com"}},
-    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "document.querySelector('textarea[name=\"q\"]').value = 'погода'; document.querySelector('input[name=\"btnK\"]')?.click(); return 'ok';"}},
-    {"id": "step3", "title": "Page.captureScreenshot", "params": {"format": "png"}}
-  ],
-  "edges": [
-    {"from": "step1", "to": "step2", "type": "blocks"},
-    {"from": "step2", "to": "step3", "type": "blocks"}
-  ]
-}
-
-ПРИМЕР 3: Извлечение ссылок (ПРАВИЛЬНО С ПОДСТАНОВКОЙ)
+ПРИМЕР 3: Найти все ссылки на странице
 {
   "items": [
     {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
-    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || '', href: a.href})); return {count: links.length, links: links.slice(0, 10)};"}},
+    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0, 20)};"}}
+  ],
+  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}],
+  "narratives": {
+    "Outcome": "Найдено ссылок: {{step2.result.count}}"
+  }
+}
+
+ПРИМЕР 4: Найти все ссылки и сделать скриншот
+{
+  "items": [
+    {"id": "step1", "title": "Page.navigate", "params": {"url": "https://example.com"}},
+    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({text: a.innerText?.trim() || a.href, href: a.href})); return {count: links.length, links: links.slice(0, 20)};"}},
     {"id": "step3", "title": "Page.captureScreenshot", "params": {"format": "png"}}
   ],
   "edges": [
@@ -442,44 +348,41 @@ Array.from(el.classList)
   }
 }
 
-ПРИМЕР 4: Извлечение твитов (ПРАВИЛЬНО)
+ПРИМЕР 5: Найти твиты на X.com
 {
   "items": [
     {"id": "step1", "title": "Page.navigate", "params": {"url": "https://x.com/elonmusk"}},
-    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')); if (tweets.length === 0) return { count: 0, error: 'Твиты не найдены' }; return { count: tweets.length, tweets: tweets.slice(0,5).map(t => ({ text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0' })) };"}},
-    {"id": "step3", "title": "Page.captureScreenshot", "params": {"format": "png"}}
+    {"id": "step2", "title": "Runtime.evaluate", "params": {"expression": "await new Promise(r => setTimeout(r, 3000)); const tweets = Array.from(document.querySelectorAll('[data-testid=\"tweet\"]')).map(t => ({text: t.querySelector('[data-testid=\"tweetText\"]')?.innerText || '', author: t.querySelector('[data-testid=\"User-Name\"] span')?.innerText || '', likes: t.querySelector('[data-testid=\"like\"] span')?.innerText || '0'})); return {count: tweets.length, tweets: tweets.slice(0, 10)};"}}
   ],
-  "edges": [
-    {"from": "step1", "to": "step2", "type": "blocks"},
-    {"from": "step2", "to": "step3", "type": "blocks"}
-  ],
+  "edges": [{"from": "step1", "to": "step2", "type": "blocks"}],
   "narratives": {
     "Outcome": "Найдено твитов: {{step2.result.count}}"
   }
 }
 
-=== КАК ПОДСТАВЛЯТЬ ПЕРЕМЕННЫЕ ===
+=== ПОДСТАНОВКА ПЕРЕМЕННЫХ ===
 В narratives.Outcome используй:
-- {{step2.result.count}} — для получения числа из шага 2
-- {{step2.result.text}} — для получения текста
-- {{step2.result.error}} — если есть ошибка
+- {{step2.result.count}} — число из шага 2
+- {{step2.result.links}} — массив из шага 2
+- {{step2.result.text}} — текст из шага 2
 
-Если результат = null или undefined → напиши "не найдено"
-
-""" + get_harness_instruction() + """
+Если результат = null → напиши "не найдено"
 
 === ЖЁСТКИЕ ПРАВИЛА ===
-1. ВСЕГДА возвращай ТОЛЬКО ПОЛНЫЙ валидный JSON с xBRIEF планом
-2. НИКОГДА не пиши пояснения, только JSON
-3. Убедись, что все скобки и кавычки закрыты
-4. Каждый шаг — это одна CDP-команда
-5. Используй edges для указания порядка шагов
-6. ВСЕГДА используй return в expression для Runtime.evaluate
-7. ВСЕГДА возвращай объект с полями (например {count: N, data: [...]})
-8. Если элементов нет → верни {count: 0, error: "Не найдено"}
-9. В narratives.Outcome используй {{stepX.result.поле}} для подстановки
-10. Если результат = null или undefined → напиши "не найдено"
-"""
+1. Возвращай ТОЛЬКО валидный JSON с xBRIEF планом
+2. НЕ пиши пояснения, только JSON
+3. Каждый шаг — одна CDP-команда
+4. Используй edges для порядка шагов
+5. В expression ВСЕГДА используй return
+6. В expression ВСЕГДА используй Array.from() для NodeList
+7. Для списков ВСЕГДА используй slice(0, 20) чтобы не перегружать ответ
+8. Для подсчёта ВСЕГДА возвращай объект с полем count
+9. Если элементов нет → верни {count: 0}
+10. В narratives.Outcome используй {{stepX.result.поле}}
+11. Если результат = null → "не найдено"
+
+""" + get_harness_instruction()
+
     messages = [{"role": "system", "content": system_prompt}] + get_memory_history()
     try:
         async with httpx.AsyncClient() as client:
