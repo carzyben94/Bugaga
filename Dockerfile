@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
 
 ENV PYTHONUNBUFFERED=1
 ENV CHROMIUM_PATH=/usr/bin/chromium
+ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
@@ -22,8 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py .
 
-CMD ["/bin/bash", "-c", \
-    "echo '🚀 Запуск Chromium...' && \
+# Правильный синтаксис CMD
+CMD sh -c "echo '🚀 Запуск Chromium...' && \
     /usr/bin/chromium \
         --headless \
         --no-sandbox \
@@ -34,7 +35,7 @@ CMD ["/bin/bash", "-c", \
         --user-data-dir=/tmp/chrome-profile \
         about:blank > /tmp/chrome.log 2>&1 & \
     echo '⏳ Ожидание инициализации Chromium...' && \
-    for i in {1..30}; do \
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
         if curl -s http://localhost:9222/json/version > /dev/null 2>&1; then \
             echo '✅ Chromium готов!' && \
             break; \
@@ -42,5 +43,4 @@ CMD ["/bin/bash", "-c", \
         echo -n '.' && sleep 1; \
     done && \
     echo '🚀 Запуск бота...' && \
-    export PATH="/root/.local/bin:$PATH" && \
-    python -u bot.py"]
+    python -u bot.py"
