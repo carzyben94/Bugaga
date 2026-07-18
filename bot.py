@@ -122,13 +122,21 @@ async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔄 Загружаю {url}...")
     
     try:
-        # ✅ ПРАВИЛЬНЫЙ синтаксис для вашей версии
+        # ✅ ИСПРАВЛЕНО: используем page_info()
         code = f"""
 import json
-tab = new_tab("{url}")
 import time
-time.sleep(2)
-print(json.dumps({{"title": tab.title(), "url": tab.url}}))
+
+# Открываем вкладку
+tab = new_tab("{url}")
+
+# Ждем загрузки
+time.sleep(3)
+
+# Получаем информацию о странице (глобальная функция)
+info = page_info()
+
+print(json.dumps(info))
 """
         stdout, stderr = await run_harness(code)
         
@@ -156,14 +164,22 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📸 Делаю скриншот {url}...")
     
     try:
-        # ✅ ПРАВИЛЬНЫЙ синтаксис для скриншота
+        # ✅ ИСПРАВЛЕНО: используем capture_screenshot()
         code = f"""
 import base64
 import time
+
+# Открываем вкладку
 tab = new_tab("{url}")
+
+# Ждем загрузки
 time.sleep(3)
-screenshot_bytes = tab.screenshot()
-print(base64.b64encode(screenshot_bytes).decode())
+
+# Делаем скриншот (глобальная функция)
+screenshot_data = capture_screenshot()
+
+# Выводим base64
+print(base64.b64encode(screenshot_data).decode())
 """
         stdout, stderr = await run_harness(code)
         
