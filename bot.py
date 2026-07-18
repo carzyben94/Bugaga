@@ -11,6 +11,27 @@ import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# ============================================================
+# 0. ЛОГИ (ДОБАВЛЕНО В НАЧАЛО)
+# ============================================================
+
+LOGS_DIR = '/app/logs'
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 1. ИМПОРТ ИЗ BROWSER-HARNESS
+# ============================================================
+
 sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
@@ -30,8 +51,9 @@ from browser_harness.helpers import (
 
 from browser_harness.admin import ensure_daemon
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ============================================================
+# 2. НАСТРОЙКА
+# ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
@@ -43,7 +65,19 @@ os.environ["BU_CDP_URL"] = "http://localhost:9222"
 ensure_daemon()
 logger.info("✅ Браузер готов")
 
+# ============================================================
+# 3. ЗАПРОС К AGNES AI
+# ============================================================
+
 async def ask_agnes(messages):
+    logger.info("=" * 60)
+    logger.info("📤 ОТПРАВКА В AGNES AI:")
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        logger.info(f"  [{role}]: {content[:500]}..." if len(content) > 500 else f"  [{role}]: {content}")
+    logger.info("=" * 60)
+    
     headers = {
         "Authorization": f"Bearer {AGNES_API_KEY}",
         "Content-Type": "application/json"
@@ -54,13 +88,30 @@ async def ask_agnes(messages):
         "temperature": 0.3,
         "max_tokens": 2000
     }
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        response = await client.post(
-            "https://apihub.agnes-ai.com/v1/chat/completions",
-            headers=headers,
-            json=payload
-        )
-        return response.json()["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                "https://apihub.agnes-ai.com/v1/chat/completions",
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            
+            logger.info("=" * 60)
+            logger.info("📥 ОТВЕТ ОТ AGNES AI:")
+            logger.info(f"  {content}")
+            logger.info("=" * 60)
+            
+            return content
+    except Exception as e:
+        logger.error(f"❌ Ошибка Agnes AI: {e}")
+        return f"Ошибка LLM: {str(e)[:200]}"
+
+# ============================================================
+# 4. ВЫПОЛНЕНИЕ КОДА
+# ============================================================
 
 def execute_code(code):
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
@@ -82,6 +133,7 @@ def execute_code(code):
             'js': js,
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
+            'ensure_daemon': ensure_daemon,
             'print': print,
             '__builtins__': __builtins__,
         }
@@ -92,23 +144,34 @@ def execute_code(code):
         output = stdout_buffer.getvalue()
         
         if output:
+            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
             return output.strip(), None
         elif 'result' in globals_dict:
-            return str(globals_dict['result']), None
+            result = str(globals_dict['result'])
+            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
+            return result, None
         
+        logger.warning("⚠️ Код выполнен, но нет вывода")
         return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", None
     except Exception as e:
+        logger.error(f"❌ Ошибка выполнения: {e}")
         return None, str(e)
 
+# ============================================================
+# 5. КОМАНДЫ БОТА
+# ============================================================
+
 async def start(update, context):
+    logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
         "/log — скачать файл логов"
     )
 
 async def log(update, context):
+    logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
-        log_file = '/app/logs/bot.log'
+        log_file = os.path.join(LOGS_DIR, 'bot.log')
         if not os.path.exists(log_file):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
@@ -128,6 +191,9 @@ async def ask(update, context):
         return
 
     user_query = " ".join(context.args)
+    username = update.effective_user.username or "unknown"
+    logger.info(f"👤 {username} запросил: {user_query}")
+    
     status_msg = await update.message.reply_text("🤔 Думаю...")
 
     try:
@@ -186,14 +252,22 @@ Rules:
             output, error = execute_code(code)
 
             if error:
+                logger.error(f"❌ Ошибка выполнения для {username}: {error[:200]}")
                 await status_msg.edit_text(f"❌ Ошибка: {error[:500]}")
             else:
+                logger.info(f"✅ Успешное выполнение для {username}")
                 await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
         else:
+            logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
             await status_msg.edit_text(response[:4000])
 
     except Exception as e:
+        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
+# 6. ЗАПУСК
+# ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
