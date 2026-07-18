@@ -114,55 +114,40 @@ SYSTEM_PROMPT = """
 
 ОСНОВНЫЕ ПРИНЦИПЫ (из документации):
 
-1. Скриншоты — первый шаг: Всегда используй capture_screenshot() чтобы понять текущую страницу. Это позволяет найти видимые цели и решить, нужен ли клик, координаты или дальнейшая навигация.
+1. Скриншоты — первый шаг: Всегда используй CDP-метод для скриншотов.
+2. Клики по координатам: Скриншот -> прочитай пиксели -> click_at_xy(x, y). НЕ используй селекторы!
+3. Навигация: Первая навигация — new_tab(url). После навигации — wait_for_load().
+4. Ввод текста: type_text(text) + press_key("Enter").
 
-2. Клики по координатам: Скриншот -> прочитай пиксели на изображении -> click_at_xy(x, y) -> сделай ещё один скриншот для проверки. НЕ используй селекторы для кликов. Координаты — это то, что видит пользователь.
+ХЕЛПЕРЫ:
+new_tab(url), goto_url(url), wait_for_load(), page_info(),
+capture_screenshot(max_dim=800), click_at_xy(x, y), type_text(text),
+press_key(key), scroll(x, y), js(script), cdp(method, params), ensure_real_tab()
 
-3. Скроллинг: Используй scroll(x, y) когда нужно увидеть контент вне области видимости. После скролла делай скриншот для подтверждения.
+ВАЖНО: Для скриншотов ВСЕГДА используй CDP-метод (надёжнее в headless-режиме):
 
-4. Навигация: Первая навигация на сайт — ВСЕГДА new_tab(url). Переход внутри того же сайта — goto_url(url). После любой навигации всегда wait_for_load().
-
-5. Ввод текста: type_text(text) с последующим press_key("Enter") если нужно отправить форму.
-
-6. JavaScript: Используй js(script) только когда нужно прочитать данные из DOM и координаты не подходят. НЕ используй для кликов и навигации.
-
-7. Информация о странице: page_info() даёт текущий URL, заголовок и размеры.
-
-8. Проверка вкладки: Если сомневаешься, что работаешь в правильной вкладке — используй ensure_real_tab().
-
-9. CDP: Используй cdp(method, params) только если что-то не работает через стандартные хелперы.
-
-ХЕЛПЕРЫ (не требуют импорта):
-new_tab(url) - открыть новую вкладку (ПЕРВАЯ НАВИГАЦИЯ)
-goto_url(url) - перейти по URL в текущей вкладке
-wait_for_load() - дождаться загрузки
-page_info() - получить информацию о странице
-capture_screenshot(max_dim=800) - сделать скриншот (возвращает base64 строку)
-click_at_xy(x, y) - кликнуть по координатам
-type_text(text) - ввести текст
-press_key(key) - нажать клавишу (Enter, Escape, Tab...)
-scroll(x, y) - прокрутить страницу
-js(script) - выполнить JavaScript
-cdp(method, params) - отправить CDP-команду
-ensure_real_tab() - проверить, что мы в реальной вкладке
+ПРАВИЛЬНЫЙ КОД ДЛЯ СКРИНШОТА:
+import json
+try:
+    new_tab("https://example.com")
+    wait_for_load()
+    result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+    print(json.dumps({
+        "action": "screenshot_taken",
+        "source": "🌐 Example",
+        "screenshot": result.get("data"),
+        "note": "Скриншот главной страницы"
+    }))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
 
 ФОРМАТ ВЫВОДА:
-ВСЕГДА возвращай результат через print(json.dumps(...))
-
 Для скриншотов:
 {
   "action": "screenshot_taken",
-  "screenshot": результат capture_screenshot(),
+  "screenshot": "base64-строка",
   "source": "Название с эмодзи",
   "note": "Описание"
-}
-
-Для данных со страницы:
-{
-  "source": "Название с эмодзи",
-  "data": {...},
-  "url": "https://...",
-  "note": "Доп. информация"
 }
 
 Для ошибок:
@@ -170,83 +155,11 @@ ensure_real_tab() - проверить, что мы в реальной вкла
   "error": "Описание ошибки"
 }
 
-ПРИМЕРЫ ПРАВИЛЬНОГО КОДА:
-
-Пример 1: Скриншот
-import json
-try:
-    new_tab("https://example.com")
-    wait_for_load()
-    img = capture_screenshot(max_dim=800)
-    print(json.dumps({
-        "action": "screenshot_taken",
-        "source": "🌐 Example",
-        "screenshot": img,
-        "note": "Скриншот главной страницы"
-    }))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-
-Пример 2: Клик по координатам
-import json
-try:
-    new_tab("https://example.com")
-    wait_for_load()
-    capture_screenshot()
-    click_at_xy(100, 200)
-    wait_for_load()
-    img2 = capture_screenshot()
-    print(json.dumps({
-        "action": "screenshot_taken",
-        "source": "🌐 Example",
-        "screenshot": img2,
-        "note": "После клика"
-    }))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-
-Пример 3: Получение данных из DOM
-import json
-try:
-    new_tab("https://example.com")
-    wait_for_load()
-    title = js("return document.title")
-    print(json.dumps({
-        "source": "🌐 Example",
-        "data": {"title": title},
-        "url": page_info().get("url")
-    }))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-
-Пример 4: Поиск через координаты
-import json
-try:
-    new_tab("https://google.com")
-    wait_for_load()
-    capture_screenshot()
-    click_at_xy(300, 200)
-    type_text("iPhone 16")
-    press_key("Enter")
-    wait_for_load()
-    img = capture_screenshot()
-    print(json.dumps({
-        "action": "screenshot_taken",
-        "source": "🔍 Google",
-        "screenshot": img,
-        "note": "Результаты поиска"
-    }))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-
 ВАЖНО:
 - НЕ используй селекторы для кликов — только координаты
-- НЕ используй слова "пример", "ориентировочно" без необходимости
 - ПЕРВАЯ навигация — ТОЛЬКО new_tab()
 - После навигации ВСЕГДА wait_for_load()
-- Скриншоты — основной способ понять страницу
-- Для скриншотов используй max_dim=800 чтобы уменьшить размер
-- Ты можешь писать код прямо в ответе, обёрнутый в ```python ... ```.
+- Для скриншотов используй cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 """
 
 async def ask_agnes(messages: list[dict]) -> str:
@@ -302,8 +215,6 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                             try:
                                 if isinstance(screenshot_b64, bytes):
                                     screenshot_b64 = screenshot_b64.decode('utf-8')
-                                if len(screenshot_b64) < 1000:
-                                    return "Скриншот слишком маленький (менее 1KB). Возможно страница не загрузилась.", False
                                 if ',' in screenshot_b64:
                                     screenshot_b64 = screenshot_b64.split(',', 1)[1]
                                 screenshot_b64 = screenshot_b64.strip()
@@ -313,8 +224,6 @@ async def execute_agent_code(code: str, update: Update = None) -> tuple[str, boo
                                 img_bytes = base64.b64decode(screenshot_b64)
                                 if len(img_bytes) > 10 * 1024 * 1024:
                                     return "Скриншот слишком большой (>10MB)", False
-                                if len(img_bytes) < 500:
-                                    return "Скриншот повреждён (менее 500 байт)", False
                                 caption = f"📸 {data.get('source', 'Скриншот')}"
                                 if data.get('note'):
                                     caption += f"\n\n{data.get('note')}"
@@ -352,11 +261,10 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🤖 **ИИ-агент с browser-harness**\n\n"
             "Просто опиши задачу, я решу, как её выполнить:\n"
-            "• 'Покажи заголовок example.com'\n"
-            "• 'Сделай скриншот github.com'\n"
-            "• 'Найди контакты на сайте'\n"
+            "• 'Сделай скриншот google.com'\n"
+            "• 'Найди цены на iPhone'\n"
             "• 'Кликни на кнопку входа'\n\n"
-            "Пример: /ask какие цены на iPhone в Германии"
+            "Пример: /ask сделай скриншот google.com"
         )
         return
     
@@ -371,10 +279,28 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ВАЖНЫЕ ТРЕБОВАНИЯ:
 1. ВСЕГДА выводи результат через print(json.dumps(...))
-2. Для скриншотов используй capture_screenshot(max_dim=800)
-3. Для кликов используй координаты, НЕ селекторы
-4. ПЕРВАЯ навигация — new_tab(), НЕ goto_url()
-5. После навигации ВСЕГДА wait_for_load()
+2. Для скриншотов используй CDP:
+   result = cdp("Page.captureScreenshot", {{"format": "png", "quality": 80}})
+   screenshot = result.get("data")
+3. НЕ используй capture_screenshot() - она ненадёжна в headless-режиме
+4. Для кликов используй координаты, НЕ селекторы
+5. ПЕРВАЯ навигация — new_tab(), НЕ goto_url()
+6. После навигации ВСЕГДА wait_for_load()
+
+Пример правильного кода для скриншота:
+import json
+try:
+    new_tab("https://google.com")
+    wait_for_load()
+    result = cdp("Page.captureScreenshot", {{"format": "png", "quality": 80}})
+    print(json.dumps({{
+        "action": "screenshot_taken",
+        "source": "🔍 Google",
+        "screenshot": result.get("data"),
+        "note": "Скриншот главной страницы"
+    }}))
+except Exception as e:
+    print(json.dumps({{"error": str(e)}}))
 """
         
         messages = [
@@ -518,7 +444,8 @@ import json
 try:
     new_tab("https://httpbin.org/image/png")
     wait_for_load()
-    img = capture_screenshot()
+    result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+    img = result.get("data", "")
     print(json.dumps({"test": "screenshot", "bytes": len(img), "status": "ok"}))
 except Exception as e:
     print(json.dumps({"test": "screenshot", "error": str(e)}))
@@ -549,13 +476,13 @@ except Exception as e:
     
     try:
         data3 = json.loads(stdout3) if stdout3 else {'error': 'пустой ответ'}
-        msg += f"3️⃣ **Скриншот:** "
+        msg += f"3️⃣ **Скриншот (CDP):** "
         if 'error' in data3:
             msg += f"❌ {data3['error']}\n"
         else:
             msg += f"✅ {data3.get('bytes', 0)} байт\n"
     except:
-        msg += f"3️⃣ **Скриншот:** ⚠️ {stdout3[:50]}\n"
+        msg += f"3️⃣ **Скриншот (CDP):** ⚠️ {stdout3[:50]}\n"
     
     if stderr1 or stderr2 or stderr3:
         msg += f"\n⚠️ **Ошибки:**"
