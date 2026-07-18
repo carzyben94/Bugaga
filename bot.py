@@ -9,10 +9,93 @@ import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# ============================================================
+# 1. ИМПОРТ ВСЕГО ИЗ BROWSER-HARNESS
+# ============================================================
+
 sys.path.insert(0, "browser-harness/src")
 
-from browser_harness.helpers import *
-from browser_harness.admin import ensure_daemon
+# helpers.py - все хелперы
+from browser_harness.helpers import (
+    new_tab,
+    goto_url,
+    wait_for_load,
+    page_info,
+    capture_screenshot,
+    save_screenshot,
+    click_at_xy,
+    type_text,
+    press_key,
+    scroll,
+    js,
+    cdp,
+    ensure_real_tab,
+    ensure_isolated_browser,
+    start_remote_daemon,
+    stop_remote_daemon,
+)
+
+# admin.py - управление daemon
+from browser_harness.admin import (
+    ensure_daemon,
+    daemon_alive,
+    restart_daemon,
+    run_doctor,
+    run_update,
+)
+
+# daemon.py - класс BrowserDaemon
+from browser_harness.daemon import BrowserDaemon
+
+# auth.py - авторизация
+from browser_harness.auth import (
+    get_browser_use_api_key,
+    run_auth_cli,
+)
+
+# paths.py - пути
+from browser_harness.paths import (
+    get_agent_workspace,
+    get_domain_skills_dir,
+    get_helpers_path,
+)
+
+# recorder.py - запись сессий
+from browser_harness.recorder import (
+    Recording,
+    auto_recording_setting,
+    latest_recording,
+    recordings,
+    set_auto_recording,
+)
+
+# telemetry.py - телеметрия
+from browser_harness.telemetry import (
+    capture_cli_event,
+    is_enabled,
+    run_telemetry_cli,
+)
+
+# video.py - видео
+from browser_harness.video import (
+    compile_video,
+    export_video,
+    render_video,
+)
+
+# run.py - CLI
+from browser_harness.run import (
+    main as run_cli_main,
+    _run,
+    _version,
+    NAME,
+    HELP,
+    USAGE,
+)
+
+# ============================================================
+# 2. НАСТРОЙКА
+# ============================================================
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,6 +109,10 @@ if not TELEGRAM_TOKEN:
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
 ensure_daemon()
 logger.info("✅ Браузер готов")
+
+# ============================================================
+# 3. ЗАПРОС К AGNES AI
+# ============================================================
 
 async def ask_agnes(messages):
     headers = {
@@ -46,16 +133,21 @@ async def ask_agnes(messages):
         )
         return response.json()["choices"][0]["message"]["content"]
 
-async def execute_code(code):
-    """Выполняет код напрямую, без CLI"""
+# ============================================================
+# 4. ВЫПОЛНЕНИЕ КОДА
+# ============================================================
+
+def execute_code(code):
+    """Выполняет код напрямую с доступом ко ВСЕМ хелперам"""
     try:
-        # Создаём словарь с хелперами
         globals_dict = {
+            # helpers.py
             'new_tab': new_tab,
             'goto_url': goto_url,
             'wait_for_load': wait_for_load,
             'page_info': page_info,
             'capture_screenshot': capture_screenshot,
+            'save_screenshot': save_screenshot,
             'click_at_xy': click_at_xy,
             'type_text': type_text,
             'press_key': press_key,
@@ -63,13 +155,61 @@ async def execute_code(code):
             'js': js,
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
+            'ensure_isolated_browser': ensure_isolated_browser,
+            'start_remote_daemon': start_remote_daemon,
+            'stop_remote_daemon': stop_remote_daemon,
+            
+            # admin.py
+            'ensure_daemon': ensure_daemon,
+            'daemon_alive': daemon_alive,
+            'restart_daemon': restart_daemon,
+            'run_doctor': run_doctor,
+            'run_update': run_update,
+            
+            # daemon.py
+            'BrowserDaemon': BrowserDaemon,
+            
+            # auth.py
+            'get_browser_use_api_key': get_browser_use_api_key,
+            'run_auth_cli': run_auth_cli,
+            
+            # paths.py
+            'get_agent_workspace': get_agent_workspace,
+            'get_domain_skills_dir': get_domain_skills_dir,
+            'get_helpers_path': get_helpers_path,
+            
+            # recorder.py
+            'Recording': Recording,
+            'auto_recording_setting': auto_recording_setting,
+            'latest_recording': latest_recording,
+            'recordings': recordings,
+            'set_auto_recording': set_auto_recording,
+            
+            # telemetry.py
+            'capture_cli_event': capture_cli_event,
+            'telemetry_enabled': is_enabled,
+            'run_telemetry_cli': run_telemetry_cli,
+            
+            # video.py
+            'compile_video': compile_video,
+            'export_video': export_video,
+            'render_video': render_video,
+            
+            # run.py
+            'run_cli_main': run_cli_main,
+            '_run': _run,
+            '_version': _version,
+            'NAME': NAME,
+            'HELP': HELP,
+            'USAGE': USAGE,
+            
+            # Встроенные функции
             'print': print,
+            '__builtins__': __builtins__,
         }
         
-        # Выполняем код
         exec(code, globals_dict)
         
-        # Если в коде была переменная result — возвращаем её
         if 'result' in globals_dict:
             return str(globals_dict['result']), None
         
@@ -77,9 +217,14 @@ async def execute_code(code):
     except Exception as e:
         return None, str(e)
 
+# ============================================================
+# 5. КОМАНДЫ БОТА
+# ============================================================
+
 async def start(update, context):
     await update.message.reply_text(
-        "/ask <запрос> — задать задачу агенту"
+        "/ask <запрос> — задать задачу агенту\n"
+        "/screenshot — скриншот google.com"
     )
 
 async def screenshot(update, context):
@@ -166,8 +311,7 @@ Rules:
 
             await status_msg.edit_text("⚙️ Выполняю код...")
             
-            # ВЫПОЛНЯЕМ КОД НАПРЯМУЮ, БЕЗ CLI
-            output, error = await execute_code(code)
+            output, error = execute_code(code)
 
             if error:
                 await status_msg.edit_text(f"❌ Ошибка: {error[:500]}")
@@ -178,6 +322,10 @@ Rules:
 
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
+# 6. ЗАПУСК
+# ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
