@@ -125,24 +125,7 @@ new_tab(url), goto_url(url), wait_for_load(), page_info(),
 capture_screenshot(max_dim=800), click_at_xy(x, y), type_text(text),
 press_key(key), scroll(x, y), js(script), cdp(method, params), ensure_real_tab()
 
-ВАЖНО: Для скриншотов ВСЕГДА используй CDP-метод (надёжнее в headless-режиме):
-
-ПРАВИЛЬНЫЙ КОД ДЛЯ СКРИНШОТА:
-```python
-import json
-try:
-    new_tab("https://example.com")
-    wait_for_load()
-    result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
-    print(json.dumps({
-        "action": "screenshot_taken",
-        "source": "🌐 Example",
-        "screenshot": result.get("data"),
-        "note": "Скриншот главной страницы"
-    }))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-```
+ВАЖНО: Для скриншотов ВСЕГДА используй CDP-метод (надёжнее в headless-режиме).
 
 ФОРМАТ ВЫВОДА:
 Для скриншотов:
@@ -164,6 +147,7 @@ except Exception as e:
 - После навигации ВСЕГДА wait_for_load()
 - Для скриншотов используй cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 - ВСЕГДА оборачивай код в блок ```python ... ```
+- Если ответ простой (без браузера) — отвечай обычным текстом
 """
 
 async def ask_agnes(messages: list[dict]) -> str:
