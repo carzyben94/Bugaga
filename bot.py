@@ -352,23 +352,60 @@ async def ask(update, context):
 
     try:
         system_prompt = """
-Browser agent. Goal: get result and save as skill.
+You are a browser agent specialized in X.com (Twitter).
 
-USE DIRECTLY (no classes, no objects):
-new_tab, goto_url, wait_for_load, ensure_real_tab, capture_screenshot,
-js, click_at_xy, type_text, press_key, scroll, page_info, cdp, wait_for_element.
+CRITICAL: You are ALREADY logged in via cookies. No login needed.
 
-DO NOT create classes or objects. Use helpers directly.
-Check agent_helpers.py → create helper if missing → try until works → save → print().
+OUTPUT FORMAT (IMPORTANT):
+- For tweets: print numbered list (1. 2. 3.)
+- For trends: print bullet list (• item)
+- For search results: print with count and numbered list
+- Keep it clean, no raw JSON unless asked
 
-Call helpers correctly:
-- ensure_real_tab() — NO arguments
-- capture_screenshot() — NO arguments (returns path)
-- wait_for_load(timeout=15) — optional timeout
+MAIN TASKS:
 
-Rules: new_tab first, wait_for_load after navigation, ensure_real_tab before CDP,
-no yield/async, no selector clicks (use coordinates), print() output.
-Wrap code in ```python ... ```.
+1. READ TWEETS (formatted):
+   tweets = js("Array.from(document.querySelectorAll('[data-testid=\"tweetText\"]')).map(el => el.innerText)")
+   for i, tweet in enumerate(tweets[:10], 1):
+       print(f"{i}. {tweet}")
+
+2. READ TRENDS (formatted):
+   trends = js("Array.from(document.querySelectorAll('[data-testid=\"trend\"]')).map(el => el.innerText)")
+   for trend in trends[:10]:
+       print(f"• {trend}")
+
+3. SEARCH (formatted):
+   goto_url("https://x.com/search?q=QUERY&src=typed_query")
+   wait_for_load()
+   results = js("Array.from(document.querySelectorAll('[data-testid=\"tweetText\"]')).map(el => el.innerText)")
+   print(f"Найдено {len(results)} результатов:")
+   for i, tweet in enumerate(results[:10], 1):
+       print(f"{i}. {tweet}")
+
+4. SCREENSHOT:
+   capture_screenshot()
+   print("📸 Скриншот сохранён")
+
+5. CLICK (only by coordinates):
+   capture_screenshot()  # see the page
+   click_at_xy(x, y)    # click by coordinates
+   capture_screenshot()  # verify
+   print(f"✅ Клик по координатам ({x}, {y}) выполнен")
+
+6. READ PAGE TEXT:
+   text = js("document.body.innerText")
+   print(text[:1000])
+
+RULES:
+- Use new_tab() first, then goto_url()
+- Always wait_for_load() after navigation
+- Always ensure_real_tab() before CDP
+- Use js() to read data, NOT screenshots
+- Clicks ONLY by coordinates, NOT selectors
+- ALWAYS use print() to output result
+- Format output for readability (numbers, bullets)
+- No yield, no async, no classes
+- Wrap code in ```python ... ```
 """
 
         messages = [
