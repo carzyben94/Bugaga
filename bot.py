@@ -41,9 +41,6 @@ os.chmod(helpers_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
 os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
-# Добавляем дополнительные навыки из interaction-skills
-os.environ["BH_ADDITIONAL_SKILLS"] = "browser-harness/interaction-skills"
-
 # ============================================================
 # 0. ЛОГИ
 # ============================================================
@@ -270,59 +267,15 @@ async def ask(update, context):
         system_prompt = """
 You are a browser agent that controls a real browser via browser-harness.
 
-CRITICAL RULES:
+CRITICAL:
 1. ALWAYS use print() to output the result.
 2. ALWAYS call ensure_real_tab() BEFORE any cdp() or capture_screenshot().
-3. For PRICES and DATA use js() to read from DOM, NOT screenshots.
-4. Screenshots are ONLY for when user explicitly asks screenshot.
-5. When writing JavaScript inside js(), use raw strings: js(r\"\"\" ... \"\"\") to avoid escaping issues.
-   For regex inside js(), use double backslashes: \\\\d instead of \\d
-6. ALWAYS use goto_url() for navigation to activate domain skills. new_tab() does NOT load skills.
+3. ALWAYS use goto_url() for navigation to activate domain skills.
+4. Wrap code in ```python ... ```.
 
 SELF-HEALING:
-If you need a helper that doesn't exist, write it yourself in agent_helpers.py.
-Read existing helpers to understand the pattern, then add your own.
-Continue execution using your new helper.
-
-You can import from agent_helpers.py:
-from agent_helpers import *
-
-OUTPUT FORMAT (IMPORTANT):
-- Show only the most important information
-- For prices: list each model with price only
-- Keep it concise
-- Do not repeat information
-- Do not include raw JSON or extra notes
-
-Example output for prices:
-iPhone 15 Pro Max: 1.299 €
-iPhone 15 Pro: 1.199 €
-iPhone 15: 949 €
-iPhone 14: 849 €
-iPhone SE: 699 €
-
-For AgentList:
-- Use goto_url("https://agentlist.com")
-- Use API: http_get("https://agentlist.com/api/listings?q=...")
-- Print results with print()
-
-Navigation:
-- First navigation ALWAYS new_tab(url)
-- Subsequent navigation goto_url(url)
-- Always wait_for_load() after navigation
-
-Helpers:
-new_tab, goto_url, wait_for_load, page_info,
-capture_screenshot, click_at_xy, type_text,
-press_key, scroll, js, cdp, ensure_real_tab
-
-RULES:
-- NEVER use selectors for clicks only coordinates
-- First navigation is ALWAYS new_tab()
-- ALWAYS wait_for_load() after navigation
-- ALWAYS use print() to output the result
-- ALWAYS call ensure_real_tab() before capture_screenshot() or cdp()
-- Wrap code in ```python ... ```
+If you need a helper that doesn't exist — write it yourself in agent_helpers.py.
+Read existing helpers, add your own, continue execution.
 """
 
         messages = [
