@@ -30,7 +30,9 @@ os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
 LOGS_DIR = '/app/logs'
+SCREENSHOTS_DIR = '/app/screenshots'  # папка для скриншотов
 os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +50,7 @@ logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
+logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
 
 sys.path.insert(0, "browser-harness/src")
 
@@ -162,12 +165,28 @@ def execute_code(code):
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
         
+        # Переопределяем capture_screenshot для сохранения в SCREENSHOTS_DIR
+        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
+            if path is None:
+                # Генерируем имя
+                timestamp = int(time.time())
+                filename = f"screenshot_{timestamp}.png"
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+                return capture_screenshot(path=full_path, full=full, max_dim=max_dim)
+            elif not path.startswith('/'):
+                # Относительный путь → сохраняем в SCREENSHOTS_DIR
+                full_path = os.path.join(SCREENSHOTS_DIR, os.path.basename(path))
+                return capture_screenshot(path=full_path, full=full, max_dim=max_dim)
+            else:
+                # Абсолютный путь → используем как есть
+                return capture_screenshot(path=path, full=full, max_dim=max_dim)
+        
         globals_dict = {
             'new_tab': new_tab, 
             'goto_url': goto_url, 
             'wait_for_load': wait_for_load,
             'page_info': page_info, 
-            'capture_screenshot': capture_screenshot,  # оригинальная
+            'capture_screenshot': capture_screenshot_with_path,
             'click_at_xy': click_at_xy, 
             'type_text': type_text, 
             'press_key': press_key,
@@ -264,19 +283,19 @@ async def skills(update, context):
 async def image(update, context):
     """Отправить последний сделанный скриншот"""
     try:
-        # Ищем все png файлы в текущей директории
-        screenshot_files = [f for f in os.listdir('.') if f.endswith('.png')]
+        # Ищем все png файлы в папке SCREENSHOTS_DIR
+        screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
         
         if not screenshot_files:
             await update.message.reply_text("📭 Скриншотов не найдено")
             return
         
         # Сортируем по времени создания (новые сверху)
-        screenshot_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
         
         # Берем последний
         latest = screenshot_files[0]
-        file_path = os.path.join('.', latest)
+        file_path = os.path.join(SCREENSHOTS_DIR, latest)
         
         with open(file_path, 'rb') as f:
             await update.message.reply_photo(
@@ -290,18 +309,18 @@ async def image(update, context):
 async def images(update, context):
     """Отправить все скриншоты"""
     try:
-        screenshot_files = [f for f in os.listdir('.') if f.endswith('.png')]
+        screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
         
         if not screenshot_files:
             await update.message.reply_text("📭 Скриншотов не найдено")
             return
         
         # Сортируем по времени создания
-        screenshot_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
         
         sent_count = 0
         for s_file in screenshot_files[:10]:  # максимум 10 за раз
-            file_path = os.path.join('.', s_file)
+            file_path = os.path.join(SCREENSHOTS_DIR, s_file)
             with open(file_path, 'rb') as f:
                 await update.message.reply_photo(
                     photo=f,
@@ -349,7 +368,7 @@ You are a browser automation agent using Browser Harness library.
 - `goto_url(url)` — navigate current tab to URL, returns up to 10 matching domain-skills 
 - `wait_for_load(timeout=10)` — polls document.readyState until "complete" 
 - `page_info()` — returns viewport metrics, scroll position, page title, pending dialogs 
-- `capture_screenshot(path=None, full=False, max_dim=None)` — take screenshot (saves to current directory)
+- `capture_screenshot(path=None, full=False, max_dim=None)` — take screenshot
 - `click_at_xy(x, y)` — coordinate-based clicks (works across iframes/Shadow DOM) 
 - `type_text(text)` — type text 
 - `fill_input(selector, text)` — high-level helper: focus, clear, type, fire events 
