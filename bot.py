@@ -12,6 +12,13 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
+# ВКЛЮЧАЕМ НАВЫКИ
+# ============================================================
+
+os.environ["BH_DOMAIN_SKILLS"] = "1"
+os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
+
+# ============================================================
 # 0. ЛОГИ
 # ============================================================
 
@@ -165,7 +172,8 @@ async def start(update, context):
     logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
-        "/log — скачать файл логов"
+        "/log — скачать файл логов\n"
+        "/skills — список навыков агента"
     )
 
 async def log(update, context):
@@ -182,6 +190,40 @@ async def log(update, context):
                 filename='bot.log',
                 caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
             )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def skills(update, context):
+    """Показывает список доступных навыков"""
+    logger.info(f"👤 {update.effective_user.username} вызвал /skills")
+    try:
+        skills_dir = os.path.join(
+            os.environ.get("BH_AGENT_WORKSPACE", "browser-harness/agent-workspace"),
+            "domain-skills"
+        )
+        
+        if not os.path.exists(skills_dir):
+            await update.message.reply_text("📭 Папка с навыками не найдена")
+            return
+        
+        skills_list = []
+        for domain in os.listdir(skills_dir):
+            domain_path = os.path.join(skills_dir, domain)
+            if os.path.isdir(domain_path):
+                for f in os.listdir(domain_path):
+                    if f.endswith(".md") or f.endswith(".txt"):
+                        skills_list.append(f"{domain}/{f}")
+        
+        if skills_list:
+            msg = "🧠 **Доступные навыки:**\n\n"
+            for skill in skills_list[:20]:
+                msg += f"• `{skill}`\n"
+            if len(skills_list) > 20:
+                msg += f"\n... и ещё {len(skills_list) - 20}"
+            await update.message.reply_text(msg, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("🧠 Навыков пока нет. Агент создаст их по мере работы.")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -279,6 +321,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("log", log))
+    app.add_handler(CommandHandler("skills", skills))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
