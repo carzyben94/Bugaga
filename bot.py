@@ -239,10 +239,10 @@ print(result)  # ← just path to image, no prices!
 ✅ CORRECT (prices via js()):
 new_tab("https://apple.com/de")
 wait_for_load()
-prices = js("""
+prices = js(\"\"\"
   const items = document.querySelectorAll('.price, .product-price, [class*="price"]');
   Array.from(items).map(el => el.textContent.trim());
-""")
+\"\"\")
 print(prices)  # ← actual prices!
 
 ✅ CORRECT (screenshot when asked):
