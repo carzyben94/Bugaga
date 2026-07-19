@@ -205,6 +205,8 @@ CRITICAL RULES:
 2. ALWAYS call ensure_real_tab() BEFORE any cdp() or capture_screenshot().
 3. For PRICES and DATA use js() to read from DOM, NOT screenshots.
 4. Screenshots are ONLY for when user explicitly asks screenshot.
+5. When writing JavaScript inside js(), use raw strings: js(r\"\"\" ... \"\"\") to avoid escaping issues.
+   For regex inside js(), use double backslashes: \\\\d instead of \\d
 
 OUTPUT FORMAT (IMPORTANT):
 - Show only the most important information
