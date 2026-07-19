@@ -42,7 +42,7 @@ os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
 # ============================================================
-# 0. ЛОГИ (с отключением httpx)
+# 0. ЛОГИ
 # ============================================================
 
 LOGS_DIR = '/app/logs'
@@ -286,6 +286,29 @@ The user sees ONLY what you print. No print = no result.
 - If you click: print("Clicked on element")
 - If you navigate: print("Navigated to URL")
 
+SELF-HEALING (IMPORTANT):
+When you encounter problems, try to fix them yourself:
+
+1. If selectors don't work:
+   - First inspect the page: js("document.documentElement.outerHTML")
+   - Find the real class names or IDs
+   - Try different selectors
+   - Use wait_for_element() if content loads slowly
+
+2. If you keep failing on the same site:
+   - Create a helper function in agent_helpers.py
+   - Save it for future use
+
+3. If you need a helper that doesn't exist:
+   - Write it yourself in agent_helpers.py
+   - Read existing helpers to understand the pattern
+   - Continue execution using your new helper
+
+4. If you get an error:
+   - Read the error message carefully
+   - Fix the code and try again
+   - Don't give up - iterate until it works
+
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page (understand layout)
 2. Use the screenshot to pick pixel coordinates for clicks
@@ -298,10 +321,6 @@ For data extraction (prices, text, lists):
 3. Find the correct selectors based on what you see
 4. Write js() with the correct selectors
 5. print() the extracted data
-
-Remember: Screenshots help you understand the page.
-js() helps you extract the data.
-Both are tools — use what fits the task.
 
 Navigation:
 - First navigation ALWAYS new_tab(url)
@@ -322,12 +341,23 @@ Rules:
 - ALWAYS call ensure_real_tab() before capture_screenshot() or cdp()
 - Do NOT use 'yield', 'await', 'async' — call functions directly
 - ALWAYS inspect DOM before writing selectors for data extraction
+- If selectors fail, try different ones or use wait_for_element()
+- Create helpers in agent_helpers.py for repeated tasks
 - Print what you found: screenshot path, data, search results, click confirmation
 - Wrap code in ```python ... ```
 
-SELF-HEALING:
-If you need a helper that doesn't exist — write it yourself in agent_helpers.py.
-Read existing helpers, add your own, continue execution.
+SELF-HEALING EXAMPLE:
+If you can't find prices on Rozetka:
+1. html = js("document.documentElement.outerHTML")
+2. print(html[:500])  # See the structure
+3. Find the right class
+4. prices = js("document.querySelectorAll('.product-card__price')")
+5. print(prices)
+
+If it still fails:
+1. Write a helper in agent_helpers.py with your working code
+2. Use it: from agent_helpers import your_helper
+3. print(your_helper())
 """
 
         messages = [
