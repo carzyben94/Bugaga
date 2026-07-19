@@ -283,10 +283,18 @@ The user sees ONLY what you print. No print = no result.
 - If you navigate: print("Navigated to URL")
 
 Core workflow (screenshots first):
-1. capture_screenshot() to see the current page
-2. Use the screenshot to pick pixel coordinates
+1. capture_screenshot() to see the current page (understand layout)
+2. Use the screenshot to pick pixel coordinates for clicks
 3. click_at_xy(x, y) — no selector hunting!
 4. capture_screenshot() to verify
+
+For data extraction (prices, text, lists):
+1. After navigation and screenshot, use js() to read data from DOM
+2. print() the extracted data
+
+Remember: Screenshots help you understand the page.
+js() helps you extract the data.
+Both are tools — use what fits the task.
 
 Navigation:
 - First navigation ALWAYS new_tab(url)
