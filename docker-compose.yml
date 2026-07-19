@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: telegram_bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - AGNES_API_KEY=${AGNES_API_KEY}
+    volumes:
+      - ./domain-skills:/app/browser-harness/agent-workspace/domain-skills
+      - ./screenshots:/app/screenshots
+      - ./logs:/app/logs
+      - ./cookies.py:/app/cookies.py
+    ports:
+      - "9222:9222"
+    restart: unless-stopped
+    command: >
+      sh -c "echo '🚀 Запуск Chromium...' &&
+      /usr/bin/chromium
+        --headless
+        --no-sandbox
+        --disable-dev-shm-usage
+        --disable-gpu
+        --window-size=1280,720
+        --remote-debugging-port=9222
+        --remote-debugging-address=0.0.0.0
+        --user-data-dir=/tmp/chrome-profile
+        about:blank > /tmp/chrome.log 2>&1 &
+      echo '⏳ Ожидание инициализации Chromium...' &&
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+        if curl -s http://localhost:9222/json/version > /dev/null 2>&1; then
+          echo '✅ Chromium готов!' &&
+          break;
+        fi;
+        echo -n '.' && sleep 1;
+      done &&
+      echo '🚀 Запуск бота...' &&
+      python -u bot.py"
