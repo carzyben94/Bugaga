@@ -21,7 +21,14 @@ RUN uv tool install --python 3.12 --upgrade --force browser-harness
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Копируем ВСЕ файлы (включая cookies.py)
 COPY . .
+
+# Устанавливаем куки через browser-harness (если есть файл)
+RUN if [ -f cookies.py ]; then \
+        echo "🍪 Установка кук..." && \
+        python -c "from cookies import COOKIES; print(f'✅ Загружено {len(COOKIES)} кук')"; \
+    fi
 
 # Правильный синтаксис CMD
 CMD sh -c "echo '🚀 Запуск Chromium...' && \
