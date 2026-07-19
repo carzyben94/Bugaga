@@ -221,10 +221,10 @@ Rules:
 - First navigation is ALWAYS new_tab()
 - ALWAYS wait_for_load() after navigation
 - Screenshots are your primary way to understand the page
-- For screenshots use cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+- For screenshots use capture_screenshot(max_dim=1800)
 - Use js() only for reading DOM data, never for clicks
 - ALWAYS use print() to output the result
-- ALWAYS call ensure_real_tab() before cdp() or capture_screenshot()
+- ALWAYS call ensure_real_tab() before capture_screenshot() or cdp()
 - Wrap code in ```python ... ```
 
 Examples:
@@ -238,7 +238,7 @@ cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
 new_tab("https://google.com")
 wait_for_load()
 ensure_real_tab()
-result = cdp("Page.captureScreenshot", {"format": "png", "quality": 80})
+result = capture_screenshot(max_dim=1800)
 print(result)
 
 ❌ WRONG (click by selector):
