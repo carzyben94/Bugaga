@@ -16,7 +16,7 @@ from promt import SYSTEM_PROMPT
 
 warnings.filterwarnings("ignore")
 
-agent_workspace = "browser-harness/agent-workspace"
+agent_workspace = "/app/browser-harness/agent-workspace"
 sys.path.insert(0, agent_workspace)
 
 helpers_file = os.path.join(agent_workspace, "agent_helpers.py")
@@ -28,7 +28,7 @@ os.chmod(agent_workspace, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
 os.chmod(helpers_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
 
 os.environ["BH_DOMAIN_SKILLS"] = "1"
-os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
+os.environ["BH_AGENT_WORKSPACE"] = "/app/browser-harness/agent-workspace"
 
 LOGS_DIR = '/app/logs'
 SCREENSHOTS_DIR = '/app/screenshots'
@@ -316,7 +316,7 @@ async def log(update, context):
 
 async def skills(update, context):
     try:
-        skills_dir = os.path.join(os.environ.get("BH_AGENT_WORKSPACE", "browser-harness/agent-workspace"), "domain-skills")
+        skills_dir = os.path.join(agent_workspace, "domain-skills")
         if not os.path.exists(skills_dir):
             await update.message.reply_text("📭 Папка с навыками не найдена")
             return
