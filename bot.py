@@ -9,8 +9,15 @@ import asyncio
 import io
 import json
 import httpx
+import warnings
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# ============================================================
+# ПОЛНОСТЬЮ ОТКЛЮЧАЕМ ЛИШНИЕ ЛОГИ
+# ============================================================
+
+warnings.filterwarnings("ignore")
 
 # ============================================================
 # ДОБАВЛЯЕМ AGENT_WORKSPACE В PYTHON PATH
@@ -42,7 +49,7 @@ os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
 # ============================================================
-# 0. ЛОГИ (с отключением всего лишнего)
+# 0. ЛОГИ
 # ============================================================
 
 LOGS_DIR = '/app/logs'
@@ -57,12 +64,10 @@ logging.basicConfig(
     ]
 )
 
-# Отключаем логи httpx (Telegram API запросы)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-# Отключаем логи Telegram (ошибки конфликтов и т.д.)
-logging.getLogger("telegram").setLevel(logging.ERROR)
-logging.getLogger("telegram.ext").setLevel(logging.ERROR)
+# Отключаем все лишние логи
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("telegram").setLevel(logging.CRITICAL)
+logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
 
 logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
