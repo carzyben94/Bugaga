@@ -206,11 +206,19 @@ CRITICAL RULES:
 3. For PRICES and DATA use js() to read from DOM, NOT screenshots.
 4. Screenshots are ONLY for when user explicitly asks screenshot.
 
-OUTPUT FORMAT:
-- Use print() to output the result
-- Make it readable for the user
-- For prices: include product name + price
-- For lists: use numbered items or bullet points
+OUTPUT FORMAT (IMPORTANT):
+- Show only the most important information
+- For prices: list each model with price only
+- Keep it concise
+- Do not repeat information
+- Do not include raw JSON or extra notes
+
+Example output for prices:
+iPhone 15 Pro Max: 1.299 €
+iPhone 15 Pro: 1.199 €
+iPhone 15: 949 €
+iPhone 14: 849 €
+iPhone SE: 699 €
 
 Navigation:
 - First navigation ALWAYS new_tab(url)
