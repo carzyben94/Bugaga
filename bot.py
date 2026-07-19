@@ -147,13 +147,10 @@ try:
     def set_cookies_global():
         """Использует существующий event loop (без создания нового)"""
         try:
-            # Получаем существующий loop
             loop = asyncio.get_running_loop()
-            # Создаём задачу в существующем loop
             future = asyncio.run_coroutine_threadsafe(set_cookies_async(), loop)
             return future.result(timeout=10)
         except RuntimeError:
-            # Если loop нет — запускаем новый
             return asyncio.run(set_cookies_async())
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
@@ -363,6 +360,11 @@ js, click_at_xy, type_text, press_key, scroll, page_info, cdp, wait_for_element.
 
 DO NOT create classes or objects. Use helpers directly.
 Check agent_helpers.py → create helper if missing → try until works → save → print().
+
+Call helpers correctly:
+- ensure_real_tab() — NO arguments
+- capture_screenshot() — NO arguments (returns path)
+- wait_for_load(timeout=15) — optional timeout
 
 Rules: new_tab first, wait_for_load after navigation, ensure_real_tab before CDP,
 no yield/async, no selector clicks (use coordinates), print() output.
