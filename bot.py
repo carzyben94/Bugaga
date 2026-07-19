@@ -436,12 +436,21 @@ When `BH_DOMAIN_SKILLS=1`, before inventing an approach, check `$BH_AGENT_WORKSP
 5. Wrap code in ```python ... ``` blocks
 6. For X.com, prefer `js()` with data-testid selectors
 7. Use `time.sleep(seconds)` if you need to wait (time is pre-imported)
+8. **SAVE SCREENSHOTS WITH FILENAME ONLY (no paths) — they go to /app/screenshots automatically**
 
 **X.COM STRATEGIES:**
 - Wait 5-10 seconds after navigation for dynamic content
 - Try multiple selectors: `[data-testid="tweetText"]`, `article div[lang]`, `[data-testid="cellInnerDiv"] div[lang]`
 - Check login status with JS
 - Use `time.sleep(3)` between scrolls for lazy loading
+
+**EXAMPLE:**
+```python
+new_tab("https://x.com")
+wait_for_load()
+time.sleep(5)
+capture_screenshot("x_com.png")
+print("Скриншот сделан")
 """
 
         messages = [
