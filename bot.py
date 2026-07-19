@@ -105,12 +105,19 @@ from browser_harness.admin import ensure_daemon
 # ============================================================
 
 try:
-    from cookies import COOKIES, get_cookies_for_domain
+    from cookies import COOKIES
     
     def set_cookies_global():
-        """Устанавливает все куки глобально через Network.setCookies"""
+        """Устанавливает все куки глобально"""
         try:
-            ensure_real_tab()
+            # Открываем вкладку если нет активной
+            try:
+                ensure_real_tab()
+            except:
+                new_tab("about:blank")
+                wait_for_load()
+                ensure_real_tab()
+            
             cdp("Network.setCookies", {"cookies": COOKIES})
             logger.info(f"🍪 Установлено {len(COOKIES)} кук")
             return True
@@ -213,7 +220,7 @@ def execute_code(code):
             'list_tabs': list_tabs,
             'current_tab': current_tab,
             'close_tab': close_tab,
-            'set_cookies': set_cookies_global,  # ← агент может вызывать
+            'set_cookies': set_cookies_global,
             'print': print,
             '__builtins__': __builtins__,
         }
