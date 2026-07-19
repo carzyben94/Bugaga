@@ -13,10 +13,16 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# НАСТРОЙКА ПРАВ ДЛЯ AGENT_HELPERS.PY
+# ДОБАВЛЯЕМ AGENT_WORKSPACE В PYTHON PATH
 # ============================================================
 
 agent_workspace = "browser-harness/agent-workspace"
+sys.path.insert(0, agent_workspace)
+
+# ============================================================
+# НАСТРОЙКА ПРАВ ДЛЯ AGENT_HELPERS.PY
+# ============================================================
+
 helpers_file = os.path.join(agent_workspace, "agent_helpers.py")
 
 os.makedirs(agent_workspace, exist_ok=True)
@@ -51,6 +57,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"✅ agent_workspace: {agent_workspace}")
+logger.info(f"✅ helpers_file: {helpers_file}")
 
 # ============================================================
 # 1. ИМПОРТ ИЗ BROWSER-HARNESS
@@ -272,6 +280,9 @@ SELF-HEALING:
 If you need a helper that doesn't exist, write it yourself in agent_helpers.py.
 Read existing helpers to understand the pattern, then add your own.
 Continue execution using your new helper.
+
+You can import from agent_helpers.py:
+from agent_helpers import *
 
 OUTPUT FORMAT (IMPORTANT):
 - Show only the most important information
