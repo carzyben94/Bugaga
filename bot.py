@@ -1,5 +1,6 @@
 import os
 import sys
+import stat
 import time
 import logging
 import base64
@@ -10,6 +11,22 @@ import json
 import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# ============================================================
+# НАСТРОЙКА ПРАВ ДЛЯ AGENT_HELPERS.PY
+# ============================================================
+
+agent_workspace = "browser-harness/agent-workspace"
+helpers_file = os.path.join(agent_workspace, "agent_helpers.py")
+
+os.makedirs(agent_workspace, exist_ok=True)
+
+if not os.path.exists(helpers_file):
+    with open(helpers_file, "w") as f:
+        f.write('"""Agent-editable browser helpers."""\n')
+
+os.chmod(agent_workspace, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+os.chmod(helpers_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
 
 # ============================================================
 # ВКЛЮЧАЕМ НАВЫКИ
@@ -249,6 +266,12 @@ CRITICAL RULES:
 4. Screenshots are ONLY for when user explicitly asks screenshot.
 5. When writing JavaScript inside js(), use raw strings: js(r\"\"\" ... \"\"\") to avoid escaping issues.
    For regex inside js(), use double backslashes: \\\\d instead of \\d
+6. ALWAYS use goto_url() for navigation to activate domain skills. new_tab() does NOT load skills.
+
+SELF-HEALING:
+If you need a helper that doesn't exist, write it yourself in agent_helpers.py.
+Read existing helpers to understand the pattern, then add your own.
+Continue execution using your new helper.
 
 OUTPUT FORMAT (IMPORTANT):
 - Show only the most important information
@@ -263,6 +286,11 @@ iPhone 15 Pro: 1.199 €
 iPhone 15: 949 €
 iPhone 14: 849 €
 iPhone SE: 699 €
+
+For AgentList:
+- Use goto_url("https://agentlist.com")
+- Use API: http_get("https://agentlist.com/api/listings?q=...")
+- Print results with print()
 
 Navigation:
 - First navigation ALWAYS new_tab(url)
