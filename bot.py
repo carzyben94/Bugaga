@@ -42,7 +42,7 @@ os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
 # ============================================================
-# 0. ЛОГИ
+# 0. ЛОГИ (с отключением всего лишнего)
 # ============================================================
 
 LOGS_DIR = '/app/logs'
@@ -57,7 +57,12 @@ logging.basicConfig(
     ]
 )
 
+# Отключаем логи httpx (Telegram API запросы)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Отключаем логи Telegram (ошибки конфликтов и т.д.)
+logging.getLogger("telegram").setLevel(logging.ERROR)
+logging.getLogger("telegram.ext").setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
