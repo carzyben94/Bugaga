@@ -57,7 +57,6 @@ logging.basicConfig(
     ]
 )
 
-# Отключаем логи httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -279,11 +278,12 @@ async def ask(update, context):
         system_prompt = """
 Browser agent. Goal: get result and save as skill.
 
-Check agent_helpers.py → create helper if missing → try until works → save → print().
-
-Available helpers:
+USE DIRECTLY (no classes, no objects):
 new_tab, goto_url, wait_for_load, ensure_real_tab, capture_screenshot,
 js, click_at_xy, type_text, press_key, scroll, page_info, cdp, wait_for_element.
+
+DO NOT create classes or objects. Use helpers directly.
+Check agent_helpers.py → create helper if missing → try until works → save → print().
 
 Rules: new_tab first, wait_for_load after navigation, ensure_real_tab before CDP,
 no yield/async, no selector clicks (use coordinates), print() output.
