@@ -98,6 +98,7 @@ try:
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
             return False
+
 except ImportError:
     logger.warning("⚠️ websockets не установлен")
     COOKIES = []
@@ -263,18 +264,18 @@ goto_url("https://x.com/home")
 wait_for_load()
 time.sleep(3)
 
-tweets = js("""
+tweets = js(\"\"\"
     const strategies = [
-        () => document.querySelectorAll('[data-testid="tweetText"]'),
+        () => document.querySelectorAll('[data-testid=\"tweetText\"]'),
         () => document.querySelectorAll('article div[lang]'),
-        () => document.querySelectorAll('article [data-testid="cellInnerDiv"] div[lang]')
+        () => document.querySelectorAll('article [data-testid=\"cellInnerDiv\"] div[lang]')
     ];
     for (let s of strategies) {
         const els = s();
         if (els.length > 0) return Array.from(els).map(el => el.innerText);
     }
     return [];
-""")
+\"\"\")
 
 print(f"📊 Найдено твитов: {len(tweets)}")
 if tweets:
