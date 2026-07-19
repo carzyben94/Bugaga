@@ -30,9 +30,7 @@ os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
 LOGS_DIR = '/app/logs'
-IMAGES_DIR = '/app/images'  # папка для скриншотов
 os.makedirs(LOGS_DIR, exist_ok=True)
-os.makedirs(IMAGES_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +48,6 @@ logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
-logger.info(f"✅ images_dir: {IMAGES_DIR}")
 
 sys.path.insert(0, "browser-harness/src")
 
@@ -165,19 +162,12 @@ def execute_code(code):
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
         
-        # Переопределяем capture_screenshot для сохранения в /images
-        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
-            if path and not path.startswith('/'):
-                # Если путь относительный, сохраняем в /images
-                path = os.path.join(IMAGES_DIR, os.path.basename(path))
-            return capture_screenshot(path=path, full=full, max_dim=max_dim)
-        
         globals_dict = {
             'new_tab': new_tab, 
             'goto_url': goto_url, 
             'wait_for_load': wait_for_load,
             'page_info': page_info, 
-            'capture_screenshot': capture_screenshot_with_path,  # переопределенная
+            'capture_screenshot': capture_screenshot,  # оригинальная
             'click_at_xy': click_at_xy, 
             'type_text': type_text, 
             'press_key': press_key,
@@ -227,6 +217,8 @@ def execute_code(code):
 async def start(update, context):
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
+        "/image — отправить последний скриншот\n"
+        "/images — отправить все скриншоты\n"
         "/log — скачать файл логов\n"
         "/skills — список навыков агента"
     )
@@ -269,6 +261,63 @@ async def skills(update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def image(update, context):
+    """Отправить последний сделанный скриншот"""
+    try:
+        # Ищем все png файлы в текущей директории
+        screenshot_files = [f for f in os.listdir('.') if f.endswith('.png')]
+        
+        if not screenshot_files:
+            await update.message.reply_text("📭 Скриншотов не найдено")
+            return
+        
+        # Сортируем по времени создания (новые сверху)
+        screenshot_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        
+        # Берем последний
+        latest = screenshot_files[0]
+        file_path = os.path.join('.', latest)
+        
+        with open(file_path, 'rb') as f:
+            await update.message.reply_photo(
+                photo=f,
+                caption=f"📸 {latest}"
+            )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def images(update, context):
+    """Отправить все скриншоты"""
+    try:
+        screenshot_files = [f for f in os.listdir('.') if f.endswith('.png')]
+        
+        if not screenshot_files:
+            await update.message.reply_text("📭 Скриншотов не найдено")
+            return
+        
+        # Сортируем по времени создания
+        screenshot_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        
+        sent_count = 0
+        for s_file in screenshot_files[:10]:  # максимум 10 за раз
+            file_path = os.path.join('.', s_file)
+            with open(file_path, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption=f"📸 {s_file}"
+                )
+            sent_count += 1
+            await asyncio.sleep(0.5)
+        
+        if len(screenshot_files) > 10:
+            await update.message.reply_text(f"📸 Показано 10 из {len(screenshot_files)} скриншотов")
+        else:
+            await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def ask(update, context):
     if not context.args:
         await update.message.reply_text("Пример: /ask сделай скриншот google.com")
@@ -300,7 +349,7 @@ You are a browser automation agent using Browser Harness library.
 - `goto_url(url)` — navigate current tab to URL, returns up to 10 matching domain-skills 
 - `wait_for_load(timeout=10)` — polls document.readyState until "complete" 
 - `page_info()` — returns viewport metrics, scroll position, page title, pending dialogs 
-- `capture_screenshot(path=None, full=False, max_dim=None)` — take screenshot (saves to /images folder)
+- `capture_screenshot(path=None, full=False, max_dim=None)` — take screenshot (saves to current directory)
 - `click_at_xy(x, y)` — coordinate-based clicks (works across iframes/Shadow DOM) 
 - `type_text(text)` — type text 
 - `fill_input(selector, text)` — high-level helper: focus, clear, type, fire events 
@@ -327,7 +376,6 @@ When `BH_DOMAIN_SKILLS=1`, before inventing an approach, check `$BH_AGENT_WORKSP
 5. Wrap code in ```python ... ``` blocks
 6. For X.com, prefer `js()` with data-testid selectors
 7. Use `time.sleep(seconds)` if you need to wait (time is pre-imported)
-8. Screenshots are automatically saved to /images folder
 
 **X.COM STRATEGIES:**
 - Wait 5-10 seconds after navigation for dynamic content
@@ -354,29 +402,7 @@ When `BH_DOMAIN_SKILLS=1`, before inventing an approach, check `$BH_AGENT_WORKSP
                 await status_msg.edit_text(f"❌ {output}")
             else:
                 logger.info(f"✅ Успешное выполнение для {username}")
-                
-                # Ищем все png файлы в папке /images
-                screenshot_files = [f for f in os.listdir(IMAGES_DIR) if f.endswith('.png')]
-                
-                if screenshot_files:
-                    sent_count = 0
-                    for s_file in screenshot_files:
-                        try:
-                            file_path = os.path.join(IMAGES_DIR, s_file)
-                            with open(file_path, 'rb') as f:
-                                await update.message.reply_photo(
-                                    photo=f, 
-                                    caption=f"📸 {s_file}"
-                                )
-                            os.remove(file_path)
-                            sent_count += 1
-                            await asyncio.sleep(0.5)  # небольшая задержка между отправками
-                        except Exception as e:
-                            logger.error(f"❌ Ошибка отправки {s_file}: {e}")
-                    
-                    await status_msg.edit_text(f"✅ Отправлено {sent_count} скриншотов")
-                else:
-                    await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
+                await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
         else:
             logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
             await status_msg.edit_text(response[:4000])
@@ -395,6 +421,8 @@ def main():
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
+    app.add_handler(CommandHandler("image", image))
+    app.add_handler(CommandHandler("images", images))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
