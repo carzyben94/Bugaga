@@ -101,15 +101,16 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# 2. УСТАНОВКА КУК ЧЕРЕЗ WEBSOCKET
+# 2. УСТАНОВКА КУК ЧЕРЕЗ WEBSOCKETS
 # ============================================================
 
 try:
     from cookies import COOKIES
-    import websocket
+    import websockets
+    import json
     
-    def set_cookies_global():
-        """Устанавливает куки через прямой WebSocket"""
+    async def set_cookies_async():
+        """Устанавливает куки через websockets (асинхронно)"""
         try:
             # Получаем список вкладок
             resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
@@ -119,36 +120,44 @@ try:
                 logger.error("❌ Нет активных вкладок")
                 return False
             
-            # Берём WebSocket URL первой вкладки
             ws_url = pages[0]["webSocketDebuggerUrl"]
-            logger.info(f"🔗 Подключаюсь к WebSocket...")
+            logger.info("🔗 Подключаюсь к WebSocket...")
             
-            # Подключаемся к WebSocket
-            ws = websocket.create_connection(ws_url, timeout=10)
-            
-            # Отправляем команду Network.setCookies
-            cmd = {
-                "id": 1,
-                "method": "Network.setCookies",
-                "params": {"cookies": COOKIES}
-            }
-            ws.send(json.dumps(cmd))
-            
-            # Получаем ответ
-            response = json.loads(ws.recv())
-            ws.close()
-            
-            if "error" in response:
-                logger.error(f"❌ CDP ошибка: {response['error']}")
-                return False
-            
-            logger.info(f"🍪 Установлено {len(COOKIES)} кук через WebSocket")
-            return True
+            # Подключаемся и отправляем команду
+            async with websockets.connect(ws_url) as websocket:
+                cmd = {
+                    "id": 1,
+                    "method": "Network.setCookies",
+                    "params": {"cookies": COOKIES}
+                }
+                await websocket.send(json.dumps(cmd))
+                
+                response = json.loads(await websocket.recv())
+                
+                if "error" in response:
+                    logger.error(f"❌ CDP ошибка: {response['error']}")
+                    return False
+                
+                logger.info(f"🍪 Установлено {len(COOKIES)} кук через WebSocket")
+                return True
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
             return False
+    
+    def set_cookies_global():
+        """Синхронная обёртка для установки кук"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(set_cookies_async())
+            loop.close()
+            return result
+        except Exception as e:
+            logger.error(f"❌ Ошибка выполнения: {e}")
+            return False
+            
 except ImportError:
-    logger.warning("⚠️ cookies.py или websocket-client не установлен")
+    logger.warning("⚠️ websockets не установлен")
     COOKIES = []
     def set_cookies_global():
         return False
