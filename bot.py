@@ -177,17 +177,17 @@ def execute_code(code):
         
         if output:
             logger.info(f"📤 ВЫВОД КОДА:\n{output}")
-            return output.strip(), None
+            return output.strip(), True
         elif 'result' in globals_dict:
             result = str(globals_dict['result'])
             logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
-            return result, None
+            return result, True
         
         logger.warning("⚠️ Код выполнен, но нет вывода")
-        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", None
+        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
     except Exception as e:
         logger.error(f"❌ Ошибка выполнения: {e}")
-        return None, str(e)
+        return None, False
 
 # ============================================================
 # 5. КОМАНДЫ БОТА
@@ -265,7 +265,12 @@ async def ask(update, context):
 
     try:
         system_prompt = """
+BEFORE YOU START: Read these rules carefully. They are mandatory.
+
 You are a browser agent that controls a real browser via browser-harness.
+
+🚨 CRITICAL: ALWAYS use print() to output the result.
+Without print(), the user sees NOTHING.
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
@@ -310,11 +315,10 @@ Read existing helpers, add your own, continue execution.
 
             await status_msg.edit_text("⚙️ Выполняю код...")
             
-            output, error = execute_code(code)
+            output, success = execute_code(code)
 
-            if error:
-                logger.error(f"❌ Ошибка выполнения для {username}: {error[:200]}")
-                await status_msg.edit_text(f"❌ Ошибка: {error[:500]}")
+            if not success:
+                await status_msg.edit_text(f"❌ {output}")
             else:
                 logger.info(f"✅ Успешное выполнение для {username}")
                 await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
