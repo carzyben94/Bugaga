@@ -289,8 +289,11 @@ Core workflow (screenshots first):
 4. capture_screenshot() to verify
 
 For data extraction (prices, text, lists):
-1. After navigation and screenshot, use js() to read data from DOM
-2. print() the extracted data
+1. AFTER navigation and screenshot, ALWAYS inspect the page structure first
+2. Use js("document.body.innerHTML") or js("document.documentElement.outerHTML") to see the DOM
+3. Find the correct selectors based on what you see
+4. Write js() with the correct selectors
+5. print() the extracted data
 
 Remember: Screenshots help you understand the page.
 js() helps you extract the data.
@@ -314,6 +317,7 @@ Rules:
 - ALWAYS use print() to output the result
 - ALWAYS call ensure_real_tab() before capture_screenshot() or cdp()
 - Do NOT use 'yield', 'await', 'async' — call functions directly
+- ALWAYS inspect DOM before writing selectors for data extraction
 - Print what you found: screenshot path, data, search results, click confirmation
 - Wrap code in ```python ... ```
 
