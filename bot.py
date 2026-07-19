@@ -54,7 +54,8 @@ sys.path.insert(0, "browser-harness/src")
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, page_info, capture_screenshot,
     click_at_xy, type_text, press_key, scroll, js, cdp, ensure_real_tab,
-    wait_for_element, list_tabs, current_tab, close_tab,
+    wait_for_element, list_tabs, current_tab, close_tab, switch_tab,
+    fill_input, upload_file, http_get, drain_events
 )
 from browser_harness.admin import ensure_daemon
 
@@ -162,14 +163,31 @@ def execute_code(code):
         sys.stdout = stdout_buffer
         
         globals_dict = {
-            'new_tab': new_tab, 'goto_url': goto_url, 'wait_for_load': wait_for_load,
-            'page_info': page_info, 'capture_screenshot': capture_screenshot,
-            'click_at_xy': click_at_xy, 'type_text': type_text, 'press_key': press_key,
-            'scroll': scroll, 'js': js, 'cdp': cdp, 'ensure_real_tab': ensure_real_tab,
-            'wait_for_element': wait_for_element, 'list_tabs': list_tabs,
-            'current_tab': current_tab, 'close_tab': close_tab,
+            'new_tab': new_tab, 
+            'goto_url': goto_url, 
+            'wait_for_load': wait_for_load,
+            'page_info': page_info, 
+            'capture_screenshot': capture_screenshot,
+            'click_at_xy': click_at_xy, 
+            'type_text': type_text, 
+            'press_key': press_key,
+            'scroll': scroll,
+            'scroll_at_xy': scroll,  # алиас для совместимости
+            'js': js, 
+            'cdp': cdp, 
+            'ensure_real_tab': ensure_real_tab,
+            'wait_for_element': wait_for_element, 
+            'list_tabs': list_tabs,
+            'current_tab': current_tab, 
+            'close_tab': close_tab,
+            'switch_tab': switch_tab,
+            'fill_input': fill_input,
+            'upload_file': upload_file,
+            'http_get': http_get,
+            'drain_events': drain_events,
             'set_cookies': set_cookies_global,
-            'print': print, '__builtins__': __builtins__,
+            'print': print, 
+            '__builtins__': __builtins__,
         }
         
         exec(code, globals_dict)
@@ -189,7 +207,7 @@ def execute_code(code):
         return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
     except Exception as e:
         logger.error(f"❌ Ошибка выполнения: {e}")
-        return None, False
+        return str(e), False
 
 # ============================================================
 # КОМАНДЫ
@@ -271,7 +289,7 @@ You are a browser automation agent using Browser Harness library.
 - `type_text(text)` — type text 
 - `fill_input(selector, text)` — high-level helper: focus, clear, type, fire events 
 - `press_key(key, modifiers=None)` — dispatch key events 
-- `scroll_at_xy(x, y, dy, dx)` — scroll at coordinates 
+- `scroll(x, y, dy, dx)` — scroll at coordinates (dy for vertical, dx for horizontal)
 - `js(expression)` — execute JavaScript in page context 
 - `cdp(method, session_id=None, **params)` — raw CDP commands 
 - `list_tabs(include_chrome=False)` — list all page targets 
