@@ -110,6 +110,55 @@ except ImportError:
         return False
 
 # ============================================================
+# НАСТРОЙКА РАЗМЕРА ОКНА (WebSocket)
+# ============================================================
+
+async def set_viewport_async():
+    try:
+        import httpx
+        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+        pages = resp.json()
+        if not pages:
+            logger.warning("⚠️ Нет активных вкладок для установки размера")
+            return False
+        ws_url = pages[0]["webSocketDebuggerUrl"]
+        logger.info("🔗 Подключаюсь к WebSocket для установки размера...")
+        async with websockets.connect(ws_url) as ws:
+            await ws.send(json.dumps({
+                "id": 2,
+                "method": "Emulation.setDeviceMetricsOverride",
+                "params": {
+                    "width": 1280,
+                    "height": 720,
+                    "deviceScaleFactor": 1,
+                    "mobile": False,
+                    "screenWidth": 1280,
+                    "screenHeight": 720,
+                    "positionX": 0,
+                    "positionY": 0
+                }
+            }))
+            response = json.loads(await ws.recv())
+            if "error" in response:
+                logger.warning(f"⚠️ CDP ошибка: {response['error']}")
+                return False
+            logger.info("✅ Размер окна установлен: 1280x720")
+            return True
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
+        return False
+
+def set_viewport_global():
+    try:
+        loop = asyncio.get_running_loop()
+        return asyncio.run_coroutine_threadsafe(set_viewport_async(), loop).result(timeout=10)
+    except RuntimeError:
+        return asyncio.run(set_viewport_async())
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
+        return False
+
+# ============================================================
 # НАСТРОЙКА
 # ============================================================
 
@@ -122,23 +171,12 @@ if not TELEGRAM_TOKEN:
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
 ensure_daemon()
 logger.info("✅ Браузер готов")
+
+# Устанавливаем куки
 set_cookies_global()
 
-# Устанавливаем размер окна для Telegram (макс. 1280x720)
-try:
-    cdp("Emulation.setDeviceMetricsOverride", {
-        "width": 1280,
-        "height": 720,
-        "deviceScaleFactor": 1,
-        "mobile": False,
-        "screenWidth": 1280,
-        "screenHeight": 720,
-        "positionX": 0,
-        "positionY": 0
-    })
-    logger.info("✅ Размер окна установлен: 1280x720")
-except Exception as e:
-    logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
+# Устанавливаем размер окна
+set_viewport_global()
 
 # ============================================================
 # LLM
