@@ -12,6 +12,7 @@ import httpx
 import warnings
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from promt import SYSTEM_PROMPT
 
 warnings.filterwarnings("ignore")
 
@@ -172,10 +173,7 @@ os.environ["BU_CDP_URL"] = "http://localhost:9222"
 ensure_daemon()
 logger.info("✅ Браузер готов")
 
-# Устанавливаем куки
 set_cookies_global()
-
-# Устанавливаем размер окна
 set_viewport_global()
 
 # ============================================================
@@ -219,18 +217,24 @@ def execute_code(code):
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
         
-        # Переопределяем capture_screenshot для сохранения в SCREENSHOTS_DIR
+        def save_skill(host, name, content):
+            skills_dir = os.path.join(agent_workspace, "domain-skills", host)
+            os.makedirs(skills_dir, exist_ok=True)
+            skill_path = os.path.join(skills_dir, f"{name}.md")
+            with open(skill_path, "w", encoding='utf-8') as f:
+                f.write(content)
+            logger.info(f"✅ Навык сохранён: {skill_path}")
+            return skill_path
+        
         def capture_screenshot_with_path(path=None, full=False, max_dim=None):
             if path is None:
                 timestamp = int(time.time())
                 filename = f"screenshot_{timestamp}.png"
                 full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            elif not path.startswith('/'):
-                full_path = os.path.join(SCREENSHOTS_DIR, os.path.basename(path))
             else:
-                full_path = path
-            
-            # full=False чтобы не было captureBeyondViewport
+                filename = os.path.basename(path)
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            logger.info(f"📸 Сохраняю скриншот в: {full_path}")
             return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
         
         globals_dict = {
@@ -257,6 +261,7 @@ def execute_code(code):
             'http_get': http_get,
             'drain_events': drain_events,
             'set_cookies': set_cookies_global,
+            'save_skill': save_skill,
             'time': time,
             'print': print, 
             '__builtins__': __builtins__,
@@ -333,35 +338,26 @@ async def skills(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def image(update, context):
-    """Отправить последний сделанный скриншот"""
     try:
         screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
-        
         if not screenshot_files:
             await update.message.reply_text("📭 Скриншотов не найдено")
             return
-        
         screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
         latest = screenshot_files[0]
         file_path = os.path.join(SCREENSHOTS_DIR, latest)
-        
         with open(file_path, 'rb') as f:
             await update.message.reply_photo(photo=f, caption=f"📸 {latest}")
-        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def images(update, context):
-    """Отправить все скриншоты"""
     try:
         screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
-        
         if not screenshot_files:
             await update.message.reply_text("📭 Скриншотов не найдено")
             return
-        
         screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
-        
         sent_count = 0
         for s_file in screenshot_files[:10]:
             file_path = os.path.join(SCREENSHOTS_DIR, s_file)
@@ -369,12 +365,10 @@ async def images(update, context):
                 await update.message.reply_photo(photo=f, caption=f"📸 {s_file}")
             sent_count += 1
             await asyncio.sleep(0.5)
-        
         if len(screenshot_files) > 10:
             await update.message.reply_text(f"📸 Показано 10 из {len(screenshot_files)} скриншотов")
         else:
             await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
-        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -390,71 +384,8 @@ async def ask(update, context):
     status_msg = await update.message.reply_text("🤔 Думаю...")
 
     try:
-        system_prompt = """
-You are a browser automation agent using Browser Harness library.
-
-**CRITICAL: NO IMPORTS ALLOWED**
-- DO NOT use `import`, `from ... import`, or `__import__`
-- All functions are pre-imported and available globally
-- Use functions directly: `new_tab()`, `goto_url()`, etc.
-
-**ARCHITECTURE:**
-- `helpers.py` provides high-level API functions for browser control 
-- `agent-workspace/agent_helpers.py` — helper code you can edit and extend 
-- `agent-workspace/domain-skills/` — reusable site-specific skills the agent writes 
-- Communication goes through daemon via Unix socket `/tmp/bu-{NAME}.sock` 
-
-**CORE FUNCTIONS (use directly, NO imports):**
-- `new_tab(url=None)` — create and switch to new tab
-- `goto_url(url)` — navigate current tab to URL, returns up to 10 matching domain-skills 
-- `wait_for_load(timeout=10)` — polls document.readyState until "complete" 
-- `page_info()` — returns viewport metrics, scroll position, page title, pending dialogs 
-- `capture_screenshot(path=None, full=False, max_dim=None)` — take screenshot
-- `click_at_xy(x, y)` — coordinate-based clicks (works across iframes/Shadow DOM) 
-- `type_text(text)` — type text 
-- `fill_input(selector, text)` — high-level helper: focus, clear, type, fire events 
-- `press_key(key, modifiers=None)` — dispatch key events 
-- `scroll(x, y, dy, dx)` — scroll at coordinates (dy for vertical, dx for horizontal)
-- `js(expression)` — execute JavaScript in page context 
-- `cdp(method, session_id=None, **params)` — raw CDP commands 
-- `list_tabs(include_chrome=False)` — list all page targets 
-- `switch_tab(target_id)` — switch active tab (marks it with 🟢) 
-- `current_tab()` — get current tab ID 
-- `close_tab()` — close current tab 
-- `upload_file(selector, paths)` — set files on input element 
-- `drain_events()` — retrieve buffered CDP events 
-- `http_get(url, headers=None)` — browser-less HTTP fetch 
-
-**DOMAIN SKILLS SYSTEM:**
-When `BH_DOMAIN_SKILLS=1`, before inventing an approach, check `$BH_AGENT_WORKSPACE/domain-skills/<host>/` — `goto_url()` returns up to 10 skill filenames for the navigated host. Skills are written by the harness, not you — when you figure something out, file it as a skill.
-
-**RULES:**
-1. NEVER use `import` or `from ... import` — ALL functions are already available
-2. ALWAYS start with `new_tab()` then `goto_url()` then `wait_for_load()`
-3. Use `print()` for all outputs and progress tracking
-4. Write plain Python code — NO async, NO classes, NO yield
-5. Wrap code in ```python ... ``` blocks
-6. For X.com, prefer `js()` with data-testid selectors
-7. Use `time.sleep(seconds)` if you need to wait (time is pre-imported)
-8. **SAVE SCREENSHOTS WITH FILENAME ONLY (no paths) — they go to /app/screenshots automatically**
-
-**X.COM STRATEGIES:**
-- Wait 5-10 seconds after navigation for dynamic content
-- Try multiple selectors: `[data-testid="tweetText"]`, `article div[lang]`, `[data-testid="cellInnerDiv"] div[lang]`
-- Check login status with JS
-- Use `time.sleep(3)` between scrolls for lazy loading
-
-**EXAMPLE:**
-```python
-new_tab("https://x.com")
-wait_for_load()
-time.sleep(5)
-capture_screenshot("x_com.png")
-print("Скриншот сделан")
-"""
-
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_query}
         ]
 
