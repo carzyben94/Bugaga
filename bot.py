@@ -30,7 +30,7 @@ os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
 LOGS_DIR = '/app/logs'
-SCREENSHOTS_DIR = '/app/screenshots'  # папка для скриншотов
+SCREENSHOTS_DIR = '/app/screenshots'
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
@@ -124,6 +124,22 @@ ensure_daemon()
 logger.info("✅ Браузер готов")
 set_cookies_global()
 
+# Устанавливаем размер окна для Telegram (макс. 1280x720)
+try:
+    cdp("Emulation.setDeviceMetricsOverride", {
+        "width": 1280,
+        "height": 720,
+        "deviceScaleFactor": 1,
+        "mobile": False,
+        "screenWidth": 1280,
+        "screenHeight": 720,
+        "positionX": 0,
+        "positionY": 0
+    })
+    logger.info("✅ Размер окна установлен: 1280x720")
+except Exception as e:
+    logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
+
 # ============================================================
 # LLM
 # ============================================================
@@ -168,18 +184,16 @@ def execute_code(code):
         # Переопределяем capture_screenshot для сохранения в SCREENSHOTS_DIR
         def capture_screenshot_with_path(path=None, full=False, max_dim=None):
             if path is None:
-                # Генерируем имя
                 timestamp = int(time.time())
                 filename = f"screenshot_{timestamp}.png"
                 full_path = os.path.join(SCREENSHOTS_DIR, filename)
-                return capture_screenshot(path=full_path, full=full, max_dim=max_dim)
             elif not path.startswith('/'):
-                # Относительный путь → сохраняем в SCREENSHOTS_DIR
                 full_path = os.path.join(SCREENSHOTS_DIR, os.path.basename(path))
-                return capture_screenshot(path=full_path, full=full, max_dim=max_dim)
             else:
-                # Абсолютный путь → используем как есть
-                return capture_screenshot(path=path, full=full, max_dim=max_dim)
+                full_path = path
+            
+            # full=False чтобы не было captureBeyondViewport
+            return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
         
         globals_dict = {
             'new_tab': new_tab, 
@@ -283,25 +297,18 @@ async def skills(update, context):
 async def image(update, context):
     """Отправить последний сделанный скриншот"""
     try:
-        # Ищем все png файлы в папке SCREENSHOTS_DIR
         screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
         
         if not screenshot_files:
             await update.message.reply_text("📭 Скриншотов не найдено")
             return
         
-        # Сортируем по времени создания (новые сверху)
         screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
-        
-        # Берем последний
         latest = screenshot_files[0]
         file_path = os.path.join(SCREENSHOTS_DIR, latest)
         
         with open(file_path, 'rb') as f:
-            await update.message.reply_photo(
-                photo=f,
-                caption=f"📸 {latest}"
-            )
+            await update.message.reply_photo(photo=f, caption=f"📸 {latest}")
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -315,17 +322,13 @@ async def images(update, context):
             await update.message.reply_text("📭 Скриншотов не найдено")
             return
         
-        # Сортируем по времени создания
         screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
         
         sent_count = 0
-        for s_file in screenshot_files[:10]:  # максимум 10 за раз
+        for s_file in screenshot_files[:10]:
             file_path = os.path.join(SCREENSHOTS_DIR, s_file)
             with open(file_path, 'rb') as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption=f"📸 {s_file}"
-                )
+                await update.message.reply_photo(photo=f, caption=f"📸 {s_file}")
             sent_count += 1
             await asyncio.sleep(0.5)
         
