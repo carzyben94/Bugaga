@@ -1,7 +1,15 @@
-"""Agent-editable browser helpers.
+# browser-harness/agent-workspace/agent_helpers.py
 
-Add task-specific browser primitives here. Core helpers from browser_harness.helpers
-load this file when BH_AGENT_WORKSPACE points at this directory, or when this
-repo's default agent-workspace exists.
-"""
+"""Agent-editable browser helpers."""
 
+def get_iphone_prices_de():
+    """Получает цены на iPhone с apple.com/de"""
+    new_tab("https://www.apple.com/de/shop/buy-iphone")
+    wait_for_load()
+    ensure_real_tab()
+    
+    prices = js("""
+        const items = document.querySelectorAll('.price, [class*="price"]');
+        Array.from(items).map(el => el.textContent.trim());
+    """)
+    return prices
