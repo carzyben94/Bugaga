@@ -13,44 +13,21 @@ import warnings
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ============================================================
-# ПОЛНОСТЬЮ ОТКЛЮЧАЕМ ЛИШНИЕ ЛОГИ
-# ============================================================
-
 warnings.filterwarnings("ignore")
-
-# ============================================================
-# ДОБАВЛЯЕМ AGENT_WORKSPACE В PYTHON PATH
-# ============================================================
 
 agent_workspace = "browser-harness/agent-workspace"
 sys.path.insert(0, agent_workspace)
 
-# ============================================================
-# НАСТРОЙКА ПРАВ ДЛЯ AGENT_HELPERS.PY
-# ============================================================
-
 helpers_file = os.path.join(agent_workspace, "agent_helpers.py")
-
 os.makedirs(agent_workspace, exist_ok=True)
-
 if not os.path.exists(helpers_file):
     with open(helpers_file, "w") as f:
         f.write('"""Agent-editable browser helpers."""\n')
-
 os.chmod(agent_workspace, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
 os.chmod(helpers_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
 
-# ============================================================
-# ВКЛЮЧАЕМ НАВЫКИ
-# ============================================================
-
 os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
-
-# ============================================================
-# 0. ЛОГИ
-# ============================================================
 
 LOGS_DIR = '/app/logs'
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -64,7 +41,6 @@ logging.basicConfig(
     ]
 )
 
-# Отключаем все лишние логи
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 logging.getLogger("telegram").setLevel(logging.CRITICAL)
 logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
@@ -73,35 +49,17 @@ logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
 
-# ============================================================
-# 1. ИМПОРТ ИЗ BROWSER-HARNESS
-# ============================================================
-
 sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
-    new_tab,
-    goto_url,
-    wait_for_load,
-    page_info,
-    capture_screenshot,
-    click_at_xy,
-    type_text,
-    press_key,
-    scroll,
-    js,
-    cdp,
-    ensure_real_tab,
-    wait_for_element,
-    list_tabs,
-    current_tab,
-    close_tab,
+    new_tab, goto_url, wait_for_load, page_info, capture_screenshot,
+    click_at_xy, type_text, press_key, scroll, js, cdp, ensure_real_tab,
+    wait_for_element, list_tabs, current_tab, close_tab,
 )
-
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# 2. УСТАНОВКА КУК ЧЕРЕЗ WEBSOCKETS
+# КУКИ (WebSocket)
 # ============================================================
 
 try:
@@ -110,52 +68,36 @@ try:
     import json
     
     async def set_cookies_async():
-        """Устанавливает куки через websockets (асинхронно)"""
         try:
             import httpx
-            
-            # Получаем список вкладок
             resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
             pages = resp.json()
-            
             if not pages:
                 logger.error("❌ Нет активных вкладок")
                 return False
-            
             ws_url = pages[0]["webSocketDebuggerUrl"]
             logger.info("🔗 Подключаюсь к WebSocket...")
-            
-            async with websockets.connect(ws_url) as websocket:
-                cmd = {
-                    "id": 1,
-                    "method": "Network.setCookies",
-                    "params": {"cookies": COOKIES}
-                }
-                await websocket.send(json.dumps(cmd))
-                response = json.loads(await websocket.recv())
-                
+            async with websockets.connect(ws_url) as ws:
+                await ws.send(json.dumps({"id": 1, "method": "Network.setCookies", "params": {"cookies": COOKIES}}))
+                response = json.loads(await ws.recv())
                 if "error" in response:
                     logger.error(f"❌ CDP ошибка: {response['error']}")
                     return False
-                
-                logger.info(f"🍪 Установлено {len(COOKIES)} кук через WebSocket")
+                logger.info(f"🍪 Установлено {len(COOKIES)} кук")
                 return True
         except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return False
     
     def set_cookies_global():
-        """Использует существующий event loop (без создания нового)"""
         try:
             loop = asyncio.get_running_loop()
-            future = asyncio.run_coroutine_threadsafe(set_cookies_async(), loop)
-            return future.result(timeout=10)
+            return asyncio.run_coroutine_threadsafe(set_cookies_async(), loop).result(timeout=10)
         except RuntimeError:
             return asyncio.run(set_cookies_async())
         except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return False
-            
 except ImportError:
     logger.warning("⚠️ websockets не установлен")
     COOKIES = []
@@ -163,7 +105,7 @@ except ImportError:
         return False
 
 # ============================================================
-# 3. НАСТРОЙКА
+# НАСТРОЙКА
 # ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -175,12 +117,10 @@ if not TELEGRAM_TOKEN:
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
 ensure_daemon()
 logger.info("✅ Браузер готов")
-
-# Устанавливаем куки
 set_cookies_global()
 
 # ============================================================
-# 4. ЗАПРОС К AGNES AI
+# LLM
 # ============================================================
 
 async def ask_agnes(messages):
@@ -192,10 +132,7 @@ async def ask_agnes(messages):
         logger.info(f"  [{role}]: {content[:500]}..." if len(content) > 500 else f"  [{role}]: {content}")
     logger.info("=" * 60)
     
-    headers = {
-        "Authorization": f"Bearer {AGNES_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "agnes-2.0-flash",
         "messages": messages,
@@ -204,27 +141,16 @@ async def ask_agnes(messages):
     }
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(
-                "https://apihub.agnes-ai.com/v1/chat/completions",
-                headers=headers,
-                json=payload
-            )
+            response = await client.post("https://apihub.agnes-ai.com/v1/chat/completions", headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            
-            logger.info("=" * 60)
-            logger.info("📥 ОТВЕТ ОТ AGNES AI:")
-            logger.info(f"  {content}")
-            logger.info("=" * 60)
-            
-            return content
+            return data["choices"][0]["message"]["content"]
     except Exception as e:
         logger.error(f"❌ Ошибка Agnes AI: {e}")
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# 5. ВЫПОЛНЕНИЕ КОДА
+# ВЫПОЛНИТЕЛЬ
 # ============================================================
 
 def execute_code(code):
@@ -235,26 +161,14 @@ def execute_code(code):
         sys.stdout = stdout_buffer
         
         globals_dict = {
-            'new_tab': new_tab,
-            'goto_url': goto_url,
-            'wait_for_load': wait_for_load,
-            'page_info': page_info,
-            'capture_screenshot': capture_screenshot,
-            'click_at_xy': click_at_xy,
-            'type_text': type_text,
-            'press_key': press_key,
-            'scroll': scroll,
-            'js': js,
-            'cdp': cdp,
-            'ensure_real_tab': ensure_real_tab,
-            'ensure_daemon': ensure_daemon,
-            'wait_for_element': wait_for_element,
-            'list_tabs': list_tabs,
-            'current_tab': current_tab,
-            'close_tab': close_tab,
+            'new_tab': new_tab, 'goto_url': goto_url, 'wait_for_load': wait_for_load,
+            'page_info': page_info, 'capture_screenshot': capture_screenshot,
+            'click_at_xy': click_at_xy, 'type_text': type_text, 'press_key': press_key,
+            'scroll': scroll, 'js': js, 'cdp': cdp, 'ensure_real_tab': ensure_real_tab,
+            'wait_for_element': wait_for_element, 'list_tabs': list_tabs,
+            'current_tab': current_tab, 'close_tab': close_tab,
             'set_cookies': set_cookies_global,
-            'print': print,
-            '__builtins__': __builtins__,
+            'print': print, '__builtins__': __builtins__,
         }
         
         exec(code, globals_dict)
@@ -277,11 +191,10 @@ def execute_code(code):
         return None, False
 
 # ============================================================
-# 6. КОМАНДЫ БОТА
+# КОМАНДЫ
 # ============================================================
 
 async def start(update, context):
-    logger.info(f"👤 {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "/ask <запрос> — задать задачу агенту\n"
         "/log — скачать файл логов\n"
@@ -289,31 +202,19 @@ async def start(update, context):
     )
 
 async def log(update, context):
-    logger.info(f"👤 {update.effective_user.username} вызвал /log")
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
         if not os.path.exists(log_file):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
-        
         with open(log_file, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename='bot.log',
-                caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
-            )
+            await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skills(update, context):
-    """Показывает список доступных навыков"""
-    logger.info(f"👤 {update.effective_user.username} вызвал /skills")
     try:
-        skills_dir = os.path.join(
-            os.environ.get("BH_AGENT_WORKSPACE", "browser-harness/agent-workspace"),
-            "domain-skills"
-        )
-        
+        skills_dir = os.path.join(os.environ.get("BH_AGENT_WORKSPACE", "browser-harness/agent-workspace"), "domain-skills")
         if not os.path.exists(skills_dir):
             await update.message.reply_text("📭 Папка с навыками не найдена")
             return
@@ -335,7 +236,6 @@ async def skills(update, context):
             await update.message.reply_text(msg, parse_mode='Markdown')
         else:
             await update.message.reply_text("🧠 Навыков пока нет. Агент создаст их по мере работы.")
-            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -352,60 +252,39 @@ async def ask(update, context):
 
     try:
         system_prompt = """
-You are a browser agent specialized in X.com (Twitter).
+Browser agent for X.com (Twitter).
 
-CRITICAL: You are ALREADY logged in via cookies. No login needed.
+USE DIRECTLY: new_tab, goto_url, wait_for_load, js, capture_screenshot, print.
+DO NOT import anything. NO classes, NO yield, NO async.
 
-OUTPUT FORMAT (IMPORTANT):
-- For tweets: print numbered list (1. 2. 3.)
-- For trends: print bullet list (• item)
-- For search results: print with count and numbered list
-- Keep it clean, no raw JSON unless asked
+X.com tweets (multiple selectors):
+new_tab()
+goto_url("https://x.com/home")
+wait_for_load()
+time.sleep(3)
 
-MAIN TASKS:
+tweets = js("""
+    const strategies = [
+        () => document.querySelectorAll('[data-testid="tweetText"]'),
+        () => document.querySelectorAll('article div[lang]'),
+        () => document.querySelectorAll('article [data-testid="cellInnerDiv"] div[lang]')
+    ];
+    for (let s of strategies) {
+        const els = s();
+        if (els.length > 0) return Array.from(els).map(el => el.innerText);
+    }
+    return [];
+""")
 
-1. READ TWEETS (formatted):
-   tweets = js("Array.from(document.querySelectorAll('[data-testid=\"tweetText\"]')).map(el => el.innerText)")
-   for i, tweet in enumerate(tweets[:10], 1):
-       print(f"{i}. {tweet}")
+print(f"📊 Найдено твитов: {len(tweets)}")
+if tweets:
+    for i, t in enumerate(tweets[:10], 1): print(f"{i}. {t}")
+else:
+    print("❌ Твиты не найдены")
+    print(js("document.body.innerText.slice(0, 300)"))
 
-2. READ TRENDS (formatted):
-   trends = js("Array.from(document.querySelectorAll('[data-testid=\"trend\"]')).map(el => el.innerText)")
-   for trend in trends[:10]:
-       print(f"• {trend}")
-
-3. SEARCH (formatted):
-   goto_url("https://x.com/search?q=QUERY&src=typed_query")
-   wait_for_load()
-   results = js("Array.from(document.querySelectorAll('[data-testid=\"tweetText\"]')).map(el => el.innerText)")
-   print(f"Найдено {len(results)} результатов:")
-   for i, tweet in enumerate(results[:10], 1):
-       print(f"{i}. {tweet}")
-
-4. SCREENSHOT:
-   capture_screenshot()
-   print("📸 Скриншот сохранён")
-
-5. CLICK (only by coordinates):
-   capture_screenshot()  # see the page
-   click_at_xy(x, y)    # click by coordinates
-   capture_screenshot()  # verify
-   print(f"✅ Клик по координатам ({x}, {y}) выполнен")
-
-6. READ PAGE TEXT:
-   text = js("document.body.innerText")
-   print(text[:1000])
-
-RULES:
-- Use new_tab() first, then goto_url()
-- Always wait_for_load() after navigation
-- Always ensure_real_tab() before CDP
-- Use js() to read data, NOT screenshots
-- Clicks ONLY by coordinates, NOT selectors
-- ALWAYS use print() to output result
-- Format output for readability (numbers, bullets)
-- No yield, no async, no classes
-- Wrap code in ```python ... ```
+RULES: new_tab first, wait_for_load, print() output, no selector clicks (use coordinates).
+Wrap code in ```python ... ```.
 """
 
         messages = [
@@ -420,7 +299,6 @@ RULES:
             code = code_match.group(1) if code_match else response
 
             await status_msg.edit_text("⚙️ Выполняю код...")
-            
             output, success = execute_code(code)
 
             if not success:
@@ -437,7 +315,7 @@ RULES:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 7. ЗАПУСК
+# ЗАПУСК
 # ============================================================
 
 def main():
