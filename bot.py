@@ -1,5 +1,5 @@
-import os 
-import sys 
+import os
+import sys
 import stat
 import time
 import logging
@@ -220,9 +220,13 @@ def execute_code(code):
         def save_skill(host, name, content):
             skills_dir = os.path.join(agent_workspace, "domain-skills", host)
             os.makedirs(skills_dir, exist_ok=True)
+            os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            
             skill_path = os.path.join(skills_dir, f"{name}.md")
             with open(skill_path, "w", encoding='utf-8') as f:
                 f.write(content)
+            os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+            
             logger.info(f"✅ Навык сохранён: {skill_path}")
             return skill_path
         
