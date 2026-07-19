@@ -101,31 +101,54 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# 2. УСТАНОВКА КУК
+# 2. УСТАНОВКА КУК ЧЕРЕЗ WEBSOCKET
 # ============================================================
 
 try:
     from cookies import COOKIES
+    import websocket
     
     def set_cookies_global():
-        """Устанавливает все куки глобально"""
+        """Устанавливает куки через прямой WebSocket"""
         try:
-            # Открываем вкладку если нет активной
-            try:
-                ensure_real_tab()
-            except:
-                new_tab("about:blank")
-                wait_for_load()
-                ensure_real_tab()
+            # Получаем список вкладок
+            resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+            pages = resp.json()
             
-            cdp("Network.setCookies", {"cookies": COOKIES})
-            logger.info(f"🍪 Установлено {len(COOKIES)} кук")
+            if not pages:
+                logger.error("❌ Нет активных вкладок")
+                return False
+            
+            # Берём WebSocket URL первой вкладки
+            ws_url = pages[0]["webSocketDebuggerUrl"]
+            logger.info(f"🔗 Подключаюсь к WebSocket...")
+            
+            # Подключаемся к WebSocket
+            ws = websocket.create_connection(ws_url, timeout=10)
+            
+            # Отправляем команду Network.setCookies
+            cmd = {
+                "id": 1,
+                "method": "Network.setCookies",
+                "params": {"cookies": COOKIES}
+            }
+            ws.send(json.dumps(cmd))
+            
+            # Получаем ответ
+            response = json.loads(ws.recv())
+            ws.close()
+            
+            if "error" in response:
+                logger.error(f"❌ CDP ошибка: {response['error']}")
+                return False
+            
+            logger.info(f"🍪 Установлено {len(COOKIES)} кук через WebSocket")
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
             return False
 except ImportError:
-    logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
+    logger.warning("⚠️ cookies.py или websocket-client не установлен")
     COOKIES = []
     def set_cookies_global():
         return False
