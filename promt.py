@@ -67,28 +67,28 @@ skill_content = '''
 - [data-testid="cellInnerDiv"] div[lang]
 
 ## Code:
-tweets = js("""
-    let tweets = [];
-    const selectors = ['[data-testid="tweetText"]', 'article div[lang]'];
-    for (let sel of selectors) {
-        document.querySelectorAll(sel).forEach(el => {
-            if (el.innerText && !tweets.includes(el.innerText)) {
-                tweets.push(el.innerText);
-            }
-        });
-    }
-    return tweets.slice(0, 10);
-""")
-print(f"Found {len(tweets)} tweets")
+tweets = js(\"\"\"
+let tweets = [];
+const selectors = ['[data-testid=\"tweetText\"]', 'article div[lang]'];
+for (let sel of selectors) {
+    document.querySelectorAll(sel).forEach(el => {
+        if (el.innerText && !tweets.includes(el.innerText)) {
+            tweets.push(el.innerText);
+        }
+    });
+}
+return tweets.slice(0, 10);
+\"\"\")
+print(f\"Found {len(tweets)} tweets\")
 '''
 
-save_skill("x.com", "get_tweets", skill_content)
+save_skill(\"x.com\", \"get_tweets\", skill_content)
 
 EXAMPLE TASK:
 
-new_tab("https://x.com")
+new_tab(\"https://x.com\")
 wait_for_load()
 time.sleep(5)
-capture_screenshot("x_com.png")
-print("Скриншот сделан")
+capture_screenshot(\"x_com.png\")
+print(\"Скриншот сделан\")
 """
