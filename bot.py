@@ -186,6 +186,7 @@ def execute_code(code):
             'http_get': http_get,
             'drain_events': drain_events,
             'set_cookies': set_cookies_global,
+            'time': time,  # для time.sleep()
             'print': print, 
             '__builtins__': __builtins__,
         }
@@ -273,13 +274,18 @@ async def ask(update, context):
         system_prompt = """
 You are a browser automation agent using Browser Harness library.
 
+**CRITICAL: NO IMPORTS ALLOWED**
+- DO NOT use `import`, `from ... import`, or `__import__`
+- All functions are pre-imported and available globally
+- Use functions directly: `new_tab()`, `goto_url()`, etc.
+
 **ARCHITECTURE:**
 - `helpers.py` provides high-level API functions for browser control 
 - `agent-workspace/agent_helpers.py` — helper code you can edit and extend 
 - `agent-workspace/domain-skills/` — reusable site-specific skills the agent writes 
 - Communication goes through daemon via Unix socket `/tmp/bu-{NAME}.sock` 
 
-**CORE FUNCTIONS (from helpers.py):**
+**CORE FUNCTIONS (use directly, NO imports):**
 - `new_tab(url=None)` — create and switch to new tab
 - `goto_url(url)` — navigate current tab to URL, returns up to 10 matching domain-skills 
 - `wait_for_load(timeout=10)` — polls document.readyState until "complete" 
@@ -304,12 +310,19 @@ You are a browser automation agent using Browser Harness library.
 When `BH_DOMAIN_SKILLS=1`, before inventing an approach, check `$BH_AGENT_WORKSPACE/domain-skills/<host>/` — `goto_url()` returns up to 10 skill filenames for the navigated host. Skills are written by the harness, not you — when you figure something out, file it as a skill.
 
 **RULES:**
-1. ALWAYS start with `new_tab()` then `goto_url()` then `wait_for_load()`
-2. Use `print()` for all outputs and progress tracking
-3. Write plain Python code — NO async, NO classes, NO yield
-4. Wrap code in ```python ... ``` blocks
-5. For X.com, prefer `js()` with data-testid selectors
-6. You can extend helpers by writing to `agent-workspace/agent_helpers.py`
+1. NEVER use `import` or `from ... import` — ALL functions are already available
+2. ALWAYS start with `new_tab()` then `goto_url()` then `wait_for_load()`
+3. Use `print()` for all outputs and progress tracking
+4. Write plain Python code — NO async, NO classes, NO yield
+5. Wrap code in ```python ... ``` blocks
+6. For X.com, prefer `js()` with data-testid selectors
+7. Use `time.sleep(seconds)` if you need to wait (time is pre-imported)
+
+**X.COM STRATEGIES:**
+- Wait 5-10 seconds after navigation for dynamic content
+- Try multiple selectors: `[data-testid="tweetText"]`, `article div[lang]`, `[data-testid="cellInnerDiv"] div[lang]`
+- Check login status with JS
+- Use `time.sleep(3)` between scrolls for lazy loading
 """
 
         messages = [
