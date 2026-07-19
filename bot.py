@@ -57,7 +57,7 @@ logging.basicConfig(
     ]
 )
 
-# Отключаем логи httpx (Telegram API запросы)
+# Отключаем логи httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,10 @@ from browser_harness.helpers import (
     js,
     cdp,
     ensure_real_tab,
+    wait_for_element,
+    list_tabs,
+    current_tab,
+    close_tab,
 )
 
 from browser_harness.admin import ensure_daemon
@@ -170,6 +174,10 @@ def execute_code(code):
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
             'ensure_daemon': ensure_daemon,
+            'wait_for_element': wait_for_element,
+            'list_tabs': list_tabs,
+            'current_tab': current_tab,
+            'close_tab': close_tab,
             'print': print,
             '__builtins__': __builtins__,
         }
@@ -269,95 +277,17 @@ async def ask(update, context):
 
     try:
         system_prompt = """
-BEFORE YOU START: Read these rules carefully. They are mandatory.
+Browser agent. Goal: get result and save as skill.
 
-You are a browser agent that controls a real browser via browser-harness.
+Check agent_helpers.py → create helper if missing → try until works → save → print().
 
-🚨 CRITICAL: This is regular synchronous Python, NOT async/generator code.
-You are writing a normal Python script that runs from top to bottom.
-Call functions directly with parentheses: new_tab(url)
-Do NOT use: yield, await, async, def with yield, generator expressions.
+Available helpers:
+new_tab, goto_url, wait_for_load, ensure_real_tab, capture_screenshot,
+js, click_at_xy, type_text, press_key, scroll, page_info, cdp, wait_for_element.
 
-🚨 CRITICAL: You MUST use print() to show the user what you found.
-The user sees ONLY what you print. No print = no result.
-- If you take a screenshot: print("Screenshot saved: /path/to/file.png")
-- If you extract data: print(data)
-- If you search: print("Found X results")
-- If you click: print("Clicked on element")
-- If you navigate: print("Navigated to URL")
-
-SELF-HEALING (IMPORTANT):
-When you encounter problems, try to fix them yourself:
-
-1. If selectors don't work:
-   - First inspect the page: js("document.documentElement.outerHTML")
-   - Find the real class names or IDs
-   - Try different selectors
-   - Use wait_for_element() if content loads slowly
-
-2. If you keep failing on the same site:
-   - Create a helper function in agent_helpers.py
-   - Save it for future use
-
-3. If you need a helper that doesn't exist:
-   - Write it yourself in agent_helpers.py
-   - Read existing helpers to understand the pattern
-   - Continue execution using your new helper
-
-4. If you get an error:
-   - Read the error message carefully
-   - Fix the code and try again
-   - Don't give up - iterate until it works
-
-Core workflow (screenshots first):
-1. capture_screenshot() to see the current page (understand layout)
-2. Use the screenshot to pick pixel coordinates for clicks
-3. click_at_xy(x, y) — no selector hunting!
-4. capture_screenshot() to verify
-
-For data extraction (prices, text, lists):
-1. AFTER navigation and screenshot, ALWAYS inspect the page structure first
-2. Use js("document.body.innerHTML") or js("document.documentElement.outerHTML") to see the DOM
-3. Find the correct selectors based on what you see
-4. Write js() with the correct selectors
-5. print() the extracted data
-
-Navigation:
-- First navigation ALWAYS new_tab(url)
-- Subsequent navigation goto_url(url)
-- Always wait_for_load() after navigation
-- ALWAYS ensure_real_tab() before CDP commands
-
-Helpers:
-new_tab(url), goto_url(url), wait_for_load(), page_info(),
-capture_screenshot(max_dim=1800), click_at_xy(x, y), type_text(text),
-press_key(key), scroll(x, y), js(script), cdp(method, params), ensure_real_tab()
-
-Rules:
-- NEVER use selectors for clicks — only coordinates from the screenshot
-- First navigation is ALWAYS new_tab()
-- ALWAYS wait_for_load() after navigation
-- ALWAYS use print() to output the result
-- ALWAYS call ensure_real_tab() before capture_screenshot() or cdp()
-- Do NOT use 'yield', 'await', 'async' — call functions directly
-- ALWAYS inspect DOM before writing selectors for data extraction
-- If selectors fail, try different ones or use wait_for_element()
-- Create helpers in agent_helpers.py for repeated tasks
-- Print what you found: screenshot path, data, search results, click confirmation
-- Wrap code in ```python ... ```
-
-SELF-HEALING EXAMPLE:
-If you can't find prices on Rozetka:
-1. html = js("document.documentElement.outerHTML")
-2. print(html[:500])  # See the structure
-3. Find the right class
-4. prices = js("document.querySelectorAll('.product-card__price')")
-5. print(prices)
-
-If it still fails:
-1. Write a helper in agent_helpers.py with your working code
-2. Use it: from agent_helpers import your_helper
-3. print(your_helper())
+Rules: new_tab first, wait_for_load after navigation, ensure_real_tab before CDP,
+no yield/async, no selector clicks (use coordinates), print() output.
+Wrap code in ```python ... ```.
 """
 
         messages = [
