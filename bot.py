@@ -101,7 +101,30 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# 2. НАСТРОЙКА
+# 2. УСТАНОВКА КУК
+# ============================================================
+
+try:
+    from cookies import COOKIES, get_cookies_for_domain
+    
+    def set_cookies_global():
+        """Устанавливает все куки глобально через Network.setCookies"""
+        try:
+            ensure_real_tab()
+            cdp("Network.setCookies", {"cookies": COOKIES})
+            logger.info(f"🍪 Установлено {len(COOKIES)} кук")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка установки кук: {e}")
+            return False
+except ImportError:
+    logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
+    COOKIES = []
+    def set_cookies_global():
+        return False
+
+# ============================================================
+# 3. НАСТРОЙКА
 # ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -114,8 +137,11 @@ os.environ["BU_CDP_URL"] = "http://localhost:9222"
 ensure_daemon()
 logger.info("✅ Браузер готов")
 
+# Устанавливаем куки
+set_cookies_global()
+
 # ============================================================
-# 3. ЗАПРОС К AGNES AI
+# 4. ЗАПРОС К AGNES AI
 # ============================================================
 
 async def ask_agnes(messages):
@@ -159,7 +185,7 @@ async def ask_agnes(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# 4. ВЫПОЛНЕНИЕ КОДА
+# 5. ВЫПОЛНЕНИЕ КОДА
 # ============================================================
 
 def execute_code(code):
@@ -187,6 +213,7 @@ def execute_code(code):
             'list_tabs': list_tabs,
             'current_tab': current_tab,
             'close_tab': close_tab,
+            'set_cookies': set_cookies_global,  # ← агент может вызывать
             'print': print,
             '__builtins__': __builtins__,
         }
@@ -211,7 +238,7 @@ def execute_code(code):
         return None, False
 
 # ============================================================
-# 5. КОМАНДЫ БОТА
+# 6. КОМАНДЫ БОТА
 # ============================================================
 
 async def start(update, context):
@@ -329,7 +356,7 @@ Wrap code in ```python ... ```.
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 6. ЗАПУСК
+# 7. ЗАПУСК
 # ============================================================
 
 def main():
