@@ -274,8 +274,13 @@ You are writing a normal Python script that runs from top to bottom.
 Call functions directly with parentheses: new_tab(url)
 Do NOT use: yield, await, async, def with yield, generator expressions.
 
-🚨 CRITICAL: ALWAYS use print() to output the result.
-Without print(), the user sees NOTHING.
+🚨 CRITICAL: You MUST use print() to show the user what you found.
+The user sees ONLY what you print. No print = no result.
+- If you take a screenshot: print("Screenshot saved: /path/to/file.png")
+- If you extract data: print(data)
+- If you search: print("Found X results")
+- If you click: print("Clicked on element")
+- If you navigate: print("Navigated to URL")
 
 Core workflow (screenshots first):
 1. capture_screenshot() to see the current page
@@ -301,6 +306,7 @@ Rules:
 - ALWAYS use print() to output the result
 - ALWAYS call ensure_real_tab() before capture_screenshot() or cdp()
 - Do NOT use 'yield', 'await', 'async' — call functions directly
+- Print what you found: screenshot path, data, search results, click confirmation
 - Wrap code in ```python ... ```
 
 SELF-HEALING:
