@@ -41,6 +41,9 @@ os.chmod(helpers_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP
 os.environ["BH_DOMAIN_SKILLS"] = "1"
 os.environ["BH_AGENT_WORKSPACE"] = "browser-harness/agent-workspace"
 
+# Добавляем дополнительные навыки из interaction-skills
+os.environ["BH_ADDITIONAL_SKILLS"] = "browser-harness/interaction-skills"
+
 # ============================================================
 # 0. ЛОГИ
 # ============================================================
