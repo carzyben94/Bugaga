@@ -112,6 +112,8 @@ try:
     async def set_cookies_async():
         """Устанавливает куки через websockets (асинхронно)"""
         try:
+            import httpx
+            
             # Получаем список вкладок
             resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
             pages = resp.json()
@@ -123,7 +125,6 @@ try:
             ws_url = pages[0]["webSocketDebuggerUrl"]
             logger.info("🔗 Подключаюсь к WebSocket...")
             
-            # Подключаемся и отправляем команду
             async with websockets.connect(ws_url) as websocket:
                 cmd = {
                     "id": 1,
@@ -131,7 +132,6 @@ try:
                     "params": {"cookies": COOKIES}
                 }
                 await websocket.send(json.dumps(cmd))
-                
                 response = json.loads(await websocket.recv())
                 
                 if "error" in response:
@@ -145,15 +145,18 @@ try:
             return False
     
     def set_cookies_global():
-        """Синхронная обёртка для установки кук"""
+        """Использует существующий event loop (без создания нового)"""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(set_cookies_async())
-            loop.close()
-            return result
+            # Получаем существующий loop
+            loop = asyncio.get_running_loop()
+            # Создаём задачу в существующем loop
+            future = asyncio.run_coroutine_threadsafe(set_cookies_async(), loop)
+            return future.result(timeout=10)
+        except RuntimeError:
+            # Если loop нет — запускаем новый
+            return asyncio.run(set_cookies_async())
         except Exception as e:
-            logger.error(f"❌ Ошибка выполнения: {e}")
+            logger.error(f"❌ Ошибка установки кук: {e}")
             return False
             
 except ImportError:
