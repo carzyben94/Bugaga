@@ -181,41 +181,44 @@ set_viewport_global()
 # GITHUB
 # ============================================================
 
-def push_to_github(content, filename, path="domain-skills/x.com"):
-    """Отправить файл в GitHub через API"""
+def push_to_github(content, filename, host="x.com"):
+    """Отправить файл навыка в GitHub по правильному пути."""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
         return False
-    
+
     repo = "carzyben94/Bugaga"
     branch = "main"
-    file_path = f"{path}/{filename}"
+    file_path = f"browser-harness/agent-workspace/domain-skills/{host}/{filename}"
     url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
-    
+
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
         "Content-Type": "application/json"
     }
-    
-    # Проверяем, есть ли файл уже (чтобы получить sha)
+
+    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
-        sha = resp.json().get("sha", None) if resp.status_code == 200 else None
-    except:
+        if resp.status_code == 200:
+            sha = resp.json().get("sha")
+        else:
+            sha = None
+    except Exception:
         sha = None
-    
+
     data = {
-        "message": f"Добавлен навык {filename}",
+        "message": f"Добавлен/обновлён навык {filename} для {host}",
         "content": base64.b64encode(content.encode()).decode(),
         "branch": branch
     }
     if sha:
         data["sha"] = sha
-    
+
     try:
         response = httpx.put(url, headers=headers, json=data, timeout=30)
         if response.status_code in [200, 201]:
-            logger.info(f"✅ Навык отправлен в GitHub: {filename}")
+            logger.info(f"✅ Навык отправлен в GitHub: {file_path}")
             return True
         else:
             logger.error(f"❌ Ошибка отправки в GitHub: {response.text}")
@@ -331,7 +334,7 @@ def execute_code(code):
             logger.info(f"✅ Навык сохранён локально: {skill_path}")
             
             # Отправляем в GitHub
-            push_to_github(content, f"{name}.md")
+            push_to_github(content, f"{name}.md", host)
             
             return skill_path
         
