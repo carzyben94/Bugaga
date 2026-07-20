@@ -165,6 +165,7 @@ def set_viewport_global():
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -175,6 +176,53 @@ logger.info("✅ Браузер готов")
 
 set_cookies_global()
 set_viewport_global()
+
+# ============================================================
+# GITHUB
+# ============================================================
+
+def push_to_github(content, filename, path="domain-skills/x.com"):
+    """Отправить файл в GitHub через API"""
+    if not GITHUB_TOKEN:
+        logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
+        return False
+    
+    repo = "carzyben94/Bugaga"
+    branch = "main"
+    file_path = f"{path}/{filename}"
+    url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+    
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # Проверяем, есть ли файл уже (чтобы получить sha)
+    try:
+        resp = httpx.get(url, headers=headers, timeout=10)
+        sha = resp.json().get("sha", None) if resp.status_code == 200 else None
+    except:
+        sha = None
+    
+    data = {
+        "message": f"Добавлен навык {filename}",
+        "content": base64.b64encode(content.encode()).decode(),
+        "branch": branch
+    }
+    if sha:
+        data["sha"] = sha
+    
+    try:
+        response = httpx.put(url, headers=headers, json=data, timeout=30)
+        if response.status_code in [200, 201]:
+            logger.info(f"✅ Навык отправлен в GitHub: {filename}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки в GitHub: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке в GitHub: {e}")
+        return False
 
 # ============================================================
 # LLM
@@ -227,7 +275,11 @@ def execute_code(code):
                 f.write(content)
             os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
             
-            logger.info(f"✅ Навык сохранён: {skill_path}")
+            logger.info(f"✅ Навык сохранён локально: {skill_path}")
+            
+            # Отправляем в GitHub
+            push_to_github(content, f"{name}.md")
+            
             return skill_path
         
         def capture_screenshot_with_path(path=None, full=False, max_dim=None):
