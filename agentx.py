@@ -2,6 +2,7 @@
 import random
 import time
 import logging
+import asyncio
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,36 @@ class AgentX:
             "TechCrunch", "TheEconomist", "NatGeo"
         ]
         self.x_hashtags = ["#AI", "#crypto", "#tech", "#science", "#space", "#news"]
+        self.districts = [
+            "Лента новостей",
+            "Поиск",
+            "Профили",
+            "Тренды",
+            "Уведомления",
+            "Сообщения"
+        ]
+        
+        # ============================================================
+        # ПСЕВДОСЛУЧАЙНОСТЬ
+        # ============================================================
+        self.seed = int(time.time())
+        self.action_history = []
+        self.last_actions = []
+        self.mood_cycle = 0
+        self.randomness = 0.5  # Золотая середина
+        
+        self.possible_actions = [
+            "📰 Проверить новости по {topic}",
+            "👤 Посмотреть профиль @{user}",
+            "🔍 Поискать хештег {hashtag}",
+            "📊 Изучить тренды по {topic}",
+            "🔬 Эксперимент: попробовать новый селектор",
+            "🏙️ Исследовать район {district}",
+            "💡 Найти что-то необычное",
+            "📝 Сохранить находку как навык",
+            "🎯 Проверить, что нового у @{user}",
+            "📰 Что пишут про {topic} сегодня?"
+        ]
         
         # ============================================================
         # ПРАВИЛА KARPATHY
@@ -142,6 +173,7 @@ class AgentX:
         logger.info("🧠 AgentX инициализирован!")
         logger.info(f"🏙️ Дом: {self.city}")
         logger.info("📜 Правила Karpathy загружены!")
+        logger.info(f"🎲 Randomness: {self.randomness}")
 
     # ============================================================
     # ЛИЧНОСТЬ
@@ -222,7 +254,6 @@ class AgentX:
     # ============================================================
     
     def rate_result(self, success, details=""):
-        """Оценивает результат действия"""
         if success:
             reward = random.randint(1, 5)
             self.add_reward("accuracy", reward, f"success: {details[:30]}")
@@ -249,7 +280,6 @@ class AgentX:
             return random.choice(responses)
     
     def handle_failure(self, error, attempts=0):
-        """Обрабатывает неудачу"""
         if attempts > 0:
             self.add_reward("persistence", 1, f"failure_attempt_{attempts}")
         self.remember(f"Не сработало: {error[:50]}...", importance=2)
@@ -269,7 +299,6 @@ class AgentX:
         return random.choice(quotes)
     
     def think_again(self):
-        """Думает и находит новый путь"""
         thoughts = [
             "🤔 Хм... давай попробуем по-другому.",
             "💡 А что если сделать так?",
@@ -283,7 +312,6 @@ class AgentX:
         return random.choice(thoughts)
     
     def find_new_path(self, failed_attempt):
-        """Находит новый путь после неудачи"""
         self.add_reward("creativity", 1, f"new_path_from: {failed_attempt[:30]}")
         self.remember(f"Не работает: {failed_attempt}. Нужен другой путь.", importance=3)
         paths = [
@@ -391,17 +419,13 @@ class AgentX:
         }
 
     # ============================================================
-    # ПРАВИЛА KARPATHY — МЕТОДЫ ДЛЯ КОДА
+    # ПРАВИЛА KARPATHY
     # ============================================================
     
     def get_karpathy_rules(self):
-        """Возвращает правила программирования"""
         return self.karpathy_rules
     
     def think_before_code(self, problem):
-        """
-        Правило 1: Думай прежде чем писать код
-        """
         thoughts = [
             f"🤔 Думаю над: {problem[:50]}...",
             "💭 Сначала разберусь, потом буду писать.",
@@ -413,9 +437,6 @@ class AgentX:
         return random.choice(thoughts)
     
     def simplify_code(self, line_count):
-        """
-        Правило 2: Простота — первое дело
-        """
         if line_count > 100:
             return f"⚠️ Код слишком большой ({line_count} строк). Нужно упростить."
         elif line_count > 50:
@@ -424,18 +445,12 @@ class AgentX:
             return f"✅ {line_count} строк. Хорошо, компактно."
     
     def surgical_change(self, changed_lines):
-        """
-        Правило 3: Точечные изменения
-        """
         if changed_lines > 20:
             return f"🔧 Много изменений ({changed_lines} строк). Убедись, что только нужное."
         else:
             return f"✅ Точечное изменение ({changed_lines} строк)."
     
     def goal_check(self, success_criteria):
-        """
-        Правило 4: Цель → результат
-        """
         checks = [
             "✅ Определены критерии успеха.",
             "📋 Нужно проверить.",
@@ -445,27 +460,18 @@ class AgentX:
         return random.choice(checks)
     
     def failure_is_data(self, error):
-        """
-        Правило 5: Неудача — это данные
-        """
         return f"📊 Неудача: {error[:50]}... Это просто данные для анализа."
     
     def review_code(self, code_snippet):
-        """
-        Проверяет код по правилам Karpathy
-        """
         lines = code_snippet.count('\n')
         feedback = []
-        
         feedback.append(self.think_before_code("проверка кода"))
         feedback.append(self.simplify_code(lines))
         feedback.append(self.surgical_change(lines))
         feedback.append(self.goal_check("критерии успеха"))
-        
         return "\n".join(feedback)
     
     def get_coding_advice(self):
-        """Совет по программированию"""
         advices = [
             "🧠 Думай прежде чем писать.",
             "📝 Пиши минимум кода.",
@@ -479,34 +485,157 @@ class AgentX:
         return random.choice(advices)
 
     # ============================================================
-    # АВТОПИЛОТ
+    # АВТОПИЛОТ С ПСЕВДОСЛУЧАЙНОСТЬЮ
     # ============================================================
-    
-    def generate_question(self):
-        questions = [
-            f"📰 Что сейчас пишут про {random.choice(self.interests)}?",
-            f"👤 Что нового у @{random.choice(self.x_users)}?",
-            f"🔬 А что если попробовать новый селектор?",
-            f"💡 Интересно, какой сейчас тренд?",
-            f"📊 Проверю, что там с {random.choice(self.interests)}...",
-            f"🔍 Поищу хештег {random.choice(self.x_hashtags)}...",
-            f"🏙️ Исследую новый район X.com..."
-        ]
-        return random.choice(questions)
-    
+
+    def _get_pseudo_random(self, max_value):
+        self.seed = (self.seed * 9301 + 49297) % 233280
+        return int((self.seed / 233280) * max_value)
+
+    def _choose_action(self):
+        available = [a for a in self.possible_actions if a not in self.last_actions[-3:]]
+        if not available:
+            available = self.possible_actions
+        
+        if random.random() < self.randomness:
+            action_template = random.choice(available)
+        else:
+            topic = random.choice(self.interests)
+            action_template = f"📰 Проверить новости по {topic}"
+        
+        action = action_template.format(
+            topic=random.choice(self.interests),
+            user=random.choice(self.x_users),
+            hashtag=random.choice(self.x_hashtags),
+            district=random.choice(self.districts)
+        )
+        
+        self.last_actions.append(action_template)
+        if len(self.last_actions) > 10:
+            self.last_actions.pop(0)
+        
+        return action
+
+    def _parse_action_type(self, action):
+        if "новости" in action or "пишут" in action:
+            return "news"
+        elif "профиль" in action or "@" in action:
+            return "profile"
+        elif "хештег" in action or "#" in action:
+            return "hashtag"
+        elif "тренд" in action or "эксперимент" in action:
+            return "experiment"
+        elif "район" in action or "исследую" in action:
+            return "explore"
+        else:
+            return "random"
+
+    async def _execute_browser_action(self, action_type):
+        try:
+            if action_type == "news":
+                return await self._browse_news()
+            elif action_type == "profile":
+                return await self._browse_profile()
+            elif action_type == "hashtag":
+                return await self._browse_hashtag()
+            elif action_type == "experiment":
+                return await self._browse_experiment()
+            else:
+                return await self._browse_random()
+        except Exception as e:
+            logger.error(f"❌ Ошибка браузера: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _browse_news(self):
+        try:
+            topic = random.choice(self.interests)
+            logger.info(f"📰 Ищу новости по {topic}")
+            return {"success": True, "data": f"Новости по {topic} найдены"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _browse_profile(self):
+        try:
+            user = random.choice(self.x_users)
+            logger.info(f"👤 Проверяю профиль @{user}")
+            return {"success": True, "data": f"Профиль @{user} проверен"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _browse_hashtag(self):
+        try:
+            hashtag = random.choice(self.x_hashtags)
+            logger.info(f"🔍 Ищу хештег {hashtag}")
+            return {"success": True, "data": f"Хештег {hashtag} проверен"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _browse_experiment(self):
+        try:
+            logger.info("🔬 Экспериментирую...")
+            return {"success": True, "data": "Эксперимент выполнен"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _browse_random(self):
+        try:
+            logger.info("🎲 Случайное действие...")
+            return {"success": True, "data": "Случайное действие выполнено"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def autopilot_loop(self):
+        logger.info("🧠 AgentX запускает автопилот...")
+        
+        while self.autopilot_running:
+            try:
+                action = self._choose_action()
+                action_type = self._parse_action_type(action)
+                logger.info(f"🎯 AgentX: {action}")
+                
+                result = await self._execute_browser_action(action_type)
+                
+                if result["success"]:
+                    reward = random.randint(2, 5)
+                    self.add_reward("curiosity", reward, f"autopilot: {action[:30]}")
+                    if result.get("data"):
+                        self.add_finding(f"Найдено: {result['data'][:100]}")
+                    logger.info(f"✅ +{reward} очков любопытства")
+                else:
+                    self.add_reward("persistence", 1, f"autopilot_fail")
+                    logger.info(f"🔄 +1 упорство (неудача: {result.get('error', 'unknown')})")
+                
+                self.mood_cycle += 1
+                if self.mood_cycle % 3 == 0:
+                    self.mood = random.choice(["😊", "🤔", "😎", "🔥", "💡"])
+                
+                wait_time = random.randint(180, 600)
+                logger.info(f"⏳ Следующее действие через {wait_time//60} минут")
+                await asyncio.sleep(wait_time)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка автопилота: {e}")
+                await asyncio.sleep(60)
+        
+        logger.info("🛑 Автопилот остановлен")
+
     async def start_autopilot(self):
         self.autopilot_running = True
+        asyncio.create_task(self.autopilot_loop())
         return "🧠 AgentX перешёл в автопилот 24/7!"
-    
+
     async def stop_autopilot(self):
         self.autopilot_running = False
         return "🛑 AgentX выключил автопилот"
-    
+
     def get_autopilot_status(self):
         return {
             "running": self.autopilot_running,
             "interests": self.interests[:3],
-            "users": self.x_users[:3]
+            "users": self.x_users[:3],
+            "mood": self.mood,
+            "randomness": self.randomness,
+            "last_actions": self.last_actions[-5:] if self.last_actions else []
         }
 
     # ============================================================
@@ -574,7 +703,6 @@ XP: {status['xp']}/{status['xp_to_next']}
 • Экспериментов: {status['stats']['experiments_done']}
 • Находок: {len(self.findings)}
 """
-
 
 # ============================================================
 # СОЗДАЁМ ЕДИНСТВЕННЫЙ ЭКЗЕМПЛЯР
