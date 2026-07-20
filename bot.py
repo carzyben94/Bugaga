@@ -1,3 +1,4 @@
+```python
 import os
 import sys
 import stat
@@ -561,7 +562,6 @@ def execute_code(code):
 
 async def start(update, context):
     await update.message.reply_text(
-        "🤖 Браузер-агент с фотошопом!\n\n"
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
         "/image — последний скриншот\n"
@@ -570,8 +570,7 @@ async def start(update, context):
         "/log — скачать логи\n\n"
         "🎨 Фотошоп:\n"
         "/bg <описание> — заменить фон\n"
-        "/clear — очистить кэш\n"
-        "📸 Отправь фото — сохранить для /bg"
+        "/clear — очистить кэш"
     )
 
 async def log(update, context):
@@ -763,7 +762,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 # Если пришёл base64
                 if result_url.startswith('data:image'):
-                    import base64
                     img_data = base64.b64decode(result_url.split(',')[1])
                     await update.message.reply_photo(
                         img_data,
@@ -814,3 +812,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
