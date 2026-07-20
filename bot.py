@@ -14,7 +14,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
 from PIL import Image
-import requests
 
 warnings.filterwarnings("ignore")
 
@@ -380,19 +379,19 @@ def replace_background(image_data, new_background_prompt: str):
             }
         }
         
-        # 4. ОТПРАВКА ЗАПРОСА
+        # 4. ОТПРАВКА ЗАПРОСА (httpx)
         logger.info(f"📤 Отправка запроса к Agnes AI...")
         logger.info(f"   Промпт: {new_background_prompt[:50]}...")
         
-        response = requests.post(
-            AGNES_IMAGE_API_URL,
-            json=payload,
-            headers=headers,
-            timeout=90
-        )
-        response.raise_for_status()
+        with httpx.Client(timeout=90.0) as client:
+            response = client.post(
+                AGNES_IMAGE_API_URL,
+                json=payload,
+                headers=headers
+            )
+            response.raise_for_status()
+            result = response.json()
         
-        result = response.json()
         logger.info("✅ Изображение сгенерировано")
         
         # 5. ОБРАБОТКА ОТВЕТА
@@ -405,12 +404,12 @@ def replace_background(image_data, new_background_prompt: str):
         logger.error(f"❌ Неожиданный ответ: {result}")
         return None, "Неожиданный формат ответа от API"
         
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return None, "⏰ Превышено время ожидания (90 секунд)"
-    except requests.exceptions.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         status = e.response.status_code if e.response else "unknown"
         return None, f"HTTP ошибка {status}: {str(e)}"
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         logger.error(f"❌ Ошибка запроса: {e}")
         return None, f"Ошибка сети: {str(e)}"
     except Exception as e:
@@ -772,7 +771,7 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     # Если пришёл URL
-                    response = requests.get(result_url, timeout=30)
+                    response = httpx.get(result_url, timeout=30)
                     if response.status_code == 200:
                         await update.message.reply_photo(
                             response.content,
