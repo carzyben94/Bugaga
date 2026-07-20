@@ -185,7 +185,6 @@ set_viewport_global()
 # ============================================================
 
 def push_to_github(content, filename, host="x.com"):
-    """Отправить файл навыка в GitHub по правильному пути."""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
         return False
@@ -231,7 +230,6 @@ def push_to_github(content, filename, host="x.com"):
 
 
 def push_helpers_to_github():
-    """Отправить agent_helpers.py в GitHub"""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, helpers не будут отправлены")
         return False
@@ -508,7 +506,6 @@ def execute_code(code):
             'time': time,
             'print': print,
             '__builtins__': __builtins__,
-            # AgentX
             'agent': agent_x,
             'get_thought': agent_x.get_thought,
             'get_mood': agent_x.get_mood,
@@ -526,7 +523,6 @@ def execute_code(code):
             'explore_x': agent_x.explore_x,
             'learn_selector': agent_x.learn_selector,
             'find_pattern': agent_x.find_pattern,
-            # Karpathy
             'karpathy_rules': agent_x.get_karpathy_rules(),
             'think_before_code': agent_x.think_before_code,
             'simplify_code': agent_x.simplify_code,
@@ -571,7 +567,8 @@ async def start(update, context):
         "/agent — статус AgentX\n\n"
         "🧠 Автопилот:\n"
         "/pilot_start — запустить 24/7\n"
-        "/pilot_stop — остановить\n\n"
+        "/pilot_stop — остановить\n"
+        "/pilot_status — статус автопилота\n\n"
         "🎨 Фотошоп:\n"
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш"
@@ -587,6 +584,21 @@ async def pilot_start(update, context):
 async def pilot_stop(update, context):
     result = await agent_x.stop_autopilot()
     await update.message.reply_text(result)
+
+async def pilot_status(update, context):
+    status = agent_x.get_autopilot_status()
+    if status["running"]:
+        text = f"🧠 **Автопилот активен!**\n\n"
+        text += f"😊 Настроение: {status['mood']}\n"
+        text += f"🎯 Интересы: {', '.join(status['interests'])}\n"
+        text += f"👤 Пользователи: {', '.join(status['users'])}\n"
+        text += f"🎲 Хаотичность: {status['randomness']}\n\n"
+        text += f"🔄 Последние действия:\n"
+        for action in status['last_actions'][-3:]:
+            text += f"  • {action}\n"
+        await update.message.reply_text(text)
+    else:
+        await update.message.reply_text("🛑 Автопилот выключен")
 
 async def log(update, context):
     try:
@@ -811,6 +823,7 @@ def main():
     app.add_handler(CommandHandler("agent", agent_status))
     app.add_handler(CommandHandler("pilot_start", pilot_start))
     app.add_handler(CommandHandler("pilot_stop", pilot_stop))
+    app.add_handler(CommandHandler("pilot_status", pilot_status))
     
     app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
