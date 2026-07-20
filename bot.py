@@ -224,6 +224,59 @@ def push_to_github(content, filename, path="domain-skills/x.com"):
         logger.error(f"❌ Ошибка при отправке в GitHub: {e}")
         return False
 
+
+def push_helpers_to_github():
+    """Отправить agent_helpers.py в GitHub"""
+    if not GITHUB_TOKEN:
+        logger.warning("⚠️ GITHUB_TOKEN не задан, helpers не будут отправлены")
+        return False
+    
+    repo = "carzyben94/Bugaga"
+    branch = "main"
+    file_path = "browser-harness/agent-workspace/agent_helpers.py"
+    url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+    
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # Получаем текущий файл (чтобы получить sha)
+    try:
+        resp = httpx.get(url, headers=headers, timeout=10)
+        sha = resp.json().get("sha", None) if resp.status_code == 200 else None
+    except:
+        sha = None
+    
+    # Читаем текущее содержимое файла в контейнере
+    helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+    if not os.path.exists(helpers_path):
+        logger.warning("⚠️ agent_helpers.py не найден")
+        return False
+    
+    with open(helpers_path, "r", encoding='utf-8') as f:
+        content = f.read()
+    
+    data = {
+        "message": "Обновлён agent_helpers.py",
+        "content": base64.b64encode(content.encode()).decode(),
+        "branch": branch
+    }
+    if sha:
+        data["sha"] = sha
+    
+    try:
+        response = httpx.put(url, headers=headers, json=data, timeout=30)
+        if response.status_code in [200, 201]:
+            logger.info(f"✅ agent_helpers.py отправлен в GitHub")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки helpers: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке helpers: {e}")
+        return False
+
 # ============================================================
 # LLM
 # ============================================================
@@ -282,6 +335,26 @@ def execute_code(code):
             
             return skill_path
         
+        def add_helper(code):
+            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
+            helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+            
+            # Проверяем, что файл существует
+            if not os.path.exists(helpers_path):
+                with open(helpers_path, "w") as f:
+                    f.write('"""Agent-editable browser helpers."""\n')
+            
+            # Добавляем код
+            with open(helpers_path, "a", encoding='utf-8') as f:
+                f.write(f"\n\n{code}\n")
+            
+            logger.info(f"✅ Helper добавлен в agent_helpers.py")
+            
+            # Отправляем в GitHub
+            push_helpers_to_github()
+            
+            return True
+        
         def capture_screenshot_with_path(path=None, full=False, max_dim=None):
             if path is None:
                 timestamp = int(time.time())
@@ -318,6 +391,7 @@ def execute_code(code):
             'drain_events': drain_events,
             'set_cookies': set_cookies_global,
             'save_skill': save_skill,
+            'add_helper': add_helper,
             'time': time,
             'print': print, 
             '__builtins__': __builtins__,
