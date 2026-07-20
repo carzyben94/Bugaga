@@ -11,8 +11,10 @@ import json
 import httpx
 import warnings
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
+from PIL import Image
+import requests
 
 warnings.filterwarnings("ignore")
 
@@ -281,6 +283,141 @@ def push_helpers_to_github():
         return False
 
 # ============================================================
+# ФОТОШОП (AGNES AI)
+# ============================================================
+
+AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
+
+def get_image_size(image_data):
+    """Определяет размер изображения"""
+    try:
+        img = Image.open(io.BytesIO(image_data))
+        width, height = img.size
+        logger.info(f"📐 Размер изображения: {width}x{height}")
+        return width, height
+    except Exception as e:
+        logger.error(f"Ошибка при определении размера: {e}")
+        return None, None
+
+def replace_background(image_data, new_background_prompt: str):
+    """
+    Заменяет фон изображения через Agnes AI.
+    
+    Args:
+        image_data: bytes изображения
+        new_background_prompt: описание нового фона
+    
+    Returns:
+        tuple: (url_result, error_message)
+    """
+    if not AGNES_API_KEY:
+        return None, "AGNES_API_KEY не установлен!"
+    
+    if not image_data:
+        return None, "Нет данных изображения"
+    
+    if not new_background_prompt or len(new_background_prompt.strip()) < 2:
+        return None, "Слишком короткое описание фона"
+    
+    try:
+        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
+        width, height = get_image_size(image_data)
+        
+        MAX_SIZE = 1024
+        MIN_SIZE = 256
+        
+        if width and height:
+            if width > MAX_SIZE or height > MAX_SIZE:
+                ratio = min(MAX_SIZE / width, MAX_SIZE / height)
+                width = int(width * ratio)
+                height = int(height * ratio)
+            if width < MIN_SIZE or height < MIN_SIZE:
+                ratio = max(MIN_SIZE / width, MIN_SIZE / height)
+                width = int(width * ratio)
+                height = int(height * ratio)
+            size = f"{width}x{height}"
+        else:
+            size = "1024x1024"
+            logger.warning("⚠️ Использую стандартный размер: 1024x1024")
+        
+        logger.info(f"📐 Размер для API: {size}")
+        
+        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
+        try:
+            img = Image.open(io.BytesIO(image_data))
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG', quality=85, optimize=True)
+            image_data = buffer.getvalue()
+        except Exception as e:
+            logger.warning(f"Не удалось оптимизировать изображение: {e}")
+        
+        img_b64 = base64.b64encode(image_data).decode('utf-8')
+        data_uri = f"data:image/jpeg;base64,{img_b64}"
+        
+        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
+        enhanced_prompt = f"""
+        Replace the background with: {new_background_prompt}.
+        Keep the main subject exactly as is.
+        Maintain the original lighting and shadows.
+        Make the background look natural and realistic.
+        Do not alter the main subject.
+        """
+        
+        headers = {
+            "Authorization": f"Bearer {AGNES_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "agnes-image-2.0-flash",
+            "prompt": enhanced_prompt.strip(),
+            "size": size,
+            "extra_body": {
+                "image": [data_uri],
+                "response_format": "url"
+            }
+        }
+        
+        # 4. ОТПРАВКА ЗАПРОСА
+        logger.info(f"📤 Отправка запроса к Agnes AI...")
+        logger.info(f"   Промпт: {new_background_prompt[:50]}...")
+        
+        response = requests.post(
+            AGNES_IMAGE_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=90
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        logger.info("✅ Изображение сгенерировано")
+        
+        # 5. ОБРАБОТКА ОТВЕТА
+        if 'data' in result and len(result['data']) > 0:
+            if 'url' in result['data'][0]:
+                return result['data'][0]['url'], None
+            elif 'b64_json' in result['data'][0]:
+                return result['data'][0]['b64_json'], None
+        
+        logger.error(f"❌ Неожиданный ответ: {result}")
+        return None, "Неожиданный формат ответа от API"
+        
+    except requests.exceptions.Timeout:
+        return None, "⏰ Превышено время ожидания (90 секунд)"
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response else "unknown"
+        return None, f"HTTP ошибка {status}: {str(e)}"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка запроса: {e}")
+        return None, f"Ошибка сети: {str(e)}"
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return None, f"Внутренняя ошибка: {str(e)[:100]}"
+
+# ============================================================
 # LLM
 # ============================================================
 
@@ -425,11 +562,17 @@ def execute_code(code):
 
 async def start(update, context):
     await update.message.reply_text(
+        "🤖 Браузер-агент с фотошопом!\n\n"
+        "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
-        "/image — отправить последний скриншот\n"
-        "/images — отправить все скриншоты\n"
-        "/log — скачать файл логов\n"
-        "/skills — список навыков агента"
+        "/image — последний скриншот\n"
+        "/images — все скриншоты\n"
+        "/skills — список навыков\n"
+        "/log — скачать логи\n\n"
+        "🎨 Фотошоп:\n"
+        "/bg <описание> — заменить фон\n"
+        "/clear — очистить кэш\n"
+        "📸 Отправь фото — сохранить для /bg"
     )
 
 async def log(update, context):
@@ -545,17 +688,127 @@ async def ask(update, context):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
+# ФОТОШОП КОМАНДЫ
+# ============================================================
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очищает сохраненное изображение"""
+    if 'last_image' in context.user_data:
+        del context.user_data['last_image']
+        await update.message.reply_text("🧹 Кэш очищен!")
+    else:
+        await update.message.reply_text("📭 Кэш пуст")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет полученное фото"""
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        context.user_data['last_image'] = bytes(photo_bytes)
+        
+        width, height = get_image_size(photo_bytes)
+        size_info = f" ({width}x{height})" if width and height else ""
+        
+        await update.message.reply_text(
+            f"📸 Фото сохранено{size_info}!\n"
+            f"✏️ Используй /bg <описание> для замены фона"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Замена фона через Agnes AI"""
+    if not AGNES_API_KEY:
+        await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
+        return
+
+    # Проверяем, есть ли сохраненное изображение
+    if 'last_image' not in context.user_data:
+        await update.message.reply_text(
+            "📸 Сначала загрузите картинку!\n"
+            "Отправьте фото или сделайте скриншот /screen"
+        )
+        return
+
+    # Если нет описания
+    if not context.args:
+        await update.message.reply_text(
+            "✏️ Напишите описание нового фона.\n"
+            "Пример: /bg beach \n"
+            "Пример: /bg космос"
+        )
+        return
+
+    prompt = ' '.join(context.args)
+    waiting_msg = await update.message.reply_text(
+        f"🎨 Заменяю фон: {prompt}\n⏳ Ожидайте..."
+    )
+
+    try:
+        image_data = context.user_data['last_image']
+        loop = asyncio.get_event_loop()
+        result_url, error = await loop.run_in_executor(
+            None, replace_background, image_data, prompt
+        )
+
+        try:
+            await waiting_msg.delete()
+        except:
+            pass
+
+        if error:
+            await update.message.reply_text(f"❌ Ошибка: {error}")
+            return
+
+        if result_url:
+            try:
+                # Если пришёл base64
+                if result_url.startswith('data:image'):
+                    import base64
+                    img_data = base64.b64decode(result_url.split(',')[1])
+                    await update.message.reply_photo(
+                        img_data,
+                        caption=f"🖼️ Готово! Фон заменён на: {prompt}"
+                    )
+                else:
+                    # Если пришёл URL
+                    response = requests.get(result_url, timeout=30)
+                    if response.status_code == 200:
+                        await update.message.reply_photo(
+                            response.content,
+                            caption=f"🖼️ Готово! Фон заменён на: {prompt}"
+                        )
+                    else:
+                        await update.message.reply_text(f"❌ Ошибка загрузки: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Ошибка скачивания: {e}")
+                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        else:
+            await update.message.reply_text("❌ Не удалось заменить фон")
+
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+# ============================================================
 # ЗАПУСК
 # ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
+    
+    # Фотошоп команды
+    app.add_handler(CommandHandler("bg", bg_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
