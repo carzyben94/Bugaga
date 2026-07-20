@@ -84,3 +84,21 @@ def get_iphone_prices_idealo():
         Array.from(items).slice(0, 10).map(el => el.textContent.trim());
     """)
     return prices
+
+
+def get_tweets():
+    tweets = js("""
+    let tweets = [];
+    const selectors = ['[data-testid="tweetText"]', 'article div[lang]', '[data-testid="cellInnerDiv"] div[lang]'];
+    for (let sel of selectors) {
+        document.querySelectorAll(sel).forEach(el => {
+            if (el.innerText && el.innerText.trim() && !tweets.includes(el.innerText.trim())) {
+                tweets.push(el.innerText.trim());
+            }
+        });
+    }
+    return tweets.slice(0, 20);
+    """)
+    print(f"Found {len(tweets)} tweets")
+    return tweets
+
