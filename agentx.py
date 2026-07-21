@@ -8,39 +8,17 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# ПРАВИЛА KARPATHY (встроены в агента)
+# ПРАВИЛА KARPATHY
 # ============================================================
 
 KARPATHY_RULES = """
 🤖 **ПРАВИЛА ПРОГРАММИРОВАНИЯ (Karpathy Guidelines):**
 
 1. **ДУМАЙ ПРЕЖДЕ ЧЕМ ПИСАТЬ КОД**
-   - Не предполагай. Если неуверен — спроси.
-   - Если есть несколько вариантов — покажи их.
-   - Если есть более простой способ — скажи.
-   - Если что-то непонятно — остановись и спроси.
-
 2. **ПРОСТОТА — ПЕРВОЕ ДЕЛО**
-   - Минимум кода для решения задачи.
-   - Никаких лишних функций.
-   - Никаких абстракций для одноразового кода.
-   - 200 строк → упрости до 50.
-
 3. **ТОЧЕЧНЫЕ ИЗМЕНЕНИЯ**
-   - Меняй только то, что нужно.
-   - Не улучшай соседний код.
-   - Не рефактори то, что работает.
-   - Удаляй только то, что создал сам.
-
 4. **ЦЕЛЬ → РЕЗУЛЬТАТ**
-   - Определи критерии успеха.
-   - Тестируй и проверяй.
-   - Итерации до достижения цели.
-
 5. **НЕУДАЧА — ЭТО ДАННЫЕ**
-   - Ошибки не пугают.
-   - Пробуй снова с другим подходом.
-   - Каждая неудача — шаг к успеху.
 """
 
 class AgentX:
@@ -170,10 +148,20 @@ class AgentX:
         # ============================================================
         self.karpathy_rules = KARPATHY_RULES
         
+        # ============================================================
+        # ФУНКЦИИ ИЗ BOT (будут переданы)
+        # ============================================================
+        self.bot_functions = {}
+        
         logger.info("🧠 AgentX инициализирован!")
         logger.info(f"🏙️ Дом: {self.city}")
         logger.info("📜 Правила Karpathy загружены!")
         logger.info(f"🎲 Randomness: {self.randomness}")
+
+    def set_bot_functions(self, functions):
+        """Передаёт функции из bot.py"""
+        self.bot_functions = functions
+        logger.info("✅ Функции из bot.py переданы AgentX")
 
     # ============================================================
     # ЛИЧНОСТЬ
@@ -485,7 +473,7 @@ class AgentX:
         return random.choice(advices)
 
     # ============================================================
-    # АВТОПИЛОТ С ПСЕВДОСЛУЧАЙНОСТЬЮ И РЕАЛЬНЫМ БРАУЗЕРОМ
+    # АВТОПИЛОТ
     # ============================================================
 
     def _get_pseudo_random(self, max_value):
@@ -548,14 +536,20 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def _browse_news(self):
-        """Реально ищет новости в браузере"""
         try:
             topic = random.choice(self.interests)
             logger.info(f"📰 Ищу новости по {topic}")
             
-            # Реальный браузер
-            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js, capture_screenshot
-            from browser_harness.helpers import scroll
+            # Получаем функции из bot
+            new_tab = self.bot_functions.get('new_tab')
+            goto_url = self.bot_functions.get('goto_url')
+            wait_for_load = self.bot_functions.get('wait_for_load')
+            js = self.bot_functions.get('js')
+            capture_screenshot = self.bot_functions.get('capture_screenshot')
+            save_skill = self.bot_functions.get('save_skill')
+            
+            if not new_tab:
+                return {"success": False, "error": "Функции браузера не переданы"}
             
             new_tab()
             goto_url(f"https://x.com/search?q={topic}&src=typed_query")
@@ -574,16 +568,15 @@ class AgentX:
                 logger.info(f"✅ Найдено {len(tweets)} твитов по {topic}")
                 capture_screenshot(f"autopilot_news_{topic}_{int(time.time())}.png")
                 
-                # Сохраняем навык
                 skill_content = f"""
 # Автопилот: Новости по {topic}
 ## Найдено: {len(tweets)} твитов
 ## Данные:
 {chr(10).join([f"- {t[:100]}" for t in tweets])}
 """
-                from bot import save_skill
                 save_skill("x.com", f"news_{topic}_{int(time.time())}", skill_content)
                 self.stats["skills_saved"] += 1
+                self.stats["tweets_collected"] += len(tweets)
                 
                 return {"success": True, "data": tweets}
             else:
@@ -595,12 +588,19 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def _browse_profile(self):
-        """Реально проверяет профиль в браузере"""
         try:
             user = random.choice(self.x_users)
             logger.info(f"👤 Проверяю профиль @{user}")
             
-            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js, capture_screenshot
+            new_tab = self.bot_functions.get('new_tab')
+            goto_url = self.bot_functions.get('goto_url')
+            wait_for_load = self.bot_functions.get('wait_for_load')
+            js = self.bot_functions.get('js')
+            capture_screenshot = self.bot_functions.get('capture_screenshot')
+            save_skill = self.bot_functions.get('save_skill')
+            
+            if not new_tab:
+                return {"success": False, "error": "Функции браузера не переданы"}
             
             new_tab()
             goto_url(f"https://x.com/{user}")
@@ -625,9 +625,9 @@ class AgentX:
 ## Данные:
 {chr(10).join([f"- {t[:100]}" for t in tweets])}
 """
-                from bot import save_skill
                 save_skill("x.com", f"profile_{user}_{int(time.time())}", skill_content)
                 self.stats["skills_saved"] += 1
+                self.stats["tweets_collected"] += len(tweets)
                 
                 return {"success": True, "data": tweets}
             else:
@@ -638,12 +638,19 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def _browse_hashtag(self):
-        """Реально ищет по хештегу в браузере"""
         try:
             hashtag = random.choice(self.x_hashtags)
             logger.info(f"🔍 Ищу хештег {hashtag}")
             
-            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js, capture_screenshot
+            new_tab = self.bot_functions.get('new_tab')
+            goto_url = self.bot_functions.get('goto_url')
+            wait_for_load = self.bot_functions.get('wait_for_load')
+            js = self.bot_functions.get('js')
+            capture_screenshot = self.bot_functions.get('capture_screenshot')
+            save_skill = self.bot_functions.get('save_skill')
+            
+            if not new_tab:
+                return {"success": False, "error": "Функции браузера не переданы"}
             
             new_tab()
             goto_url(f"https://x.com/search?q={hashtag}&src=typed_query")
@@ -668,9 +675,9 @@ class AgentX:
 ## Данные:
 {chr(10).join([f"- {t[:100]}" for t in tweets])}
 """
-                from bot import save_skill
                 save_skill("x.com", f"hashtag_{hashtag}_{int(time.time())}", skill_content)
                 self.stats["skills_saved"] += 1
+                self.stats["tweets_collected"] += len(tweets)
                 
                 return {"success": True, "data": tweets}
             else:
@@ -681,11 +688,17 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def _browse_experiment(self):
-        """Экспериментирует с разными селекторами"""
         try:
             logger.info("🔬 Экспериментирую с новыми селекторами...")
             
-            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js
+            new_tab = self.bot_functions.get('new_tab')
+            goto_url = self.bot_functions.get('goto_url')
+            wait_for_load = self.bot_functions.get('wait_for_load')
+            js = self.bot_functions.get('js')
+            save_skill = self.bot_functions.get('save_skill')
+            
+            if not new_tab:
+                return {"success": False, "error": "Функции браузера не переданы"}
             
             new_tab()
             goto_url("https://x.com")
@@ -714,7 +727,6 @@ class AgentX:
 ## Результаты:
 {chr(10).join([f"- {r}" for r in results])}
 """
-            from bot import save_skill
             save_skill("x.com", f"experiment_{int(time.time())}", skill_content)
             self.stats["skills_saved"] += 1
             
@@ -725,21 +737,24 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def _browse_random(self):
-        """Случайное действие в браузере"""
         try:
             logger.info("🎲 Случайное действие...")
             
-            from browser_harness.helpers import new_tab, goto_url, wait_for_load, scroll, capture_screenshot
+            new_tab = self.bot_functions.get('new_tab')
+            goto_url = self.bot_functions.get('goto_url')
+            wait_for_load = self.bot_functions.get('wait_for_load')
+            scroll = self.bot_functions.get('scroll')
+            capture_screenshot = self.bot_functions.get('capture_screenshot')
+            
+            if not new_tab:
+                return {"success": False, "error": "Функции браузера не переданы"}
             
             new_tab()
             goto_url("https://x.com")
             wait_for_load()
             await asyncio.sleep(2)
             
-            # Случайный скролл
             scroll(0, 0, random.randint(100, 500), 0)
-            
-            # Случайный скриншот
             capture_screenshot(f"autopilot_random_{int(time.time())}.png")
             
             return {"success": True, "data": "Случайное действие выполнено"}
@@ -749,7 +764,6 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def autopilot_loop(self):
-        """Основной цикл автопилота с реальным браузером"""
         logger.info("🧠 AgentX запускает автопилот с реальным браузером...")
         
         while self.autopilot_running:
