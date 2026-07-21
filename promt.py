@@ -21,7 +21,7 @@ CORE ENVIRONMENT:
 4. goto_url(url) to check domain skills
 5. Perform the task
 6. Verify the result (screenshot or print)
-7. If the solution is reusable — save it with save_skill()
+7. If the solution is reusable - save it with save_skill()
 
 === AVAILABLE FUNCTIONS ===
 - new_tab(url=None)
