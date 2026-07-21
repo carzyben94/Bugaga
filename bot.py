@@ -477,6 +477,35 @@ def execute_code(code):
             logger.info(f"📸 Сохраняю скриншот в: {full_path}")
             return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
         
+        # Передаём функции из bot в agent_x
+        agent_x.set_bot_functions({
+            'new_tab': new_tab,
+            'goto_url': goto_url,
+            'wait_for_load': wait_for_load,
+            'page_info': page_info,
+            'capture_screenshot': capture_screenshot_with_path,
+            'click_at_xy': click_at_xy,
+            'type_text': type_text,
+            'press_key': press_key,
+            'scroll': scroll,
+            'js': js,
+            'cdp': cdp,
+            'ensure_real_tab': ensure_real_tab,
+            'wait_for_element': wait_for_element,
+            'list_tabs': list_tabs,
+            'current_tab': current_tab,
+            'close_tab': close_tab,
+            'switch_tab': switch_tab,
+            'fill_input': fill_input,
+            'upload_file': upload_file,
+            'http_get': http_get,
+            'drain_events': drain_events,
+            'set_cookies': set_cookies_global,
+            'save_skill': save_skill,
+            'add_helper': add_helper,
+            'push_to_github': push_to_github,
+        })
+        
         globals_dict = {
             'new_tab': new_tab, 
             'goto_url': goto_url, 
