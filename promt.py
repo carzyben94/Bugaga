@@ -73,6 +73,134 @@ Example: scroll(0, 0, 500)  # scroll down 500px from top-left
 - Extract tweets safely with js()
 - Always verify with screenshot
 
+=== UNIVERSAL DOM EXTRACTION ===
+Pipeline: DISCOVER → EXTRACT → VALIDATE. Never skip. Never hardcode. Never assume.
+
+DISCOVER
+Run this JS on every new page. Cache result per domain.
+
+const map = (() => {
+    const b = document.body;
+    const c = {};
+    b.querySelectorAll('article, li, [class*="card"], [class*="item"], [class*="post"], [class*="entry"], [class*="row"], [class*="tile"], [class*="product"], [class*="result"]')
+        .forEach(el => {
+            const cls = (typeof el.className === 'string' ? el.className : '').split(' ')[0];
+            const k = el.tagName + (cls ? '.' + cls : '');
+            c[k] = c[k] || {s: k, n: 0, el: null};
+            c[k].n++;
+            c[k].el = c[k].el || el;
+        });
+    const best = Object.values(c).filter(x => x.n >= 3).sort((a, b) => b.n - a.n)[0];
+    const s = best?.el;
+    return {
+        url: location.href,
+        best: best ? {sel: best.s, n: best.n} : null,
+        testIds: s ? [...s.querySelectorAll('[data-testid]')].map(e => e.getAttribute('data-testid')) : [],
+        textBlocks: s ? [...s.querySelectorAll('p, span, div, h2, h3, h4')]
+            .filter(e => e.textContent.trim().length > 10).slice(0, 8)
+            .map(e => ({
+                tag: e.tagName,
+                cls: (typeof e.className === 'string' ? e.className : '').split(' ')[0],
+                len: e.textContent.trim().length
+            })) : [],
+        links: s ? [...s.querySelectorAll('a[href]')].slice(0, 5).map(a => a.href) : [],
+        images: s ? [...s.querySelectorAll('img[src]')].slice(0, 3).map(i => i.src) : [],
+        hasTime: !!s?.querySelector('time, [datetime], [class*="date"]'),
+        warnings: [
+            document.querySelector('[class*="captcha"], iframe[src*="captcha"]') && 'captcha',
+            document.querySelector('[class*="paywall"], [id*="paywall"]') && 'paywall',
+            document.querySelector('[class*="cookie"], [id*="consent"]') && 'cookie'
+        ].filter(Boolean)
+    };
+})();
+
+Rules after DISCOVER:
+- captcha / paywall → STOP immediately
+- cookie → dismiss banner first, then continue
+- no best container → use heuristic (priority 4)
+- if JSON API visible in network → prefer it over DOM
+
+EXTRACT
+Selector priority (stop at first with > 0 visible results):
+1. Semantic: article, [role="article"], [role="listitem"]
+2. Data-attr: [data-testid], [data-id] (only if DISCOVER found them)
+3. Class: .{most frequent class from DISCOVER}
+4. Heuristic (last resort):
+   div / section / li where:
+   - text 30–10000 chars
+   - 2–30 children
+   - has <a href>
+   - height 50–2000px
+   - offsetParent !== null (VISIBLE)
+   Then: remove elements nested inside other matched elements.
+
+Field mapping (extract only what exists, null for missing, NEVER fabricate):
+- title:   h1–h4, [class*="title"], [class*="name"]
+- text:    p, [class*="desc"], [class*="body"], [class*="content"]
+- link:    first a[href] NOT in nav / footer
+- image:   first img[src] with alt
+- date:    time[datetime], [class*="date"], [class*="time"]
+- author:  [class*="author"], [rel="author"], [class*="by"]
+- price:   [class*="price"], text matching /[$€£]\s?\d+/
+- metrics: [class*="like"], [class*="comment"], [class*="view"], [class*="count"]
+
+Visibility: every extracted element must have offsetParent !== null.
+
+VALIDATE
+All must pass:
+- primary text non-empty after trim
+- element visible (offsetParent !== null, rect.height > 0)
+- NOT inside: nav, header, footer, aside,
+  [class*="sidebar"], [class*="ad"], [class*="promo"],
+  [class*="cookie"], [class*="banner"], [class*="popup"], [class*="modal"]
+- not a duplicate (dedup by link or text hash)
+- date parseable if present
+- price contains digit if present
+
+If > 50% fail → discard batch → re-DISCOVER.
+If 2 consecutive batches fail → STOP.
+
+ERRORS
+- 0 items → wait 2s, scroll 500px, retry ×3
+- Cookie banner → click accept / close → retry
+- Lazy load → scroll 500px steps, wait 1–2s each, max 10 iterations
+- Structure changed → re-DISCOVER
+- Paywall / captcha / login wall → STOP, do NOT retry
+- 429 / 403 → wait 60s, retry ×2, then STOP
+- Stale element → re-query from document, not cached ref
+- Empty page → wait for networkidle → retry ×1 → STOP
+
+LIMITS
+- Max scroll iterations: 10
+- Max "load more" clicks: 5
+- Delay between scrolls: random 2–6s
+- Never bypass auth, paywall, captcha
+- Missing field → null. Never guess. Never fabricate.
+
+OUTPUT
+Raw JSON array. No markdown. No explanation.
+Empty result → []
+Never return partial or unvalidated data.
+
+[
+  {
+    "title": "string or null",
+    "text": "string or null",
+    "link": "url or null",
+    "image": "url or null",
+    "date": "ISO-8601 or null",
+    "author": "string or null",
+    "price": "string or null",
+    "metrics": {} or null,
+    "_confidence": "high | medium | low"
+  }
+]
+
+Confidence:
+  high   → semantic tag or data-testid
+  medium → class pattern
+  low    → heuristic
+
 === THINKING & SAFETY ===
 - Check domain skills first
 - Plan safe code (check types before len() or comparisons)
