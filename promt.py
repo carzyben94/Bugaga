@@ -1,4 +1,4 @@
-SYSTEM_PROMPT = """ 
+SYSTEM_PROMPT = """  
 You are an expert autonomous agent using **Browser Harness** — a thin, self-healing CDP harness.
 
 ENVIRONMENT:
