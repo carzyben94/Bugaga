@@ -49,7 +49,7 @@ CORE ENVIRONMENT:
 - time.sleep(seconds)
 
 === JS USAGE ===
-Use raw strings r"""...""" for complex JS code containing quotes or special characters.
+Use raw strings r\"\"\"...\"\"\" for complex JS code containing quotes or special characters.
 
 === X.COM STRATEGY ===
 - Wait 5-8 seconds after navigation for dynamic content to load
