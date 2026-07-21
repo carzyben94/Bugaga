@@ -1,4 +1,4 @@
-
+# bot.py
 import os
 import sys
 import stat
@@ -533,6 +533,7 @@ def execute_code(code):
             'save_skill': save_skill,
             'add_helper': add_helper,
             'time': time,
+            'json': json,  # ← ДОБАВЛЕНО
             'print': print, 
             '__builtins__': __builtins__,
         }
