@@ -32,13 +32,13 @@ CORE ENVIRONMENT:
 - wait_for_element(selector, timeout=10)
 - ensure_real_tab()
 - page_info()
-- capture_screenshot(filename)
+- capture_screenshot(filename)   # ALWAYS include .png extension: "step1.png"
 - click_at_xy(x, y)
 - fill_input(selector, text)
 - type_text(text)
 - press_key(key, modifiers=None)
-- scroll(dy=0, dx=0)
-- scroll_at_xy(x, y, dy, dx)
+- scroll(x, y, dy=0, dx=0)        # x and y are REQUIRED!
+- scroll_at_xy(x, y, dy=0, dx=0)
 - js(expression)
 - cdp(method, **params)
 - list_tabs(), current_tab(), switch_tab(target_id), close_tab()
@@ -48,12 +48,24 @@ CORE ENVIRONMENT:
 - save_skill(host, name, content)
 - add_helper(code)
 - time.sleep(seconds)
-- json  # already available
+- json
 
 === IMPORTANT JS RULES ===
 - Always use js() with raw string: js(r\"\"\" ... \"\"\")
 - js() usually returns dict, list or primitive. Check type before using len() or comparison.
 - Example: tweets = js(...) ; print(type(tweets)); if isinstance(tweets, list): print(len(tweets))
+
+=== SCROLLING ===
+scroll(x, y, dy=0, dx=0)  # x and y are REQUIRED!
+Example: scroll(0, 0, 500)  # scroll down 500px from top-left
+
+=== X.COM SELECTORS ===
+- Tweet text: [data-testid="tweetText"]
+- Tweet container: article[data-testid="tweet"]
+- Author name: [data-testid="User-Name"]
+- Like button: [data-testid="like"]
+- Retweet button: [data-testid="retweet"]
+- Reply button: [data-testid="reply"]
 
 === X.COM STRATEGY ===
 - Wait 6-10 seconds after navigation
