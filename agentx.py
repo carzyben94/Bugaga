@@ -150,7 +150,7 @@ class AgentX:
         self.action_history = []
         self.last_actions = []
         self.mood_cycle = 0
-        self.randomness = 0.5  # Золотая середина
+        self.randomness = 0.5
         
         self.possible_actions = [
             "📰 Проверить новости по {topic}",
@@ -485,7 +485,7 @@ class AgentX:
         return random.choice(advices)
 
     # ============================================================
-    # АВТОПИЛОТ С ПСЕВДОСЛУЧАЙНОСТЬЮ
+    # АВТОПИЛОТ С ПСЕВДОСЛУЧАЙНОСТЬЮ И РЕАЛЬНЫМ БРАУЗЕРОМ
     # ============================================================
 
     def _get_pseudo_random(self, max_value):
@@ -531,6 +531,7 @@ class AgentX:
             return "random"
 
     async def _execute_browser_action(self, action_type):
+        """Выполняет действие в реальном браузере"""
         try:
             if action_type == "news":
                 return await self._browse_news()
@@ -547,45 +548,209 @@ class AgentX:
             return {"success": False, "error": str(e)}
 
     async def _browse_news(self):
+        """Реально ищет новости в браузере"""
         try:
             topic = random.choice(self.interests)
             logger.info(f"📰 Ищу новости по {topic}")
-            return {"success": True, "data": f"Новости по {topic} найдены"}
+            
+            # Реальный браузер
+            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js, capture_screenshot
+            from browser_harness.helpers import scroll
+            
+            new_tab()
+            goto_url(f"https://x.com/search?q={topic}&src=typed_query")
+            wait_for_load()
+            await asyncio.sleep(3)
+            
+            tweets = js("""
+                let tweets = [];
+                document.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
+                    tweets.push(el.innerText);
+                });
+                return tweets.slice(0, 5);
+            """)
+            
+            if tweets:
+                logger.info(f"✅ Найдено {len(tweets)} твитов по {topic}")
+                capture_screenshot(f"autopilot_news_{topic}_{int(time.time())}.png")
+                
+                # Сохраняем навык
+                skill_content = f"""
+# Автопилот: Новости по {topic}
+## Найдено: {len(tweets)} твитов
+## Данные:
+{chr(10).join([f"- {t[:100]}" for t in tweets])}
+"""
+                from bot import save_skill
+                save_skill("x.com", f"news_{topic}_{int(time.time())}", skill_content)
+                self.stats["skills_saved"] += 1
+                
+                return {"success": True, "data": tweets}
+            else:
+                logger.warning(f"⚠️ Твиты по {topic} не найдены")
+                return {"success": False, "error": "Твиты не найдены"}
+                
         except Exception as e:
+            logger.error(f"❌ Ошибка в _browse_news: {e}")
             return {"success": False, "error": str(e)}
 
     async def _browse_profile(self):
+        """Реально проверяет профиль в браузере"""
         try:
             user = random.choice(self.x_users)
             logger.info(f"👤 Проверяю профиль @{user}")
-            return {"success": True, "data": f"Профиль @{user} проверен"}
+            
+            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js, capture_screenshot
+            
+            new_tab()
+            goto_url(f"https://x.com/{user}")
+            wait_for_load()
+            await asyncio.sleep(3)
+            
+            tweets = js("""
+                let tweets = [];
+                document.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
+                    tweets.push(el.innerText);
+                });
+                return tweets.slice(0, 3);
+            """)
+            
+            if tweets:
+                logger.info(f"✅ Найдено {len(tweets)} твитов от @{user}")
+                capture_screenshot(f"autopilot_profile_{user}_{int(time.time())}.png")
+                
+                skill_content = f"""
+# Автопилот: Профиль @{user}
+## Найдено: {len(tweets)} твитов
+## Данные:
+{chr(10).join([f"- {t[:100]}" for t in tweets])}
+"""
+                from bot import save_skill
+                save_skill("x.com", f"profile_{user}_{int(time.time())}", skill_content)
+                self.stats["skills_saved"] += 1
+                
+                return {"success": True, "data": tweets}
+            else:
+                return {"success": False, "error": "Твиты не найдены"}
+                
         except Exception as e:
+            logger.error(f"❌ Ошибка в _browse_profile: {e}")
             return {"success": False, "error": str(e)}
 
     async def _browse_hashtag(self):
+        """Реально ищет по хештегу в браузере"""
         try:
             hashtag = random.choice(self.x_hashtags)
             logger.info(f"🔍 Ищу хештег {hashtag}")
-            return {"success": True, "data": f"Хештег {hashtag} проверен"}
+            
+            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js, capture_screenshot
+            
+            new_tab()
+            goto_url(f"https://x.com/search?q={hashtag}&src=typed_query")
+            wait_for_load()
+            await asyncio.sleep(3)
+            
+            tweets = js("""
+                let tweets = [];
+                document.querySelectorAll('[data-testid="tweetText"]').forEach(el => {
+                    tweets.push(el.innerText);
+                });
+                return tweets.slice(0, 5);
+            """)
+            
+            if tweets:
+                logger.info(f"✅ Найдено {len(tweets)} твитов по {hashtag}")
+                capture_screenshot(f"autopilot_hashtag_{hashtag}_{int(time.time())}.png")
+                
+                skill_content = f"""
+# Автопилот: Хештег {hashtag}
+## Найдено: {len(tweets)} твитов
+## Данные:
+{chr(10).join([f"- {t[:100]}" for t in tweets])}
+"""
+                from bot import save_skill
+                save_skill("x.com", f"hashtag_{hashtag}_{int(time.time())}", skill_content)
+                self.stats["skills_saved"] += 1
+                
+                return {"success": True, "data": tweets}
+            else:
+                return {"success": False, "error": "Твиты не найдены"}
+                
         except Exception as e:
+            logger.error(f"❌ Ошибка в _browse_hashtag: {e}")
             return {"success": False, "error": str(e)}
 
     async def _browse_experiment(self):
+        """Экспериментирует с разными селекторами"""
         try:
-            logger.info("🔬 Экспериментирую...")
-            return {"success": True, "data": "Эксперимент выполнен"}
+            logger.info("🔬 Экспериментирую с новыми селекторами...")
+            
+            from browser_harness.helpers import new_tab, goto_url, wait_for_load, js
+            
+            new_tab()
+            goto_url("https://x.com")
+            wait_for_load()
+            await asyncio.sleep(3)
+            
+            selectors = [
+                '[data-testid="tweetText"]',
+                'article div[lang]',
+                '[data-testid="cellInnerDiv"] div[lang]'
+            ]
+            
+            results = []
+            for sel in selectors:
+                count = js(f"document.querySelectorAll('{sel}').length")
+                results.append(f"{sel}: {count}")
+                if count > 0:
+                    self.learn_selector(f"autopilot_{sel}", sel, True)
+                    logger.info(f"✅ Рабочий селектор: {sel} ({count})")
+                else:
+                    self.learn_selector(f"autopilot_{sel}", sel, False)
+                    logger.info(f"❌ Не работает: {sel}")
+            
+            skill_content = f"""
+# Автопилот: Эксперимент с селекторами
+## Результаты:
+{chr(10).join([f"- {r}" for r in results])}
+"""
+            from bot import save_skill
+            save_skill("x.com", f"experiment_{int(time.time())}", skill_content)
+            self.stats["skills_saved"] += 1
+            
+            return {"success": True, "data": results}
+                
         except Exception as e:
+            logger.error(f"❌ Ошибка в _browse_experiment: {e}")
             return {"success": False, "error": str(e)}
 
     async def _browse_random(self):
+        """Случайное действие в браузере"""
         try:
             logger.info("🎲 Случайное действие...")
+            
+            from browser_harness.helpers import new_tab, goto_url, wait_for_load, scroll, capture_screenshot
+            
+            new_tab()
+            goto_url("https://x.com")
+            wait_for_load()
+            await asyncio.sleep(2)
+            
+            # Случайный скролл
+            scroll(0, 0, random.randint(100, 500), 0)
+            
+            # Случайный скриншот
+            capture_screenshot(f"autopilot_random_{int(time.time())}.png")
+            
             return {"success": True, "data": "Случайное действие выполнено"}
+                
         except Exception as e:
+            logger.error(f"❌ Ошибка в _browse_random: {e}")
             return {"success": False, "error": str(e)}
 
     async def autopilot_loop(self):
-        logger.info("🧠 AgentX запускает автопилот...")
+        """Основной цикл автопилота с реальным браузером"""
+        logger.info("🧠 AgentX запускает автопилот с реальным браузером...")
         
         while self.autopilot_running:
             try:
@@ -599,7 +764,7 @@ class AgentX:
                     reward = random.randint(2, 5)
                     self.add_reward("curiosity", reward, f"autopilot: {action[:30]}")
                     if result.get("data"):
-                        self.add_finding(f"Найдено: {result['data'][:100]}")
+                        self.add_finding(f"Найдено: {str(result['data'])[:100]}")
                     logger.info(f"✅ +{reward} очков любопытства")
                 else:
                     self.add_reward("persistence", 1, f"autopilot_fail")
