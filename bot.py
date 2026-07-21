@@ -1,4 +1,4 @@
-# bot.py
+
 import os
 import sys
 import stat
@@ -15,7 +15,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
 from PIL import Image
-from agentx import agent_x
 
 warnings.filterwarnings("ignore")
 
@@ -185,6 +184,7 @@ set_viewport_global()
 # ============================================================
 
 def push_to_github(content, filename, host="x.com"):
+    """Отправить файл навыка в GitHub по правильному пути."""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
         return False
@@ -199,6 +199,7 @@ def push_to_github(content, filename, host="x.com"):
         "Content-Type": "application/json"
     }
 
+    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -230,6 +231,7 @@ def push_to_github(content, filename, host="x.com"):
 
 
 def push_helpers_to_github():
+    """Отправить agent_helpers.py в GitHub"""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, helpers не будут отправлены")
         return False
@@ -244,12 +246,14 @@ def push_helpers_to_github():
         "Content-Type": "application/json"
     }
     
+    # Получаем текущий файл (чтобы получить sha)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha", None) if resp.status_code == 200 else None
     except:
         sha = None
     
+    # Читаем текущее содержимое файла в контейнере
     helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
     if not os.path.exists(helpers_path):
         logger.warning("⚠️ agent_helpers.py не найден")
@@ -279,60 +283,13 @@ def push_helpers_to_github():
         return False
 
 # ============================================================
-# ФУНКЦИИ ДЛЯ АВТОПИЛОТА
-# ============================================================
-
-def save_skill_for_autopilot(host, name, content):
-    """Сохраняет навык для автопилота"""
-    skills_dir = os.path.join(agent_workspace, "domain-skills", host)
-    os.makedirs(skills_dir, exist_ok=True)
-    os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-    
-    skill_path = os.path.join(skills_dir, f"{name}.md")
-    with open(skill_path, "w", encoding='utf-8') as f:
-        f.write(content)
-    os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-    
-    logger.info(f"✅ [Автопилот] Навык сохранён: {skill_path}")
-    push_to_github(content, f"{name}.md", host)
-    return skill_path
-
-# Передаём функции в agent_x
-agent_x.set_bot_functions({
-    'new_tab': new_tab,
-    'goto_url': goto_url,
-    'wait_for_load': wait_for_load,
-    'page_info': page_info,
-    'capture_screenshot': capture_screenshot,
-    'click_at_xy': click_at_xy,
-    'type_text': type_text,
-    'press_key': press_key,
-    'scroll': scroll,
-    'js': js,
-    'cdp': cdp,
-    'ensure_real_tab': ensure_real_tab,
-    'wait_for_element': wait_for_element,
-    'list_tabs': list_tabs,
-    'current_tab': current_tab,
-    'close_tab': close_tab,
-    'switch_tab': switch_tab,
-    'fill_input': fill_input,
-    'upload_file': upload_file,
-    'http_get': http_get,
-    'drain_events': drain_events,
-    'set_cookies': set_cookies_global,
-    'save_skill': save_skill_for_autopilot,
-    'push_to_github': push_to_github,
-})
-logger.info("✅ Функции переданы в AgentX")
-
-# ============================================================
 # ФОТОШОП (AGNES AI)
 # ============================================================
 
 AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 def get_image_size(image_data):
+    """Определяет размер изображения"""
     try:
         img = Image.open(io.BytesIO(image_data))
         width, height = img.size
@@ -343,6 +300,16 @@ def get_image_size(image_data):
         return None, None
 
 def replace_background(image_data, new_background_prompt: str):
+    """
+    Заменяет фон изображения через Agnes AI.
+    
+    Args:
+        image_data: bytes изображения
+        new_background_prompt: описание нового фона
+    
+    Returns:
+        tuple: (url_result, error_message)
+    """
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
     
@@ -353,6 +320,7 @@ def replace_background(image_data, new_background_prompt: str):
         return None, "Слишком короткое описание фона"
     
     try:
+        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
         width, height = get_image_size(image_data)
         
         MAX_SIZE = 1024
@@ -374,6 +342,7 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info(f"📐 Размер для API: {size}")
         
+        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
         try:
             img = Image.open(io.BytesIO(image_data))
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -387,6 +356,7 @@ def replace_background(image_data, new_background_prompt: str):
         img_b64 = base64.b64encode(image_data).decode('utf-8')
         data_uri = f"data:image/jpeg;base64,{img_b64}"
         
+        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
         enhanced_prompt = f"""
         Replace the background with: {new_background_prompt}.
         Keep the main subject exactly as is.
@@ -410,6 +380,7 @@ def replace_background(image_data, new_background_prompt: str):
             }
         }
         
+        # 4. ОТПРАВКА ЗАПРОСА (httpx)
         logger.info(f"📤 Отправка запроса к Agnes AI...")
         logger.info(f"   Промпт: {new_background_prompt[:50]}...")
         
@@ -424,6 +395,7 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info("✅ Изображение сгенерировано")
         
+        # 5. ОБРАБОТКА ОТВЕТА
         if 'data' in result and len(result['data']) > 0:
             if 'url' in result['data'][0]:
                 return result['data'][0]['url'], None
@@ -497,21 +469,30 @@ def execute_code(code):
             os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
             
             logger.info(f"✅ Навык сохранён локально: {skill_path}")
+            
+            # Отправляем в GitHub
             push_to_github(content, f"{name}.md", host)
+            
             return skill_path
         
         def add_helper(code):
+            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
             helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
             
+            # Проверяем, что файл существует
             if not os.path.exists(helpers_path):
                 with open(helpers_path, "w") as f:
                     f.write('"""Agent-editable browser helpers."""\n')
             
+            # Добавляем код
             with open(helpers_path, "a", encoding='utf-8') as f:
                 f.write(f"\n\n{code}\n")
             
             logger.info(f"✅ Helper добавлен в agent_helpers.py")
+            
+            # Отправляем в GitHub
             push_helpers_to_github()
+            
             return True
         
         def capture_screenshot_with_path(path=None, full=False, max_dim=None):
@@ -552,33 +533,8 @@ def execute_code(code):
             'save_skill': save_skill,
             'add_helper': add_helper,
             'time': time,
-            'print': print,
+            'print': print, 
             '__builtins__': __builtins__,
-            'agent': agent_x,
-            'get_thought': agent_x.get_thought,
-            'get_mood': agent_x.get_mood,
-            'add_reward': agent_x.add_reward,
-            'rate_result': agent_x.rate_result,
-            'handle_failure': agent_x.handle_failure,
-            'think_again': agent_x.think_again,
-            'find_new_path': agent_x.find_new_path,
-            'should_retry': agent_x.should_retry,
-            'start_experiment': agent_x.start_experiment,
-            'end_experiment': agent_x.end_experiment,
-            'add_finding': agent_x.add_finding,
-            'remember': agent_x.remember,
-            'recall': agent_x.recall,
-            'explore_x': agent_x.explore_x,
-            'learn_selector': agent_x.learn_selector,
-            'find_pattern': agent_x.find_pattern,
-            'karpathy_rules': agent_x.get_karpathy_rules(),
-            'think_before_code': agent_x.think_before_code,
-            'simplify_code': agent_x.simplify_code,
-            'surgical_change': agent_x.surgical_change,
-            'goal_check': agent_x.goal_check,
-            'failure_is_data': agent_x.failure_is_data,
-            'review_code': agent_x.review_code,
-            'coding_advice': agent_x.get_coding_advice,
         }
         
         exec(code, globals_dict)
@@ -611,42 +567,11 @@ async def start(update, context):
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
-        "/log — скачать логи\n"
-        "/agent — статус AgentX\n\n"
-        "🧠 Автопилот:\n"
-        "/pilot_start — запустить 24/7\n"
-        "/pilot_stop — остановить\n"
-        "/pilot_status — статус автопилота\n\n"
+        "/log — скачать логи\n\n"
         "🎨 Фотошоп:\n"
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш"
     )
-
-async def agent_status(update, context):
-    await update.message.reply_text(agent_x.format_status())
-
-async def pilot_start(update, context):
-    result = await agent_x.start_autopilot()
-    await update.message.reply_text(result)
-
-async def pilot_stop(update, context):
-    result = await agent_x.stop_autopilot()
-    await update.message.reply_text(result)
-
-async def pilot_status(update, context):
-    status = agent_x.get_autopilot_status()
-    if status["running"]:
-        text = f"🧠 **Автопилот активен!**\n\n"
-        text += f"😊 Настроение: {status['mood']}\n"
-        text += f"🎯 Интересы: {', '.join(status['interests'])}\n"
-        text += f"👤 Пользователи: {', '.join(status['users'])}\n"
-        text += f"🎲 Хаотичность: {status['randomness']}\n\n"
-        text += f"🔄 Последние действия:\n"
-        for action in status['last_actions'][-3:]:
-            text += f"  • {action}\n"
-        await update.message.reply_text(text)
-    else:
-        await update.message.reply_text("🛑 Автопилот выключен")
 
 async def log(update, context):
     try:
@@ -765,6 +690,7 @@ async def ask(update, context):
 # ============================================================
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Очищает сохраненное изображение"""
     if 'last_image' in context.user_data:
         del context.user_data['last_image']
         await update.message.reply_text("🧹 Кэш очищен!")
@@ -772,6 +698,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Кэш пуст")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет полученное фото"""
     try:
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
@@ -788,10 +715,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Замена фона через Agnes AI"""
     if not AGNES_API_KEY:
         await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
         return
 
+    # Проверяем, есть ли сохраненное изображение
     if 'last_image' not in context.user_data:
         await update.message.reply_text(
             "📸 Сначала загрузите картинку!\n"
@@ -799,6 +728,7 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Если нет описания
     if not context.args:
         await update.message.reply_text(
             "✏️ Напишите описание нового фона.\n"
@@ -830,6 +760,7 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if result_url:
             try:
+                # Если пришёл base64
                 if result_url.startswith('data:image'):
                     img_data = base64.b64decode(result_url.split(',')[1])
                     await update.message.reply_photo(
@@ -837,6 +768,7 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=f"🖼️ Готово! Фон заменён на: {prompt}"
                     )
                 else:
+                    # Если пришёл URL
                     response = httpx.get(result_url, timeout=30)
                     if response.status_code == 200:
                         await update.message.reply_photo(
@@ -862,17 +794,15 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
-    app.add_handler(CommandHandler("agent", agent_status))
-    app.add_handler(CommandHandler("pilot_start", pilot_start))
-    app.add_handler(CommandHandler("pilot_stop", pilot_stop))
-    app.add_handler(CommandHandler("pilot_status", pilot_status))
     
+    # Фотошоп команды
     app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
