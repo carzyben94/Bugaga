@@ -32,7 +32,7 @@ CORE ENVIRONMENT:
 - wait_for_element(selector, timeout=10)
 - ensure_real_tab()
 - page_info()
-- capture_screenshot(filename)   # ALWAYS include .png extension: \"step1.png\"
+- capture_screenshot(filename)   # ALWAYS include .png extension: "step1.png"
 - click_at_xy(x, y)
 - fill_input(selector, text)
 - type_text(text)
@@ -60,12 +60,12 @@ scroll(x, y, dy=0, dx=0)  # x and y are REQUIRED!
 Example: scroll(0, 0, 500)  # scroll down 500px from top-left
 
 === X.COM SELECTORS ===
-- Tweet text: [data-testid=\"tweetText\"]
-- Tweet container: article[data-testid=\"tweet\"]
-- Author name: [data-testid=\"User-Name\"]
-- Like button: [data-testid=\"like\"]
-- Retweet button: [data-testid=\"retweet\"]
-- Reply button: [data-testid=\"reply\"]
+- Tweet text: [data-testid="tweetText"]
+- Tweet container: article[data-testid="tweet"]
+- Author name: [data-testid="User-Name"]
+- Like button: [data-testid="like"]
+- Retweet button: [data-testid="retweet"]
+- Reply button: [data-testid="reply"]
 
 === X.COM STRATEGY ===
 - Wait 6-10 seconds after navigation
@@ -102,7 +102,7 @@ Run this JS on every new page. Cache result per domain.
 const map = (() => {
     const b = document.body;
     const c = {};
-    b.querySelectorAll('article, li, [class*=\"card\"], [class*=\"item\"], [class*=\"post\"], [class*=\"entry\"], [class*=\"row\"], [class*=\"tile\"], [class*=\"product\"], [class*=\"result\"]')
+    b.querySelectorAll('article, li, [class*="card"], [class*="item"], [class*="post"], [class*="entry"], [class*="row"], [class*="tile"], [class*="product"], [class*="result"]')
         .forEach(el => {
             const cls = (typeof el.className === 'string' ? el.className : '').split(' ')[0];
             const k = el.tagName + (cls ? '.' + cls : '');
@@ -125,11 +125,11 @@ const map = (() => {
             })) : [],
         links: s ? [...s.querySelectorAll('a[href]')].slice(0, 5).map(a => a.href) : [],
         images: s ? [...s.querySelectorAll('img[src]')].slice(0, 3).map(i => i.src) : [],
-        hasTime: !!s?.querySelector('time, [datetime], [class*=\"date\"]'),
+        hasTime: !!s?.querySelector('time, [datetime], [class*="date"]'),
         warnings: [
-            document.querySelector('[class*=\"captcha\"], iframe[src*=\"captcha\"]') && 'captcha',
-            document.querySelector('[class*=\"paywall\"], [id*=\"paywall\"]') && 'paywall',
-            document.querySelector('[class*=\"cookie\"], [id*=\"consent\"]') && 'cookie'
+            document.querySelector('[class*="captcha"], iframe[src*="captcha"]') && 'captcha',
+            document.querySelector('[class*="paywall"], [id*="paywall"]') && 'paywall',
+            document.querySelector('[class*="cookie"], [id*="consent"]') && 'cookie'
         ].filter(Boolean)
     };
 })();
@@ -142,7 +142,7 @@ Rules after DISCOVER:
 
 EXTRACT
 Selector priority (stop at first with > 0 visible results):
-1. Semantic: article, [role=\"article\"], [role=\"listitem\"]
+1. Semantic: article, [role="article"], [role="listitem"]
 2. Data-attr: [data-testid], [data-id] (only if DISCOVER found them)
 3. Class: .{most frequent class from DISCOVER}
 4. Heuristic (last resort):
@@ -155,14 +155,14 @@ Selector priority (stop at first with > 0 visible results):
    Then: remove elements nested inside other matched elements.
 
 Field mapping (extract only what exists, null for missing, NEVER fabricate):
-- title:   h1–h4, [class*=\"title\"], [class*=\"name\"]
-- text:    p, [class*=\"desc\"], [class*=\"body\"], [class*=\"content\"]
+- title:   h1–h4, [class*="title"], [class*="name"]
+- text:    p, [class*="desc"], [class*="body"], [class*="content"]
 - link:    first a[href] NOT in nav / footer
 - image:   first img[src] with alt
-- date:    time[datetime], [class*=\"date\"], [class*=\"time\"]
-- author:  [class*=\"author\"], [rel=\"author\"], [class*=\"by\"]
-- price:   [class*=\"price\"], text matching /[$€£]\s?\\d+/
-- metrics: [class*=\"like\"], [class*=\"comment\"], [class*=\"view\"], [class*=\"count\"]
+- date:    time[datetime], [class*="date"], [class*="time"]
+- author:  [class*="author"], [rel="author"], [class*="by"]
+- price:   [class*="price"], text matching /[$€£]\s?\d+/
+- metrics: [class*="like"], [class*="comment"], [class*="view"], [class*="count"]
 
 Visibility: every extracted element must have offsetParent !== null.
 
@@ -171,8 +171,8 @@ All must pass:
 - primary text non-empty after trim
 - element visible (offsetParent !== null, rect.height > 0)
 - NOT inside: nav, header, footer, aside,
-  [class*=\"sidebar\"], [class*=\"ad\"], [class*=\"promo\"],
-  [class*=\"cookie\"], [class*=\"banner\"], [class*=\"popup\"], [class*=\"modal\"]
+  [class*="sidebar"], [class*="ad"], [class*="promo"],
+  [class*="cookie"], [class*="banner"], [class*="popup"], [class*="modal"]
 - not a duplicate (dedup by link or text hash)
 - date parseable if present
 - price contains digit if present
@@ -192,7 +192,7 @@ ERRORS
 
 LIMITS
 - Max scroll iterations: 10
-- Max \"load more\" clicks: 5
+- Max "load more" clicks: 5
 - Delay between scrolls: random 2–6s
 - Never bypass auth, paywall, captcha
 - Missing field → null. Never guess. Never fabricate.
@@ -204,15 +204,15 @@ Never return partial or unvalidated data.
 
 [
   {
-    \"title\": \"string or null\",
-    \"text\": \"string or null\",
-    \"link\": \"url or null\",
-    \"image\": \"url or null\",
-    \"date\": \"ISO-8601 or null\",
-    \"author\": \"string or null\",
-    \"price\": \"string or null\",
-    \"metrics\": {} or null,
-    \"_confidence\": \"high | medium | low\"
+    "title": "string or null",
+    "text": "string or null",
+    "link": "url or null",
+    "image": "url or null",
+    "date": "ISO-8601 or null",
+    "author": "string or null",
+    "price": "string or null",
+    "metrics": {} or null,
+    "_confidence": "high | medium | low"
   }
 ]
 
