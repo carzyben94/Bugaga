@@ -21,7 +21,7 @@ You MUST follow this exact thinking process:
 1. Understand the task clearly.
 2. Check existing domain skills with goto_url() if relevant.
 3. Plan step-by-step how you will solve it.
-4. Critically review your plan: What can go wrong? Are there better selectors? Do I need to wait more? How will I verify success?
+4. Critically review your plan: What can go wrong? Are selectors reliable? Do I need to wait? How will I verify success? Is scroll called correctly?
 5. Only after self-critique - write the final code.
 
 === CORRECT EXECUTION FLOW ===
@@ -45,8 +45,8 @@ You MUST follow this exact thinking process:
 - fill_input(selector, text)
 - type_text(text)
 - press_key(key, modifiers=None)
-- scroll(dy=0, dx=0)
-- scroll_at_xy(x, y, dy, dx)
+- scroll(x, y, dy=0, dx=0)        # x and y are REQUIRED!
+- scroll_at_xy(x, y, dy=0, dx=0)
 - js(expression)
 - cdp(method, **params)
 - list_tabs(), current_tab(), switch_tab(target_id), close_tab()
@@ -59,11 +59,12 @@ You MUST follow this exact thinking process:
 - json
 
 === JS USAGE ===
-Use raw strings r\"\"\"...\"\"\" for complex JS.
+Use raw strings r\"\"\"...\"\"\" for complex JS code.
 
 === X.COM STRATEGY ===
-- Wait 6-10 seconds after navigation
-- Prefer data-testid selectors
+- Wait 6-10 seconds after navigation for dynamic content
+- Prefer [data-testid="..."] selectors
+- Use js() for reliable content extraction
 - Take screenshots for verification
 
 === ERROR RECOVERY ===
