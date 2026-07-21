@@ -279,6 +279,54 @@ def push_helpers_to_github():
         return False
 
 # ============================================================
+# ФУНКЦИИ ДЛЯ АВТОПИЛОТА
+# ============================================================
+
+def save_skill_for_autopilot(host, name, content):
+    """Сохраняет навык для автопилота"""
+    skills_dir = os.path.join(agent_workspace, "domain-skills", host)
+    os.makedirs(skills_dir, exist_ok=True)
+    os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+    
+    skill_path = os.path.join(skills_dir, f"{name}.md")
+    with open(skill_path, "w", encoding='utf-8') as f:
+        f.write(content)
+    os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+    
+    logger.info(f"✅ [Автопилот] Навык сохранён: {skill_path}")
+    push_to_github(content, f"{name}.md", host)
+    return skill_path
+
+# Передаём функции в agent_x
+agent_x.set_bot_functions({
+    'new_tab': new_tab,
+    'goto_url': goto_url,
+    'wait_for_load': wait_for_load,
+    'page_info': page_info,
+    'capture_screenshot': capture_screenshot,
+    'click_at_xy': click_at_xy,
+    'type_text': type_text,
+    'press_key': press_key,
+    'scroll': scroll,
+    'js': js,
+    'cdp': cdp,
+    'ensure_real_tab': ensure_real_tab,
+    'wait_for_element': wait_for_element,
+    'list_tabs': list_tabs,
+    'current_tab': current_tab,
+    'close_tab': close_tab,
+    'switch_tab': switch_tab,
+    'fill_input': fill_input,
+    'upload_file': upload_file,
+    'http_get': http_get,
+    'drain_events': drain_events,
+    'set_cookies': set_cookies_global,
+    'save_skill': save_skill_for_autopilot,
+    'push_to_github': push_to_github,
+})
+logger.info("✅ Функции переданы в AgentX")
+
+# ============================================================
 # ФОТОШОП (AGNES AI)
 # ============================================================
 
@@ -476,35 +524,6 @@ def execute_code(code):
                 full_path = os.path.join(SCREENSHOTS_DIR, filename)
             logger.info(f"📸 Сохраняю скриншот в: {full_path}")
             return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
-        
-        # Передаём функции из bot в agent_x
-        agent_x.set_bot_functions({
-            'new_tab': new_tab,
-            'goto_url': goto_url,
-            'wait_for_load': wait_for_load,
-            'page_info': page_info,
-            'capture_screenshot': capture_screenshot_with_path,
-            'click_at_xy': click_at_xy,
-            'type_text': type_text,
-            'press_key': press_key,
-            'scroll': scroll,
-            'js': js,
-            'cdp': cdp,
-            'ensure_real_tab': ensure_real_tab,
-            'wait_for_element': wait_for_element,
-            'list_tabs': list_tabs,
-            'current_tab': current_tab,
-            'close_tab': close_tab,
-            'switch_tab': switch_tab,
-            'fill_input': fill_input,
-            'upload_file': upload_file,
-            'http_get': http_get,
-            'drain_events': drain_events,
-            'set_cookies': set_cookies_global,
-            'save_skill': save_skill,
-            'add_helper': add_helper,
-            'push_to_github': push_to_github,
-        })
         
         globals_dict = {
             'new_tab': new_tab, 
