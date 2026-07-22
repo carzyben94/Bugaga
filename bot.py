@@ -646,7 +646,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
-        "/run <код> — выполнить Python код\n"
+        "/run — открыть псевдо-терминал для кода\n"
         "/tweets — получить последние 10 твитов в JSON\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
@@ -657,6 +657,84 @@ async def start(update, context):
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш"
     )
+
+# ============================================================
+# ПСЕВДО-ТЕРМИНАЛ
+# ============================================================
+
+async def run_command(update, context):
+    """Запускает псевдо-терминал для ввода кода"""
+    # Проверяем, есть ли уже активный терминал
+    if context.user_data.get('terminal_mode'):
+        # Если код передан в этом же сообщении
+        if update.message.text and update.message.text != '/run':
+            code = update.message.text
+            context.user_data['terminal_mode'] = False
+            output, success = execute_code(code)
+            if success:
+                await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
+            else:
+                await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
+            return
+    
+    # Включаем режим терминала
+    context.user_data['terminal_mode'] = True
+    context.user_data['terminal_buffer'] = []
+    await update.message.reply_text(
+        "💻 **Псевдо-терминал**\n"
+        "Введи Python код строка за строкой.\n"
+        "Для выполнения отправь **`exit`** или **`run`** отдельной строкой.\n"
+        "Для отмены отправь **`cancel`**.\n\n"
+        "📝 Вводи код:",
+        parse_mode='Markdown'
+    )
+
+async def handle_terminal_input(update, context):
+    """Обрабатывает ввод в псевдо-терминале"""
+    if not context.user_data.get('terminal_mode'):
+        return
+    
+    text = update.message.text.strip()
+    
+    # Команды
+    if text.lower() == 'exit' or text.lower() == 'run':
+        code = '\n'.join(context.user_data.get('terminal_buffer', []))
+        context.user_data['terminal_mode'] = False
+        context.user_data['terminal_buffer'] = []
+        
+        if code.strip():
+            await update.message.reply_text("⚙️ Выполняю код...")
+            output, success = execute_code(code)
+            if success:
+                await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
+            else:
+                await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
+        else:
+            await update.message.reply_text("❌ Код пустой. Отмена.")
+        return
+    
+    if text.lower() == 'cancel':
+        context.user_data['terminal_mode'] = False
+        context.user_data['terminal_buffer'] = []
+        await update.message.reply_text("🛑 Терминал закрыт.")
+        return
+    
+    # Добавляем строку в буфер
+    if 'terminal_buffer' not in context.user_data:
+        context.user_data['terminal_buffer'] = []
+    context.user_data['terminal_buffer'].append(text)
+    
+    # Показываем текущий код
+    current_code = '\n'.join(context.user_data['terminal_buffer'])
+    await update.message.reply_text(
+        f"📝 Добавлено:\n```python\n{current_code}\n```\n"
+        f"Продолжай ввод или отправь **exit** для выполнения.",
+        parse_mode='Markdown'
+    )
+
+# ============================================================
+# ОСТАЛЬНЫЕ КОМАНДЫ
+# ============================================================
 
 async def tweets_command(update, context):
     """Извлекает твиты и отправляет JSON-файлом"""
@@ -701,53 +779,6 @@ print(json.dumps(tweets, indent=2, ensure_ascii=False))
             await update.message.reply_text(f"❌ Ошибка: {e}")
     else:
         await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
-
-async def run_command(update, context):
-    """Выполняет Python код напрямую без LLM"""
-    if not update.message.text:
-        await update.message.reply_text("📝 Отправь код после /run")
-        return
-    
-    code = update.message.text.replace("/run", "", 1).strip()
-    
-    if not code:
-        await update.message.reply_text("Пример: /run new_tab('https://x.com')")
-        return
-    
-    # Извлекаем код из блока ```python ... ```
-    code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
-    if code_match:
-        code = code_match.group(1)
-    
-    output, success = execute_code(code)
-    
-    if not success:
-        await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
-        return
-    
-    # Пробуем найти JSON в выводе
-    json_match = re.search(r'(\[.*?\]|\{.*?\})', output, re.DOTALL)
-    
-    if json_match:
-        try:
-            json_text = json_match.group(1)
-            json.loads(json_text)  # Проверяем валидность
-            
-            json_file = "/app/run_result.json"
-            with open(json_file, "w", encoding='utf-8') as f:
-                f.write(json_text)
-            
-            await update.message.reply_document(
-                document=open(json_file, "rb"),
-                filename="result.json",
-                caption="📊 Результат в JSON"
-            )
-            return
-        except:
-            pass
-    
-    # Если нет JSON — отправляем текстом
-    await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
 
 async def memory_command(update, context):
     memory = get_memory()
@@ -991,6 +1022,7 @@ def main():
     app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_terminal_input))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
