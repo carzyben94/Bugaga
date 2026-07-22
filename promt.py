@@ -23,7 +23,7 @@ CORE ENVIRONMENT:
 - wait_for_element(selector, timeout=10)
 - ensure_real_tab()
 - page_info()
-- capture_screenshot(filename)   # ALWAYS include .png extension: "step1.png"
+- capture_screenshot(filename)   # ALWAYS include .png extension: \"step1.png\"
 - click_at_xy(x, y)
 - fill_input(selector, text)
 - type_text(text)
@@ -42,7 +42,7 @@ CORE ENVIRONMENT:
 - json
 
 === JS RULES ===
-- Always use js() with raw string: js(r""" ... """)
+- Always use js() with raw string
 - js() returns dict, list or primitive. Check type before using len().
 
 Solve the user's request reliably. Do not use any imports.
