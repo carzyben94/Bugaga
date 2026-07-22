@@ -12,6 +12,7 @@ import json
 import httpx
 import warnings
 import importlib
+import pickle
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
@@ -42,8 +43,10 @@ os.environ["BH_AGENT_WORKSPACE"] = "/app/browser-harness/agent-workspace"
 
 LOGS_DIR = '/app/logs'
 SCREENSHOTS_DIR = '/app/screenshots'
+MEMORY_DIR = '/app/memory'
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(MEMORY_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +65,96 @@ logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
 logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
+logger.info(f"✅ memory_dir: {MEMORY_DIR}")
+
+# ============================================================
+# ДОЛГОСРОЧНАЯ ПАМЯТЬ
+# ============================================================
+
+class Memory:
+    """Долгосрочная память агента — сохраняется между сессиями"""
+    
+    def __init__(self, memory_dir):
+        self.memory_dir = memory_dir
+        self.data = {
+            'skills': {},        # {host: [skill_names]}
+            'helpers': [],        # [helper_names]
+            'patterns': [],       # [pattern_description]
+            'stats': {            # Статистика
+                'tasks_done': 0,
+                'helpers_written': 0,
+                'skills_saved': 0,
+                'success_rate': 0
+            }
+        }
+        self.load()
+    
+    def load(self):
+        memory_file = os.path.join(self.memory_dir, 'memory.pkl')
+        if os.path.exists(memory_file):
+            try:
+                with open(memory_file, 'rb') as f:
+                    self.data = pickle.load(f)
+                logger.info(f"✅ Память загружена: {len(self.data['skills'])} навыков")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось загрузить память: {e}")
+    
+    def save(self):
+        memory_file = os.path.join(self.memory_dir, 'memory.pkl')
+        try:
+            with open(memory_file, 'wb') as f:
+                pickle.dump(self.data, f)
+            logger.info(f"💾 Память сохранена")
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения памяти: {e}")
+    
+    def add_skill(self, host, name):
+        if host not in self.data['skills']:
+            self.data['skills'][host] = []
+        if name not in self.data['skills'][host]:
+            self.data['skills'][host].append(name)
+            self.data['stats']['skills_saved'] += 1
+            self.save()
+            return True
+        return False
+    
+    def get_skills(self, host):
+        return self.data['skills'].get(host, [])
+    
+    def add_helper(self, name):
+        if name not in self.data['helpers']:
+            self.data['helpers'].append(name)
+            self.data['stats']['helpers_written'] += 1
+            self.save()
+            return True
+        return False
+    
+    def add_pattern(self, pattern):
+        if pattern not in self.data['patterns']:
+            self.data['patterns'].append(pattern)
+            self.save()
+            return True
+        return False
+    
+    def add_task(self, success=True):
+        self.data['stats']['tasks_done'] += 1
+        total = self.data['stats']['tasks_done']
+        successful = self.data['stats'].get('successful_tasks', 0)
+        if success:
+            self.data['stats']['successful_tasks'] = successful + 1
+        self.data['stats']['success_rate'] = int((successful / total) * 100) if total > 0 else 0
+        self.save()
+    
+    def get_summary(self):
+        return {
+            'tasks': self.data['stats']['tasks_done'],
+            'helpers': len(self.data['helpers']),
+            'skills': sum(len(v) for v in self.data['skills'].values()),
+            'patterns': len(self.data['patterns']),
+            'success_rate': self.data['stats']['success_rate'],
+            'domains': list(self.data['skills'].keys())
+        }
+
 
 # ============================================================
 # ПОСТОЯННАЯ СЕССИЯ АГЕНТА
@@ -70,8 +163,9 @@ logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
 class AgentSession:
     """Постоянно живущий агент с памятью между задачами"""
     
-    def __init__(self, workspace):
+    def __init__(self, workspace, memory):
         self.workspace = workspace
+        self.memory = memory
         self.helpers = {}
         self.helpers_loaded = False
         
@@ -135,7 +229,7 @@ class AgentSession:
         funcs.update(self.helpers)
         return funcs
     
-    def add_helper(self, code):
+    def add_helper(self, code, name=None):
         """Добавляет helper и сразу делает его доступным"""
         helpers_path = os.path.join(self.workspace, "agent_helpers.py")
         
@@ -145,6 +239,11 @@ class AgentSession:
         
         # Перезагружаем helpers
         self.load_helpers()
+        
+        # Сохраняем в память
+        if name:
+            self.memory.add_helper(name)
+        
         logger.info(f"✅ Helper добавлен в agent_helpers.py")
         return True
     
@@ -153,15 +252,15 @@ class AgentSession:
         if globals_dict is None:
             globals_dict = {}
         
-        # Добавляем все функции
         full_globals = self.get_functions()
         full_globals.update(globals_dict)
         full_globals['print'] = print
         full_globals['__builtins__'] = __builtins__
         full_globals['session'] = self
+        full_globals['memory'] = self.memory
         full_globals['add_helper'] = self.add_helper
+        full_globals['save_skill'] = globals_dict.get('save_skill')
         
-        # Создаём буфер для вывода
         stdout_buffer = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
@@ -177,16 +276,24 @@ class AgentSession:
             sys.stdout = old_stdout
 
 
-# Глобальная сессия
+# Глобальные объекты
 _agent_session = None
+_memory = None
+
+def get_memory():
+    global _memory
+    if _memory is None:
+        _memory = Memory(MEMORY_DIR)
+    return _memory
 
 def get_session():
     global _agent_session
     if _agent_session is None:
-        _agent_session = AgentSession(agent_workspace)
+        _agent_session = AgentSession(agent_workspace, get_memory())
     return _agent_session
 
 # Создаём сессию при старте
+memory = get_memory()
 session = get_session()
 
 # ============================================================
@@ -558,6 +665,7 @@ def execute_code(code):
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
     
     session = get_session()
+    memory = get_memory()
     
     def save_skill(host, name, content):
         skills_dir = os.path.join(agent_workspace, "domain-skills", host)
@@ -570,16 +678,18 @@ def execute_code(code):
         os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
         
         logger.info(f"✅ Навык сохранён локально: {skill_path}")
+        memory.add_skill(host, name)
         push_to_github(content, f"{name}.md", host)
         return skill_path
     
-    def add_helper(code):
-        return session.add_helper(code)
+    def add_helper(code, name=None):
+        return session.add_helper(code, name)
     
     globals_dict = {
         'save_skill': save_skill,
         'add_helper': add_helper,
         'session': session,
+        'memory': memory,
         'time': time,
         'json': json,
         'print': print,
@@ -587,6 +697,9 @@ def execute_code(code):
     }
     
     output, success, result_globals = session.execute(code, globals_dict)
+    
+    # Запоминаем результат
+    memory.add_task(success)
     
     if success:
         logger.info(f"📤 ВЫВОД КОДА:\n{output}")
@@ -606,11 +719,38 @@ async def start(update, context):
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
+        "/memory — показать память агента\n"
         "/log — скачать логи\n\n"
         "🎨 Фотошоп:\n"
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш"
     )
+
+async def memory_command(update, context):
+    """Показывает долгосрочную память агента"""
+    memory = get_memory()
+    summary = memory.get_summary()
+    
+    text = f"""
+🧠 **Память агента**
+
+📊 **Статистика:**
+• Выполнено задач: {summary['tasks']}
+• Успешность: {summary['success_rate']}%
+• Помощников (helpers): {summary['helpers']}
+• Навыков: {summary['skills']}
+• Паттернов: {summary['patterns']}
+
+🌐 **Домены с навыками:**
+"""
+    if summary['domains']:
+        for domain in summary['domains']:
+            skills = memory.get_skills(domain)
+            text += f"  • {domain}: {', '.join(skills) if skills else 'нет навыков'}\n"
+    else:
+        text += "  • пока нет\n"
+    
+    await update.message.reply_text(text)
 
 async def log(update, context):
     try:
@@ -830,6 +970,7 @@ def main():
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
+    app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
     
