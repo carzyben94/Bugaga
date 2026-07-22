@@ -11,6 +11,9 @@ RULES:
 - When you figure out something non-obvious, save it as skill with save_skill()
 - goto_url() returns up to 10 domain skills
 - Check domain skills before inventing a new approach
+- If extraction fails with one selector, try alternative selectors
+- Use DISCOVER to find working selectors on the page
+- Save working selectors as skills
 - Handle failures with screenshot + print + alternative
 - Write reusable functions using add_helper()
 - NO imports. time and json are available globally.
