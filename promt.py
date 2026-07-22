@@ -8,6 +8,8 @@ RULES:
 - Use fill_input() for form filling
 - Use js() for extraction
 - Screenshots for verification only
+- Before writing new code, check existing helpers in agent_helpers.py
+- Use existing helpers when possible
 - When you figure out something non-obvious, save it as skill with save_skill(host, name, content)
   - host: domain name (e.g. "x.com")
   - name: skill name
