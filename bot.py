@@ -11,10 +11,18 @@ import io
 import json
 import httpx
 import warnings
+import importlib
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
 from PIL import Image
+from browser_harness.helpers import (
+    new_tab, goto_url, wait_for_load, page_info, capture_screenshot,
+    click_at_xy, type_text, press_key, scroll, js, cdp, ensure_real_tab,
+    wait_for_element, list_tabs, current_tab, close_tab, switch_tab,
+    fill_input, upload_file, http_get, drain_events
+)
+from browser_harness.admin import ensure_daemon
 
 warnings.filterwarnings("ignore")
 
@@ -55,15 +63,131 @@ logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
 logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
 
-sys.path.insert(0, "browser-harness/src")
+# ============================================================
+# ПОСТОЯННАЯ СЕССИЯ АГЕНТА
+# ============================================================
 
-from browser_harness.helpers import (
-    new_tab, goto_url, wait_for_load, page_info, capture_screenshot,
-    click_at_xy, type_text, press_key, scroll, js, cdp, ensure_real_tab,
-    wait_for_element, list_tabs, current_tab, close_tab, switch_tab,
-    fill_input, upload_file, http_get, drain_events
-)
-from browser_harness.admin import ensure_daemon
+class AgentSession:
+    """Постоянно живущий агент с памятью между задачами"""
+    
+    def __init__(self, workspace):
+        self.workspace = workspace
+        self.helpers = {}
+        self.helpers_loaded = False
+        
+        # Базовые функции
+        self.base_functions = {
+            'new_tab': new_tab,
+            'goto_url': goto_url,
+            'wait_for_load': wait_for_load,
+            'page_info': page_info,
+            'capture_screenshot': capture_screenshot,
+            'click_at_xy': click_at_xy,
+            'type_text': type_text,
+            'press_key': press_key,
+            'scroll': scroll,
+            'js': js,
+            'cdp': cdp,
+            'ensure_real_tab': ensure_real_tab,
+            'wait_for_element': wait_for_element,
+            'list_tabs': list_tabs,
+            'current_tab': current_tab,
+            'close_tab': close_tab,
+            'switch_tab': switch_tab,
+            'fill_input': fill_input,
+            'upload_file': upload_file,
+            'http_get': http_get,
+            'drain_events': drain_events,
+            'time': time,
+            'json': json,
+        }
+        
+        self.load_helpers()
+        logger.info("🧠 AgentSession создан")
+    
+    def load_helpers(self):
+        """Загружает helpers из agent_helpers.py"""
+        helpers_path = os.path.join(self.workspace, "agent_helpers.py")
+        
+        if os.path.exists(helpers_path):
+            sys.path.insert(0, self.workspace)
+            if 'agent_helpers' in sys.modules:
+                importlib.reload(sys.modules['agent_helpers'])
+            else:
+                import agent_helpers
+            
+            self.helpers = {}
+            for name in dir(agent_helpers):
+                if not name.startswith('_'):
+                    attr = getattr(agent_helpers, name)
+                    if callable(attr):
+                        self.helpers[name] = attr
+            
+            logger.info(f"✅ Загружено {len(self.helpers)} helpers из agent_helpers.py")
+        else:
+            logger.info("ℹ️ agent_helpers.py не найден, создаю пустой")
+            with open(helpers_path, "w") as f:
+                f.write('"""Agent-editable browser helpers."""\n')
+    
+    def get_functions(self):
+        """Возвращает все доступные функции (base + helpers)"""
+        funcs = self.base_functions.copy()
+        funcs.update(self.helpers)
+        return funcs
+    
+    def add_helper(self, code):
+        """Добавляет helper и сразу делает его доступным"""
+        helpers_path = os.path.join(self.workspace, "agent_helpers.py")
+        
+        # Записываем в файл
+        with open(helpers_path, "a", encoding='utf-8') as f:
+            f.write(f"\n\n{code}\n")
+        
+        # Перезагружаем helpers
+        self.load_helpers()
+        logger.info(f"✅ Helper добавлен в agent_helpers.py")
+        return True
+    
+    def execute(self, code, globals_dict=None):
+        """Выполняет код с доступом ко всем функциям"""
+        if globals_dict is None:
+            globals_dict = {}
+        
+        # Добавляем все функции
+        full_globals = self.get_functions()
+        full_globals.update(globals_dict)
+        full_globals['print'] = print
+        full_globals['__builtins__'] = __builtins__
+        full_globals['session'] = self
+        full_globals['add_helper'] = self.add_helper
+        
+        # Создаём буфер для вывода
+        stdout_buffer = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = stdout_buffer
+        
+        try:
+            exec(code, full_globals)
+            output = stdout_buffer.getvalue()
+            return output, True, full_globals
+        except Exception as e:
+            logger.error(f"❌ Ошибка выполнения: {e}")
+            return str(e), False, full_globals
+        finally:
+            sys.stdout = old_stdout
+
+
+# Глобальная сессия
+_agent_session = None
+
+def get_session():
+    global _agent_session
+    if _agent_session is None:
+        _agent_session = AgentSession(agent_workspace)
+    return _agent_session
+
+# Создаём сессию при старте
+session = get_session()
 
 # ============================================================
 # КУКИ (WebSocket)
@@ -184,7 +308,6 @@ set_viewport_global()
 # ============================================================
 
 def push_to_github(content, filename, host="x.com"):
-    """Отправить файл навыка в GitHub по правильному пути."""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
         return False
@@ -199,7 +322,6 @@ def push_to_github(content, filename, host="x.com"):
         "Content-Type": "application/json"
     }
 
-    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -231,7 +353,6 @@ def push_to_github(content, filename, host="x.com"):
 
 
 def push_helpers_to_github():
-    """Отправить agent_helpers.py в GitHub"""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, helpers не будут отправлены")
         return False
@@ -246,14 +367,12 @@ def push_helpers_to_github():
         "Content-Type": "application/json"
     }
     
-    # Получаем текущий файл (чтобы получить sha)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha", None) if resp.status_code == 200 else None
     except:
         sha = None
     
-    # Читаем текущее содержимое файла в контейнере
     helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
     if not os.path.exists(helpers_path):
         logger.warning("⚠️ agent_helpers.py не найден")
@@ -289,7 +408,6 @@ def push_helpers_to_github():
 AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 def get_image_size(image_data):
-    """Определяет размер изображения"""
     try:
         img = Image.open(io.BytesIO(image_data))
         width, height = img.size
@@ -300,16 +418,6 @@ def get_image_size(image_data):
         return None, None
 
 def replace_background(image_data, new_background_prompt: str):
-    """
-    Заменяет фон изображения через Agnes AI.
-    
-    Args:
-        image_data: bytes изображения
-        new_background_prompt: описание нового фона
-    
-    Returns:
-        tuple: (url_result, error_message)
-    """
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
     
@@ -320,7 +428,6 @@ def replace_background(image_data, new_background_prompt: str):
         return None, "Слишком короткое описание фона"
     
     try:
-        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
         width, height = get_image_size(image_data)
         
         MAX_SIZE = 1024
@@ -342,7 +449,6 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info(f"📐 Размер для API: {size}")
         
-        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
         try:
             img = Image.open(io.BytesIO(image_data))
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -356,7 +462,6 @@ def replace_background(image_data, new_background_prompt: str):
         img_b64 = base64.b64encode(image_data).decode('utf-8')
         data_uri = f"data:image/jpeg;base64,{img_b64}"
         
-        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
         enhanced_prompt = f"""
         Replace the background with: {new_background_prompt}.
         Keep the main subject exactly as is.
@@ -380,7 +485,6 @@ def replace_background(image_data, new_background_prompt: str):
             }
         }
         
-        # 4. ОТПРАВКА ЗАПРОСА (httpx)
         logger.info(f"📤 Отправка запроса к Agnes AI...")
         logger.info(f"   Промпт: {new_background_prompt[:50]}...")
         
@@ -395,7 +499,6 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info("✅ Изображение сгенерировано")
         
-        # 5. ОБРАБОТКА ОТВЕТА
         if 'data' in result and len(result['data']) > 0:
             if 'url' in result['data'][0]:
                 return result['data'][0]['url'], None
@@ -453,109 +556,44 @@ async def ask_agnes(messages):
 
 def execute_code(code):
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
-    try:
-        stdout_buffer = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = stdout_buffer
+    
+    session = get_session()
+    
+    def save_skill(host, name, content):
+        skills_dir = os.path.join(agent_workspace, "domain-skills", host)
+        os.makedirs(skills_dir, exist_ok=True)
+        os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
         
-        def save_skill(host, name, content):
-            skills_dir = os.path.join(agent_workspace, "domain-skills", host)
-            os.makedirs(skills_dir, exist_ok=True)
-            os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-            
-            skill_path = os.path.join(skills_dir, f"{name}.md")
-            with open(skill_path, "w", encoding='utf-8') as f:
-                f.write(content)
-            os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-            
-            logger.info(f"✅ Навык сохранён локально: {skill_path}")
-            
-            # Отправляем в GitHub
-            push_to_github(content, f"{name}.md", host)
-            
-            return skill_path
+        skill_path = os.path.join(skills_dir, f"{name}.md")
+        with open(skill_path, "w", encoding='utf-8') as f:
+            f.write(content)
+        os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
         
-        def add_helper(code):
-            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
-            helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
-            
-            # Проверяем, что файл существует
-            if not os.path.exists(helpers_path):
-                with open(helpers_path, "w") as f:
-                    f.write('"""Agent-editable browser helpers."""\n')
-            
-            # Добавляем код
-            with open(helpers_path, "a", encoding='utf-8') as f:
-                f.write(f"\n\n{code}\n")
-            
-            logger.info(f"✅ Helper добавлен в agent_helpers.py")
-            
-            # Отправляем в GitHub
-            push_helpers_to_github()
-            
-            return True
-        
-        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
-            if path is None:
-                timestamp = int(time.time())
-                filename = f"screenshot_{timestamp}.png"
-                full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            else:
-                filename = os.path.basename(path)
-                full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            logger.info(f"📸 Сохраняю скриншот в: {full_path}")
-            return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
-        
-        globals_dict = {
-            'new_tab': new_tab, 
-            'goto_url': goto_url, 
-            'wait_for_load': wait_for_load,
-            'page_info': page_info, 
-            'capture_screenshot': capture_screenshot_with_path,
-            'click_at_xy': click_at_xy, 
-            'type_text': type_text, 
-            'press_key': press_key,
-            'scroll': scroll,
-            'scroll_at_xy': scroll,
-            'js': js, 
-            'cdp': cdp, 
-            'ensure_real_tab': ensure_real_tab,
-            'wait_for_element': wait_for_element, 
-            'list_tabs': list_tabs,
-            'current_tab': current_tab, 
-            'close_tab': close_tab,
-            'switch_tab': switch_tab,
-            'fill_input': fill_input,
-            'upload_file': upload_file,
-            'http_get': http_get,
-            'drain_events': drain_events,
-            'set_cookies': set_cookies_global,
-            'save_skill': save_skill,
-            'add_helper': add_helper,
-            'time': time,
-            'json': json,  # ← ДОБАВЛЕНО
-            'print': print, 
-            '__builtins__': __builtins__,
-        }
-        
-        exec(code, globals_dict)
-        
-        sys.stdout = old_stdout
-        output = stdout_buffer.getvalue()
-        
-        if output:
-            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
-            return output.strip(), True
-        elif 'result' in globals_dict:
-            result = str(globals_dict['result'])
-            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
-            return result, True
-        
-        logger.warning("⚠️ Код выполнен, но нет вывода")
-        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
-    except Exception as e:
-        logger.error(f"❌ Ошибка выполнения: {e}")
-        return str(e), False
+        logger.info(f"✅ Навык сохранён локально: {skill_path}")
+        push_to_github(content, f"{name}.md", host)
+        return skill_path
+    
+    def add_helper(code):
+        return session.add_helper(code)
+    
+    globals_dict = {
+        'save_skill': save_skill,
+        'add_helper': add_helper,
+        'session': session,
+        'time': time,
+        'json': json,
+        'print': print,
+        '__builtins__': __builtins__,
+    }
+    
+    output, success, result_globals = session.execute(code, globals_dict)
+    
+    if success:
+        logger.info(f"📤 ВЫВОД КОДА:\n{output}")
+        return output.strip(), True
+    else:
+        logger.error(f"❌ Ошибка выполнения: {output}")
+        return output, False
 
 # ============================================================
 # КОМАНДЫ
@@ -691,7 +729,6 @@ async def ask(update, context):
 # ============================================================
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очищает сохраненное изображение"""
     if 'last_image' in context.user_data:
         del context.user_data['last_image']
         await update.message.reply_text("🧹 Кэш очищен!")
@@ -699,7 +736,6 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Кэш пуст")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохраняет полученное фото"""
     try:
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
@@ -716,12 +752,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Замена фона через Agnes AI"""
     if not AGNES_API_KEY:
         await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
         return
 
-    # Проверяем, есть ли сохраненное изображение
     if 'last_image' not in context.user_data:
         await update.message.reply_text(
             "📸 Сначала загрузите картинку!\n"
@@ -729,7 +763,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Если нет описания
     if not context.args:
         await update.message.reply_text(
             "✏️ Напишите описание нового фона.\n"
@@ -761,7 +794,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if result_url:
             try:
-                # Если пришёл base64
                 if result_url.startswith('data:image'):
                     img_data = base64.b64decode(result_url.split(',')[1])
                     await update.message.reply_photo(
@@ -769,7 +801,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=f"🖼️ Готово! Фон заменён на: {prompt}"
                     )
                 else:
-                    # Если пришёл URL
                     response = httpx.get(result_url, timeout=30)
                     if response.status_code == 200:
                         await update.message.reply_photo(
@@ -795,7 +826,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("log", log))
@@ -803,7 +833,6 @@ def main():
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
     
-    # Фотошоп команды
     app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
