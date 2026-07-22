@@ -646,7 +646,8 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
-        "/run — открыть псевдо-терминал для кода\n"
+        "/run — открыть псевдо-терминал\n"
+        "/run [файл.json] — выполнить код из JSON → ответ JSON\n"
         "/tweets — получить последние 10 твитов в JSON\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
@@ -659,31 +660,85 @@ async def start(update, context):
     )
 
 # ============================================================
-# ПСЕВДО-ТЕРМИНАЛ
+# ПСЕВДО-ТЕРМИНАЛ С JSON
 # ============================================================
 
 async def run_command(update, context):
-    """Запускает псевдо-терминал для ввода кода"""
-    # Проверяем, есть ли уже активный терминал
+    """Выполняет код из текста или JSON-файла, возвращает JSON"""
+    
+    # Проверяем, есть ли вложенный файл
+    if update.message.document:
+        file = await update.message.document.get_file()
+        file_content = await file.download_as_bytearray()
+        file_name = update.message.document.file_name
+        
+        if file_name.endswith('.json'):
+            try:
+                data = json.loads(file_content)
+                if isinstance(data, dict) and 'code' in data:
+                    code = data['code']
+                elif isinstance(data, list):
+                    code = '\n'.join(str(item) for item in data)
+                else:
+                    code = json.dumps(data, indent=2)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка парсинга JSON: {e}")
+                return
+        else:
+            # Если не JSON — выполняем как код
+            code = file_content.decode('utf-8')
+        
+        output, success = execute_code(code)
+        
+        # Отправляем результат как JSON
+        result = {
+            "success": success,
+            "output": output[:4000] if success else output,
+            "code": code[:500] if len(code) > 500 else code
+        }
+        
+        json_file = "/app/result.json"
+        with open(json_file, "w", encoding='utf-8') as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        
+        await update.message.reply_document(
+            document=open(json_file, "rb"),
+            filename="result.json",
+            caption="📊 Результат выполнения"
+        )
+        return
+    
+    # Если нет файла — обычный режим терминала
     if context.user_data.get('terminal_mode'):
-        # Если код передан в этом же сообщении
         if update.message.text and update.message.text != '/run':
             code = update.message.text
             context.user_data['terminal_mode'] = False
             output, success = execute_code(code)
-            if success:
-                await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
-            else:
-                await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
+            
+            result = {
+                "success": success,
+                "output": output[:4000] if success else output,
+                "code": code[:500] if len(code) > 500 else code
+            }
+            
+            json_file = "/app/result.json"
+            with open(json_file, "w", encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            
+            await update.message.reply_document(
+                document=open(json_file, "rb"),
+                filename="result.json",
+                caption="📊 Результат выполнения"
+            )
             return
     
-    # Включаем режим терминала
     context.user_data['terminal_mode'] = True
     context.user_data['terminal_buffer'] = []
     await update.message.reply_text(
         "💻 **Псевдо-терминал**\n"
         "Введи Python код строка за строкой.\n"
-        "Для выполнения отправь **`exit`** или **`run`** отдельной строкой.\n"
+        "Или отправь **JSON-файл** с ключом `code`.\n"
+        "Для выполнения отправь **`exit`** или **`run`**.\n"
         "Для отмены отправь **`cancel`**.\n\n"
         "📝 Вводи код:",
         parse_mode='Markdown'
@@ -705,10 +760,22 @@ async def handle_terminal_input(update, context):
         if code.strip():
             await update.message.reply_text("⚙️ Выполняю код...")
             output, success = execute_code(code)
-            if success:
-                await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
-            else:
-                await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
+            
+            result = {
+                "success": success,
+                "output": output[:4000] if success else output,
+                "code": code[:500] if len(code) > 500 else code
+            }
+            
+            json_file = "/app/result.json"
+            with open(json_file, "w", encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            
+            await update.message.reply_document(
+                document=open(json_file, "rb"),
+                filename="result.json",
+                caption="📊 Результат выполнения"
+            )
         else:
             await update.message.reply_text("❌ Код пустой. Отмена.")
         return
