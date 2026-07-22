@@ -646,7 +646,8 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
-        "/run <код> — выполнить Python код напрямую без LLM\n"
+        "/run <код> — выполнить Python код\n"
+        "/tweets — получить последние 10 твитов в JSON\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -656,6 +657,50 @@ async def start(update, context):
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш"
     )
+
+async def tweets_command(update, context):
+    """Извлекает твиты и отправляет JSON-файлом"""
+    await update.message.reply_text("📊 Извлекаю последние твиты...")
+    
+    code = """
+new_tab("https://x.com")
+wait_for_load()
+time.sleep(5)
+
+js_code = \"\"\"
+Array.from(document.querySelectorAll('article[data-testid="tweet"]'))
+    .slice(0, 10)
+    .map(t => ({
+        text: t.querySelector('[data-testid="tweetText"]')?.innerText || '',
+        author: t.querySelector('[data-testid="User-Name"]')?.innerText || '',
+        likes: t.querySelector('[data-testid="like"]')?.getAttribute('aria-label') || '0'
+    }))
+\"\"\"
+
+tweets = js(js_code)
+
+import json
+with open("/app/tweets.json", "w", encoding='utf-8') as f:
+    json.dump(tweets, f, indent=2, ensure_ascii=False)
+
+print(f"✅ Найдено твитов: {len(tweets)}")
+print(json.dumps(tweets, indent=2, ensure_ascii=False))
+"""
+
+    output, success = execute_code(code)
+    
+    if success:
+        try:
+            with open("/app/tweets.json", "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="tweets.json",
+                    caption=f"📊 {output[:200]}"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    else:
+        await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
 
 async def run_command(update, context):
     """Выполняет Python код напрямую без LLM"""
@@ -676,10 +721,33 @@ async def run_command(update, context):
     
     output, success = execute_code(code)
     
-    if success:
-        await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
-    else:
+    if not success:
         await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
+        return
+    
+    # Пробуем найти JSON в выводе
+    json_match = re.search(r'(\[.*?\]|\{.*?\})', output, re.DOTALL)
+    
+    if json_match:
+        try:
+            json_text = json_match.group(1)
+            json.loads(json_text)  # Проверяем валидность
+            
+            json_file = "/app/run_result.json"
+            with open(json_file, "w", encoding='utf-8') as f:
+                f.write(json_text)
+            
+            await update.message.reply_document(
+                document=open(json_file, "rb"),
+                filename="result.json",
+                caption="📊 Результат в JSON"
+            )
+            return
+        except:
+            pass
+    
+    # Если нет JSON — отправляем текстом
+    await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
 
 async def memory_command(update, context):
     memory = get_memory()
@@ -913,6 +981,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("run", run_command))
+    app.add_handler(CommandHandler("tweets", tweets_command))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("memory", memory_command))
