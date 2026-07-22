@@ -10,7 +10,8 @@ RULES:
 - Screenshots for verification only
 - Before writing new code, check existing helpers in agent_helpers.py
 - Use existing helpers when possible
-- When you figure out something non-obvious, save it as skill with save_skill(host, name, content)
+- Write reusable functions using add_helper()
+- Save working solutions as skills with save_skill(host, name, content)
   - host: domain name (e.g. "x.com")
   - name: skill name
   - content: the code or description
@@ -20,7 +21,6 @@ RULES:
 - Use DISCOVER to find working selectors on the page
 - Save working selectors as skills
 - Handle failures with screenshot + print + alternative
-- Write reusable functions using add_helper()
 - NO imports. time and json are available globally.
 
 Write code in ```python ... ``` block. Use print() for output.
