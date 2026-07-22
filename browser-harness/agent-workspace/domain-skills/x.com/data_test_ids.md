@@ -1,8 +1,0 @@
-
-# Список всех найденных data-testid на x.com
-DATA_TEST_IDS = [
-    'GrokDrawer', 'GrokDrawerHeader', 'chat-drawer-root', 'chat-drawer-main', 'BottomBar', 'AppTabBar_Home_Link', 'AppTabBar_Explore_Link', 'AppTabBar_Notifications_Link', 'AppTabBar_Follow_Link', 'AppTabBar_DirectMessage_Link', 'premium-signup-tab', 'AppTabBar_Profile_Link', 'AppTabBar_More_Menu', 'SideNav_NewTweet_Button', 'SideNav_AccountSwitcher_Button', 'UserAvatar-Container-spinozakov', 'primaryColumn', 'ScrollSnap-prevButtonWrapper', 'ScrollSnap-SwipeableList', 'ScrollSnap-List', 'ScrollSnap-nextButtonWrapper', 'pillLabel', 'progressBar-bar', 'tweetTextarea_0_label', 'tweetTextarea_0RichTextInputContainer', 'tweetTextarea_0', 'toolBar', 'fileInput', 'gifSearchButton', 'grokImgGen', 'createPollButton', 'scheduleOption', 'geoButton', 'contentDisclosureButton', 'tweetButtonInline', 'cellInnerDiv', 'tweet', 'Tweet-User-Avatar', 'UserAvatar-Container-BitcoinNews', 'User-Name', 'icon-verified', 'caret', 'tweetText', 'tweetPhoto', 'reply', 'app-text-transition-container', 'retweet', 'like', 'bookmark', 'placementTracking', 'top-impression-pixel', 'right-impression-pixel', 'bottom-impression-pixel', 'left-impression-pixel', 'UserAvatar-Container-prageru', 'tweet-text-show-more-link', 'card.wrapper', 'card.layoutLarge.media', 'UserAvatar-Container-arkham', 'UserAvatar-Container-UHDPICSTARS', 'UserAvatar-Container-cnnbrk', 'sidebarColumn', 'SearchBox_Search_Input_label', 'SearchBox_Search_Input', 'trend', 'UserCell', 'UserAvatar-Container-aMonicaBellucci', '2473909171-follow', 'UserAvatar-Container-geoffreyhinton', '1084212657761148928-follow', 'UserAvatar-Container-chipro', '15278016-follow', 'whoToFollowSspAd'
-]
-
-def get_all_test_ids():
-    return DATA_TEST_IDS
