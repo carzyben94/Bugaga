@@ -72,15 +72,13 @@ logger.info(f"✅ memory_dir: {MEMORY_DIR}")
 # ============================================================
 
 class Memory:
-    """Долгосрочная память агента — сохраняется между сессиями"""
-    
     def __init__(self, memory_dir):
         self.memory_dir = memory_dir
         self.data = {
-            'skills': {},        # {host: [skill_names]}
-            'helpers': [],        # [helper_names]
-            'patterns': [],       # [pattern_description]
-            'stats': {            # Статистика
+            'skills': {},
+            'helpers': [],
+            'patterns': [],
+            'stats': {
                 'tasks_done': 0,
                 'helpers_written': 0,
                 'skills_saved': 0,
@@ -129,13 +127,6 @@ class Memory:
             return True
         return False
     
-    def add_pattern(self, pattern):
-        if pattern not in self.data['patterns']:
-            self.data['patterns'].append(pattern)
-            self.save()
-            return True
-        return False
-    
     def add_task(self, success=True):
         self.data['stats']['tasks_done'] += 1
         total = self.data['stats']['tasks_done']
@@ -155,21 +146,15 @@ class Memory:
             'domains': list(self.data['skills'].keys())
         }
 
-
 # ============================================================
 # ПОСТОЯННАЯ СЕССИЯ АГЕНТА
 # ============================================================
 
 class AgentSession:
-    """Постоянно живущий агент с памятью между задачами"""
-    
     def __init__(self, workspace, memory):
         self.workspace = workspace
         self.memory = memory
         self.helpers = {}
-        self.helpers_loaded = False
-        
-        # Базовые функции
         self.base_functions = {
             'new_tab': new_tab,
             'goto_url': goto_url,
@@ -195,28 +180,23 @@ class AgentSession:
             'time': time,
             'json': json,
         }
-        
         self.load_helpers()
         logger.info("🧠 AgentSession создан")
     
     def load_helpers(self):
-        """Загружает helpers из agent_helpers.py"""
         helpers_path = os.path.join(self.workspace, "agent_helpers.py")
-        
         if os.path.exists(helpers_path):
             sys.path.insert(0, self.workspace)
             if 'agent_helpers' in sys.modules:
                 importlib.reload(sys.modules['agent_helpers'])
             else:
                 import agent_helpers
-            
             self.helpers = {}
             for name in dir(agent_helpers):
                 if not name.startswith('_'):
                     attr = getattr(agent_helpers, name)
                     if callable(attr):
                         self.helpers[name] = attr
-            
             logger.info(f"✅ Загружено {len(self.helpers)} helpers из agent_helpers.py")
         else:
             logger.info("ℹ️ agent_helpers.py не найден, создаю пустой")
@@ -224,34 +204,23 @@ class AgentSession:
                 f.write('"""Agent-editable browser helpers."""\n')
     
     def get_functions(self):
-        """Возвращает все доступные функции (base + helpers)"""
         funcs = self.base_functions.copy()
         funcs.update(self.helpers)
         return funcs
     
     def add_helper(self, code, name=None):
-        """Добавляет helper и сразу делает его доступным"""
         helpers_path = os.path.join(self.workspace, "agent_helpers.py")
-        
-        # Записываем в файл
         with open(helpers_path, "a", encoding='utf-8') as f:
             f.write(f"\n\n{code}\n")
-        
-        # Перезагружаем helpers
         self.load_helpers()
-        
-        # Сохраняем в память
         if name:
             self.memory.add_helper(name)
-        
         logger.info(f"✅ Helper добавлен в agent_helpers.py")
         return True
     
     def execute(self, code, globals_dict=None):
-        """Выполняет код с доступом ко всем функциям"""
         if globals_dict is None:
             globals_dict = {}
-        
         full_globals = self.get_functions()
         full_globals.update(globals_dict)
         full_globals['print'] = print
@@ -260,11 +229,9 @@ class AgentSession:
         full_globals['memory'] = self.memory
         full_globals['add_helper'] = self.add_helper
         full_globals['save_skill'] = globals_dict.get('save_skill')
-        
         stdout_buffer = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
-        
         try:
             exec(code, full_globals)
             output = stdout_buffer.getvalue()
@@ -275,8 +242,6 @@ class AgentSession:
         finally:
             sys.stdout = old_stdout
 
-
-# Глобальные объекты
 _agent_session = None
 _memory = None
 
@@ -292,7 +257,6 @@ def get_session():
         _agent_session = AgentSession(agent_workspace, get_memory())
     return _agent_session
 
-# Создаём сессию при старте
 memory = get_memory()
 session = get_session()
 
@@ -343,10 +307,6 @@ except ImportError:
     def set_cookies_global():
         return False
 
-# ============================================================
-# НАСТРОЙКА РАЗМЕРА ОКНА (WebSocket)
-# ============================================================
-
 async def set_viewport_async():
     try:
         import httpx
@@ -392,10 +352,6 @@ def set_viewport_global():
         logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
         return False
 
-# ============================================================
-# НАСТРОЙКА
-# ============================================================
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -409,10 +365,6 @@ logger.info("✅ Браузер готов")
 
 set_cookies_global()
 set_viewport_global()
-
-# ============================================================
-# GITHUB
-# ============================================================
 
 def push_to_github(content, filename, host="x.com"):
     if not GITHUB_TOKEN:
@@ -457,7 +409,6 @@ def push_to_github(content, filename, host="x.com"):
     except Exception as e:
         logger.error(f"❌ Ошибка при отправке в GitHub: {e}")
         return False
-
 
 def push_helpers_to_github():
     if not GITHUB_TOKEN:
@@ -508,10 +459,6 @@ def push_helpers_to_github():
         logger.error(f"❌ Ошибка при отправке helpers: {e}")
         return False
 
-# ============================================================
-# ФОТОШОП (AGNES AI)
-# ============================================================
-
 AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 def get_image_size(image_data):
@@ -536,10 +483,8 @@ def replace_background(image_data, new_background_prompt: str):
     
     try:
         width, height = get_image_size(image_data)
-        
         MAX_SIZE = 1024
         MIN_SIZE = 256
-        
         if width and height:
             if width > MAX_SIZE or height > MAX_SIZE:
                 ratio = min(MAX_SIZE / width, MAX_SIZE / height)
@@ -627,10 +572,6 @@ def replace_background(image_data, new_background_prompt: str):
         logger.error(f"❌ Ошибка: {e}")
         return None, f"Внутренняя ошибка: {str(e)[:100]}"
 
-# ============================================================
-# LLM
-# ============================================================
-
 async def ask_agnes(messages):
     logger.info("=" * 60)
     logger.info("📤 ОТПРАВКА В AGNES AI:")
@@ -657,13 +598,8 @@ async def ask_agnes(messages):
         logger.error(f"❌ Ошибка Agnes AI: {e}")
         return f"Ошибка LLM: {str(e)[:200]}"
 
-# ============================================================
-# ВЫПОЛНИТЕЛЬ
-# ============================================================
-
 def execute_code(code):
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
-    
     session = get_session()
     memory = get_memory()
     
@@ -671,12 +607,10 @@ def execute_code(code):
         skills_dir = os.path.join(agent_workspace, "domain-skills", host)
         os.makedirs(skills_dir, exist_ok=True)
         os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-        
         skill_path = os.path.join(skills_dir, f"{name}.md")
         with open(skill_path, "w", encoding='utf-8') as f:
             f.write(content)
         os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-        
         logger.info(f"✅ Навык сохранён локально: {skill_path}")
         memory.add_skill(host, name)
         push_to_github(content, f"{name}.md", host)
@@ -697,10 +631,7 @@ def execute_code(code):
     }
     
     output, success, result_globals = session.execute(code, globals_dict)
-    
-    # Запоминаем результат
     memory.add_task(success)
-    
     if success:
         logger.info(f"📤 ВЫВОД КОДА:\n{output}")
         return output.strip(), True
@@ -708,14 +639,11 @@ def execute_code(code):
         logger.error(f"❌ Ошибка выполнения: {output}")
         return output, False
 
-# ============================================================
-# КОМАНДЫ
-# ============================================================
-
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
+        "/run <код> — выполнить код напрямую без LLM\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -726,8 +654,21 @@ async def start(update, context):
         "/clear — очистить кэш"
     )
 
+async def run_command(update, context):
+    """Выполняет код напрямую без LLM"""
+    if not context.args:
+        await update.message.reply_text("Пример: /run new_tab('https://x.com')")
+        return
+    
+    code = " ".join(context.args)
+    output, success = execute_code(code)
+    
+    if success:
+        await update.message.reply_text(f"✅ Результат:\n{output[:4000]}")
+    else:
+        await update.message.reply_text(f"❌ Ошибка:\n{output[:4000]}")
+
 async def memory_command(update, context):
-    """Показывает долгосрочную память агента"""
     memory = get_memory()
     summary = memory.get_summary()
     
@@ -864,10 +805,6 @@ async def ask(update, context):
         logger.error(f"❌ Ошибка в /ask для {username}: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ============================================================
-# ФОТОШОП КОМАНДЫ
-# ============================================================
-
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'last_image' in context.user_data:
         del context.user_data['last_image']
@@ -880,10 +817,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         context.user_data['last_image'] = bytes(photo_bytes)
-        
         width, height = get_image_size(photo_bytes)
         size_info = f" ({width}x{height})" if width and height else ""
-        
         await update.message.reply_text(
             f"📸 Фото сохранено{size_info}!\n"
             f"✏️ Используй /bg <описание> для замены фона"
@@ -959,15 +894,12 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-# ============================================================
-# ЗАПУСК
-# ============================================================
-
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("run", run_command))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("memory", memory_command))
