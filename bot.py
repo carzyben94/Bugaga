@@ -1,4 +1,3 @@
-# bot.py
 import os
 import sys
 import stat
@@ -639,11 +638,15 @@ def execute_code(code):
         logger.error(f"❌ Ошибка выполнения: {output}")
         return output, False
 
+# ============================================================
+# КОМАНДЫ
+# ============================================================
+
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
-        "/run <код> — выполнить код напрямую без LLM\n"
+        "/run <код> — выполнить Python код напрямую без LLM\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -655,12 +658,22 @@ async def start(update, context):
     )
 
 async def run_command(update, context):
-    """Выполняет код напрямую без LLM"""
-    if not context.args:
+    """Выполняет Python код напрямую без LLM"""
+    if not update.message.text:
+        await update.message.reply_text("📝 Отправь код после /run")
+        return
+    
+    code = update.message.text.replace("/run", "", 1).strip()
+    
+    if not code:
         await update.message.reply_text("Пример: /run new_tab('https://x.com')")
         return
     
-    code = " ".join(context.args)
+    # Извлекаем код из блока ```python ... ```
+    code_match = re.search(r'```python\n(.*?)\n```', code, re.DOTALL)
+    if code_match:
+        code = code_match.group(1)
+    
     output, success = execute_code(code)
     
     if success:
