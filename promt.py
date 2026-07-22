@@ -8,7 +8,10 @@ RULES:
 - Use fill_input() for form filling
 - Use js() for extraction
 - Screenshots for verification only
-- When you figure out something non-obvious, save it as skill with save_skill()
+- When you figure out something non-obvious, save it as skill with save_skill(host, name, content)
+  - host: domain name (e.g. "x.com")
+  - name: skill name
+  - content: the code or description
 - goto_url() returns up to 10 domain skills
 - Check domain skills before inventing a new approach
 - If extraction fails with one selector, try alternative selectors
