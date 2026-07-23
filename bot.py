@@ -755,7 +755,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
-        "/dom — парсинг DOM страницы в JSON\n"
+        "/dom <url> — парсинг DOM страницы\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -839,15 +839,40 @@ async def images(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dom(update, context):
-    """Парсит DOM страницы и возвращает JSON"""
+    """Парсит DOM указанной страницы"""
     try:
-        status_msg = await update.message.reply_text("🔍 Парсинг DOM страницы...")
+        # Проверяем аргументы
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Укажите URL\n"
+                "Пример: /dom https://example.com\n"
+                "Пример: /dom x.com"
+            )
+            return
+        
+        url = context.args[0].strip()
+        
+        # Добавляем https:// если нет протокола
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        status_msg = await update.message.reply_text(f"🌐 Открываю {url}...")
+        
+        # Открываем страницу
+        try:
+            new_tab()
+            goto_url(url)
+            wait_for_load(timeout=30)
+            await status_msg.edit_text(f"✅ Страница загружена, парсинг...")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+            return
         
         # Парсим DOM
         result, error = parse_dom()
         
         if error:
-            await status_msg.edit_text(f"❌ Ошибка: {error}")
+            await status_msg.edit_text(f"❌ Ошибка парсинга: {error}")
             return
         
         if not result:
@@ -863,7 +888,8 @@ async def dom(update, context):
         
         # Сохраняем JSON в файл
         timestamp = int(time.time())
-        filename = f"dom_{timestamp}.json"
+        domain = url.replace('https://', '').replace('http://', '').split('/')[0]
+        filename = f"dom_{domain}_{timestamp}.json"
         file_path = os.path.join(LOGS_DIR, filename)
         
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -871,19 +897,23 @@ async def dom(update, context):
         
         # Отправляем JSON как документ
         with open(file_path, 'rb') as f:
-            await status_msg.edit_text("📄 DOM распарсен, отправляю JSON...")
+            await status_msg.edit_text("📄 Отправляю JSON...")
             await update.message.reply_document(
                 document=f,
                 filename=filename,
                 caption=f"📊 DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}\nЭлементов: {sum(len(v) for v in dom_data.get('elements', {}).values())}"
             )
         
-        # Также отправляем краткую статистику
+        # Отправляем статистику
         elements = dom_data.get('elements', {})
         stats = "📊 **Статистика DOM:**\n\n"
+        total = 0
         for key, value in elements.items():
             if value:
-                stats += f"• {key}: {len(value)}\n"
+                count = len(value)
+                total += count
+                stats += f"• {key}: {count}\n"
+        stats += f"\n**Всего: {total}**"
         
         await update.message.reply_text(stats, parse_mode='Markdown')
         
@@ -1048,7 +1078,7 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
-    app.add_handler(CommandHandler("dom", dom))  # Новая команда
+    app.add_handler(CommandHandler("dom", dom))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
