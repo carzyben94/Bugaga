@@ -934,15 +934,49 @@ async def kalshi(update, context):
         try:
             new_tab()
             goto_url("https://x.com/Kalshi")
-            wait_for_load(timeout=30)
+            
+            # Ждем загрузки с увеличенным таймаутом
+            wait_for_load(timeout=60)
+            
+            # Дополнительное ожидание для подгрузки контента
+            await asyncio.sleep(5)
+            
+            # Скроллим вниз для подгрузки постов
+            scroll(0, 500)
+            await asyncio.sleep(2)
+            scroll(0, 500)
+            await asyncio.sleep(2)
+            
             await status_msg.edit_text("✅ Страница загружена, парсинг постов...")
         except Exception as e:
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
         
-        # JavaScript для парсинга постов
+        # JavaScript для парсинга постов с ожиданием элементов
         js_code = """
-        function parsePosts() {
+        function waitForElements(selector, timeout) {
+            return new Promise((resolve) => {
+                const start = Date.now();
+                const check = () => {
+                    const els = document.querySelectorAll(selector);
+                    if (els.length > 0) {
+                        resolve(els);
+                        return;
+                    }
+                    if (Date.now() - start > timeout) {
+                        resolve([]);
+                        return;
+                    }
+                    setTimeout(check, 500);
+                };
+                check();
+            });
+        }
+        
+        async function parsePosts() {
+            // Ждем появления постов
+            await waitForElements('article[data-testid="tweet"]', 10000);
+            
             const posts = [];
             const articles = document.querySelectorAll('article[data-testid="tweet"]');
             
@@ -1014,7 +1048,7 @@ async def kalshi(update, context):
             return posts;
         }
         
-        return JSON.stringify(parsePosts());
+        return JSON.stringify(await parsePosts());
         """
         
         result = js(js_code)
@@ -1030,7 +1064,7 @@ async def kalshi(update, context):
             return
         
         if not posts:
-            await status_msg.edit_text("📭 Постов не найдено")
+            await status_msg.edit_text("📭 Постов не найдено. Возможно, страница не загрузилась или требуется авторизация.")
             return
         
         # Фильтруем посты за последний час
@@ -1039,7 +1073,7 @@ async def kalshi(update, context):
         recent_posts = [p for p in posts if p.get('timestamp') and (now - p['timestamp']) <= oneHour]
         
         if not recent_posts:
-            await status_msg.edit_text("📭 Постов за последний час не найдено")
+            await status_msg.edit_text(f"📭 Постов за последний час не найдено. Всего постов: {len(posts)}")
             return
         
         # Сортируем по времени (новые сверху)
