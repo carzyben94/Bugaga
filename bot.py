@@ -961,8 +961,15 @@ async def kalshi(update, context):
                 const textEl = article.querySelector('[data-testid="tweetText"]');
                 const text = textEl ? textEl.textContent.trim() : '';
                 
+                // Берем только имя без @ и времени
                 const nameEl = article.querySelector('[data-testid="User-Name"]');
-                const name = nameEl ? nameEl.textContent.trim() : '';
+                let name = 'Kalshi';
+                if (nameEl) {
+                    const fullName = nameEl.textContent.trim();
+                    // Берем только то, что до @
+                    const nameParts = fullName.split('@');
+                    name = nameParts[0].trim();
+                }
                 
                 const replyEl = article.querySelector('[data-testid="reply"]');
                 const replies = replyEl ? replyEl.textContent.trim() : '0';
@@ -1009,7 +1016,7 @@ async def kalshi(update, context):
         response = f"📊 **Kalshi — последние 5 постов**\n\n"
         
         for i, post in enumerate(posts, 1):
-            response += f"**{i}.** {post.get('name', 'Unknown')}\n"
+            response += f"**{i}.** {post.get('name', 'Kalshi')}\n"
             response += f"💬 {post.get('replies', '0')} | 🔄 {post.get('retweets', '0')} | ❤️ {post.get('likes', '0')}\n"
             response += f"📝 {post.get('text', '')[:300]}"
             if len(post.get('text', '')) > 300:
