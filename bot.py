@@ -689,16 +689,13 @@ def parse_dom():
         ];
         
         const allElements = document.querySelectorAll(selectors.join(','));
-        
-        // Дополнительные div/spans с onclick или data-* атрибутами
-        const extraElements = document.querySelectorAll('div[onclick], span[onclick], div[data-*], span[data-*]');
         const extraSet = new Set(allElements);
+        
+        // Дополнительные элементы с onclick или data-* атрибутами
+        const extraElements = document.querySelectorAll('[onclick], [data-testid], [data-test], [data-cy], [data-qa]');
         for (const el of extraElements) {
             if (!extraSet.has(el)) {
-                const hasData = Array.from(el.attributes).some(attr => attr.name.startsWith('data-'));
-                if (hasData || el.hasAttribute('onclick')) {
-                    extraSet.add(el);
-                }
+                extraSet.add(el);
             }
         }
         
