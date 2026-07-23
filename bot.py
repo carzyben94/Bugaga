@@ -533,7 +533,7 @@ def execute_code(code):
             'save_skill': save_skill,
             'add_helper': add_helper,
             'time': time,
-            'json': json,  # ← ДОБАВЛЕНО
+            'json': json,
             'print': print, 
             '__builtins__': __builtins__,
         }
@@ -558,6 +558,196 @@ def execute_code(code):
         return str(e), False
 
 # ============================================================
+# DOM ПАРСЕР
+# ============================================================
+
+def parse_dom():
+    """Парсит DOM страницы и возвращает JSON со всеми интерактивными элементами"""
+    try:
+        # JavaScript для сбора всех элементов
+        js_code = """
+        function getElementInfo(el) {
+            const info = {
+                tag: el.tagName.toLowerCase(),
+                text: el.textContent?.trim() || '',
+                value: el.value || '',
+                placeholder: el.placeholder || '',
+                type: el.type || '',
+                name: el.name || '',
+                id: el.id || '',
+                className: el.className || '',
+                href: el.href || '',
+                src: el.src || '',
+                alt: el.alt || '',
+                title: el.title || '',
+                disabled: el.disabled || false,
+                readonly: el.readOnly || false,
+                required: el.required || false,
+                checked: el.checked || false,
+                selected: el.selected || false,
+                visible: el.offsetParent !== null,
+                xpath: '',
+                cssSelector: '',
+                attributes: {},
+                dataAttributes: {}
+            };
+            
+            // XPath
+            try {
+                const xpath = document.evaluate(
+                    './/' + info.tag + 
+                    (info.id ? '[@id="' + info.id + '"]' : '') +
+                    (info.name ? '[@name="' + info.name + '"]' : '') +
+                    (info.className ? '[contains(@class, "' + info.className.split(' ')[0] + '")]' : ''),
+                    document.documentElement,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null
+                );
+                if (xpath.singleNodeValue) {
+                    info.xpath = './/' + info.tag + 
+                        (info.id ? '[@id="' + info.id + '"]' : '') +
+                        (info.name ? '[@name="' + info.name + '"]' : '') +
+                        (info.className ? '[contains(@class, "' + info.className.split(' ')[0] + '")]' : '');
+                }
+            } catch(e) {}
+            
+            // CSS Selector
+            try {
+                if (info.id) {
+                    info.cssSelector = '#' + info.id;
+                } else if (info.className) {
+                    info.cssSelector = info.tag + '.' + info.className.split(' ').filter(c => c).join('.');
+                } else if (info.name) {
+                    info.cssSelector = info.tag + '[name="' + info.name + '"]';
+                } else {
+                    info.cssSelector = info.tag;
+                }
+            } catch(e) {}
+            
+            // Все атрибуты
+            for (const attr of el.attributes) {
+                const name = attr.name;
+                const value = attr.value;
+                info.attributes[name] = value;
+                
+                // Собираем data-* атрибуты отдельно
+                if (name.startsWith('data-')) {
+                    info.dataAttributes[name] = value;
+                }
+            }
+            
+            // ARIA атрибуты
+            const ariaAttrs = ['aria-label', 'aria-describedby', 'aria-labelledby', 
+                              'aria-hidden', 'aria-disabled', 'aria-required', 
+                              'aria-checked', 'aria-selected', 'aria-expanded'];
+            for (const attr of ariaAttrs) {
+                if (el.hasAttribute(attr)) {
+                    info.attributes[attr] = el.getAttribute(attr);
+                }
+            }
+            
+            // Специальные атрибуты для тестирования
+            const testAttrs = ['data-testid', 'data-test', 'data-cy', 'data-qa', 
+                              'data-test-id', 'testid', 'test-id'];
+            for (const attr of testAttrs) {
+                if (el.hasAttribute(attr)) {
+                    info.attributes[attr] = el.getAttribute(attr);
+                }
+            }
+            
+            return info;
+        }
+        
+        // Собираем элементы
+        const elements = {
+            buttons: [],
+            inputs: [],
+            links: [],
+            forms: [],
+            selects: [],
+            textareas: [],
+            divs: [],
+            spans: [],
+            lis: [],
+            others: []
+        };
+        
+        // Все интерактивные элементы
+        const selectors = [
+            'button',
+            'input:not([type="hidden"])',
+            'a[href]',
+            'form',
+            'select',
+            'textarea',
+            '[role="button"]',
+            '[role="link"]',
+            '[role="checkbox"]',
+            '[role="radio"]',
+            '[contenteditable="true"]'
+        ];
+        
+        const allElements = document.querySelectorAll(selectors.join(','));
+        
+        // Дополнительные div/spans с onclick или data-* атрибутами
+        const extraElements = document.querySelectorAll('div[onclick], span[onclick], div[data-*], span[data-*]');
+        const extraSet = new Set(allElements);
+        for (const el of extraElements) {
+            if (!extraSet.has(el)) {
+                const hasData = Array.from(el.attributes).some(attr => attr.name.startsWith('data-'));
+                if (hasData || el.hasAttribute('onclick')) {
+                    extraSet.add(el);
+                }
+            }
+        }
+        
+        const finalElements = Array.from(extraSet);
+        
+        for (const el of finalElements) {
+            const info = getElementInfo(el);
+            const tag = info.tag;
+            
+            if (tag === 'button' || el.hasAttribute('role') && el.getAttribute('role') === 'button') {
+                elements.buttons.push(info);
+            } else if (tag === 'input') {
+                elements.inputs.push(info);
+            } else if (tag === 'a') {
+                elements.links.push(info);
+            } else if (tag === 'form') {
+                elements.forms.push(info);
+            } else if (tag === 'select') {
+                elements.selects.push(info);
+            } else if (tag === 'textarea') {
+                elements.textareas.push(info);
+            } else if (tag === 'div') {
+                elements.divs.push(info);
+            } else if (tag === 'span') {
+                elements.spans.push(info);
+            } else if (tag === 'li') {
+                elements.lis.push(info);
+            } else {
+                elements.others.push(info);
+            }
+        }
+        
+        // Информация о странице
+        const pageInfo = {
+            url: window.location.href,
+            title: document.title,
+            timestamp: Date.now()
+        };
+        
+        return JSON.stringify({ page: pageInfo, elements: elements }, null, 2);
+        """
+        
+        result = js(js_code)
+        return result, None
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга DOM: {e}")
+        return None, str(e)
+
+# ============================================================
 # КОМАНДЫ
 # ============================================================
 
@@ -565,6 +755,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
+        "/dom — парсинг DOM страницы в JSON\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -645,6 +836,65 @@ async def images(update, context):
         else:
             await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
     except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def dom(update, context):
+    """Парсит DOM страницы и возвращает JSON"""
+    try:
+        status_msg = await update.message.reply_text("🔍 Парсинг DOM страницы...")
+        
+        # Парсим DOM
+        result, error = parse_dom()
+        
+        if error:
+            await status_msg.edit_text(f"❌ Ошибка: {error}")
+            return
+        
+        if not result:
+            await status_msg.edit_text("❌ Не удалось получить данные DOM")
+            return
+        
+        # Парсим JSON для проверки
+        try:
+            dom_data = json.loads(result)
+        except:
+            await status_msg.edit_text("❌ Ошибка парсинга JSON")
+            return
+        
+        # Сохраняем JSON в файл
+        timestamp = int(time.time())
+        filename = f"dom_{timestamp}.json"
+        file_path = os.path.join(LOGS_DIR, filename)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(dom_data, f, ensure_ascii=False, indent=2)
+        
+        # Отправляем JSON как документ
+        with open(file_path, 'rb') as f:
+            await status_msg.edit_text("📄 DOM распарсен, отправляю JSON...")
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=f"📊 DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}\nЭлементов: {sum(len(v) for v in dom_data.get('elements', {}).values())}"
+            )
+        
+        # Также отправляем краткую статистику
+        elements = dom_data.get('elements', {})
+        stats = "📊 **Статистика DOM:**\n\n"
+        for key, value in elements.items():
+            if value:
+                stats += f"• {key}: {len(value)}\n"
+        
+        await update.message.reply_text(stats, parse_mode='Markdown')
+        
+        # Удаляем временный файл
+        try:
+            os.remove(file_path)
+        except:
+            pass
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /dom: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def ask(update, context):
@@ -798,6 +1048,7 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("dom", dom))  # Новая команда
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
