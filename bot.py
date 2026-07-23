@@ -753,6 +753,7 @@ async def start(update, context):
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
         "/dom <url> — парсинг DOM страницы\n"
+        "/kalshi — посты Kalshi за последний час\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -924,6 +925,148 @@ async def dom(update, context):
         logger.error(f"❌ Ошибка в /dom: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def kalshi(update, context):
+    """Парсит посты Kalshi за последний час"""
+    try:
+        status_msg = await update.message.reply_text("🔍 Открываю Kalshi...")
+        
+        # Открываем страницу Kalshi
+        try:
+            new_tab()
+            goto_url("https://x.com/Kalshi")
+            wait_for_load(timeout=30)
+            await status_msg.edit_text("✅ Страница загружена, парсинг постов...")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+            return
+        
+        # JavaScript для парсинга постов
+        js_code = """
+        function parsePosts() {
+            const posts = [];
+            const articles = document.querySelectorAll('article[data-testid="tweet"]');
+            
+            const now = Date.now();
+            const oneHour = 60 * 60 * 1000;
+            
+            for (const article of articles) {
+                try {
+                    // Ищем текст поста
+                    const textEl = article.querySelector('[data-testid="tweetText"]');
+                    const text = textEl ? textEl.textContent.trim() : '';
+                    
+                    // Ищем время
+                    const timeEl = article.querySelector('a time');
+                    const time = timeEl ? timeEl.getAttribute('datetime') : null;
+                    
+                    // Ищем имя автора
+                    const nameEl = article.querySelector('[data-testid="User-Name"]');
+                    const name = nameEl ? nameEl.textContent.trim() : '';
+                    
+                    // Ищем количество ответов
+                    const replyEl = article.querySelector('[data-testid="reply"]');
+                    const replies = replyEl ? replyEl.textContent.trim() : '0';
+                    
+                    // Ищем количество репостов
+                    const retweetEl = article.querySelector('[data-testid="retweet"]');
+                    const retweets = retweetEl ? retweetEl.textContent.trim() : '0';
+                    
+                    // Ищем количество лайков
+                    const likeEl = article.querySelector('[data-testid="like"]');
+                    const likes = likeEl ? likeEl.textContent.trim() : '0';
+                    
+                    // Ищем просмотры
+                    const viewsEl = article.querySelector('a[aria-label*="просмотров"]');
+                    const views = viewsEl ? viewsEl.textContent.trim() : '';
+                    
+                    // Парсим время
+                    let timestamp = null;
+                    let timeAgo = '';
+                    if (time) {
+                        timestamp = new Date(time).getTime();
+                        const diff = now - timestamp;
+                        const minutes = Math.floor(diff / 60000);
+                        const hours = Math.floor(diff / 3600000);
+                        const days = Math.floor(diff / 86400000);
+                        
+                        if (minutes < 60) {
+                            timeAgo = minutes + 'м';
+                        } else if (hours < 24) {
+                            timeAgo = hours + 'ч';
+                        } else {
+                            timeAgo = days + 'д';
+                        }
+                    }
+                    
+                    posts.push({
+                        text: text,
+                        name: name,
+                        time: timeAgo,
+                        timestamp: timestamp,
+                        replies: replies,
+                        retweets: retweets,
+                        likes: likes,
+                        views: views
+                    });
+                } catch(e) {}
+            }
+            
+            return posts;
+        }
+        
+        return JSON.stringify(parsePosts());
+        """
+        
+        result = js(js_code)
+        
+        if not result:
+            await status_msg.edit_text("❌ Не удалось получить посты")
+            return
+        
+        try:
+            posts = json.loads(result)
+        except:
+            await status_msg.edit_text("❌ Ошибка парсинга JSON")
+            return
+        
+        if not posts:
+            await status_msg.edit_text("📭 Постов не найдено")
+            return
+        
+        # Фильтруем посты за последний час
+        now = int(time.time() * 1000)
+        oneHour = 60 * 60 * 1000
+        recent_posts = [p for p in posts if p.get('timestamp') and (now - p['timestamp']) <= oneHour]
+        
+        if not recent_posts:
+            await status_msg.edit_text("📭 Постов за последний час не найдено")
+            return
+        
+        # Сортируем по времени (новые сверху)
+        recent_posts.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        
+        # Формируем ответ
+        response = f"📊 **Kalshi — посты за последний час ({len(recent_posts)})**\n\n"
+        
+        for i, post in enumerate(recent_posts[:10], 1):
+            response += f"**{i}.** {post.get('name', 'Unknown')}\n"
+            response += f"⏱ {post.get('time', '')} | 💬 {post.get('replies', '0')} | 🔄 {post.get('retweets', '0')} | ❤️ {post.get('likes', '0')}"
+            if post.get('views'):
+                response += f" | 👁 {post.get('views')}"
+            response += f"\n📝 {post.get('text', '')[:200]}"
+            if len(post.get('text', '')) > 200:
+                response += "..."
+            response += "\n\n"
+        
+        if len(recent_posts) > 10:
+            response += f"\n... и ещё {len(recent_posts) - 10} постов"
+        
+        await status_msg.edit_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /kalshi: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def ask(update, context):
     if not context.args:
         await update.message.reply_text("Пример: /ask сделай скриншот google.com")
@@ -1076,6 +1219,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("dom", dom))
+    app.add_handler(CommandHandler("kalshi", kalshi))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
