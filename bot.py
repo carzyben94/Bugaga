@@ -935,6 +935,15 @@ async def kalshi(update, context):
             new_tab()
             goto_url("https://x.com/Kalshi")
             wait_for_load(timeout=30)
+            
+            # Ждем и скроллим для подгрузки постов
+            await asyncio.sleep(3)
+            
+            # Много скроллов для подгрузки
+            for _ in range(8):
+                scroll(0, 600)
+                await asyncio.sleep(1.5)
+            
             await status_msg.edit_text("✅ Страница загружена, парсинг постов...")
         except Exception as e:
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
@@ -942,46 +951,39 @@ async def kalshi(update, context):
         
         # JavaScript для парсинга постов
         js_code = """
-        function parsePosts() {
-            const posts = [];
-            const articles = document.querySelectorAll('article[data-testid="tweet"]');
-            
-            for (const article of articles) {
-                try {
-                    // Ищем текст поста
-                    const textEl = article.querySelector('[data-testid="tweetText"]');
-                    const text = textEl ? textEl.textContent.trim() : '';
-                    
-                    // Ищем имя автора
-                    const nameEl = article.querySelector('[data-testid="User-Name"]');
-                    const name = nameEl ? nameEl.textContent.trim() : '';
-                    
-                    // Ищем количество ответов
-                    const replyEl = article.querySelector('[data-testid="reply"]');
-                    const replies = replyEl ? replyEl.textContent.trim() : '0';
-                    
-                    // Ищем количество репостов
-                    const retweetEl = article.querySelector('[data-testid="retweet"]');
-                    const retweets = retweetEl ? retweetEl.textContent.trim() : '0';
-                    
-                    // Ищем количество лайков
-                    const likeEl = article.querySelector('[data-testid="like"]');
-                    const likes = likeEl ? likeEl.textContent.trim() : '0';
-                    
-                    posts.push({
-                        text: text,
-                        name: name,
-                        replies: replies,
-                        retweets: retweets,
-                        likes: likes
-                    });
-                } catch(e) {}
-            }
-            
-            return posts;
+        const posts = [];
+        const articles = document.querySelectorAll('article[data-testid="tweet"]');
+        
+        console.log('Найдено постов:', articles.length);
+        
+        for (const article of articles) {
+            try {
+                const textEl = article.querySelector('[data-testid="tweetText"]');
+                const text = textEl ? textEl.textContent.trim() : '';
+                
+                const nameEl = article.querySelector('[data-testid="User-Name"]');
+                const name = nameEl ? nameEl.textContent.trim() : '';
+                
+                const replyEl = article.querySelector('[data-testid="reply"]');
+                const replies = replyEl ? replyEl.textContent.trim() : '0';
+                
+                const retweetEl = article.querySelector('[data-testid="retweet"]');
+                const retweets = retweetEl ? retweetEl.textContent.trim() : '0';
+                
+                const likeEl = article.querySelector('[data-testid="like"]');
+                const likes = likeEl ? likeEl.textContent.trim() : '0';
+                
+                posts.push({
+                    text: text,
+                    name: name,
+                    replies: replies,
+                    retweets: retweets,
+                    likes: likes
+                });
+            } catch(e) {}
         }
         
-        return JSON.stringify(parsePosts());
+        return JSON.stringify(posts);
         """
         
         result = js(js_code)
@@ -997,7 +999,7 @@ async def kalshi(update, context):
             return
         
         if not posts:
-            await status_msg.edit_text("📭 Постов не найдено")
+            await status_msg.edit_text("📭 Постов не найдено. Попробуйте позже.")
             return
         
         # Берем первые 5 постов
