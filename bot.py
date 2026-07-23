@@ -753,7 +753,7 @@ async def start(update, context):
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
         "/dom <url> — парсинг DOM страницы\n"
-        "/kalshi — посты Kalshi за последний час\n"
+        "/kalshi — последние 5 постов Kalshi\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -926,7 +926,7 @@ async def dom(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def kalshi(update, context):
-    """Парсит посты Kalshi за последний час"""
+    """Парсит последние 5 постов Kalshi"""
     try:
         status_msg = await update.message.reply_text("🔍 Открываю Kalshi...")
         
@@ -946,18 +946,11 @@ async def kalshi(update, context):
             const posts = [];
             const articles = document.querySelectorAll('article[data-testid="tweet"]');
             
-            const now = Date.now();
-            const oneHour = 60 * 60 * 1000;
-            
             for (const article of articles) {
                 try {
                     // Ищем текст поста
                     const textEl = article.querySelector('[data-testid="tweetText"]');
                     const text = textEl ? textEl.textContent.trim() : '';
-                    
-                    // Ищем время
-                    const timeEl = article.querySelector('a time');
-                    const time = timeEl ? timeEl.getAttribute('datetime') : null;
                     
                     // Ищем имя автора
                     const nameEl = article.querySelector('[data-testid="User-Name"]');
@@ -975,38 +968,12 @@ async def kalshi(update, context):
                     const likeEl = article.querySelector('[data-testid="like"]');
                     const likes = likeEl ? likeEl.textContent.trim() : '0';
                     
-                    // Ищем просмотры
-                    const viewsEl = article.querySelector('a[aria-label*="просмотров"]');
-                    const views = viewsEl ? viewsEl.textContent.trim() : '';
-                    
-                    // Парсим время
-                    let timestamp = null;
-                    let timeAgo = '';
-                    if (time) {
-                        timestamp = new Date(time).getTime();
-                        const diff = now - timestamp;
-                        const minutes = Math.floor(diff / 60000);
-                        const hours = Math.floor(diff / 3600000);
-                        const days = Math.floor(diff / 86400000);
-                        
-                        if (minutes < 60) {
-                            timeAgo = minutes + 'м';
-                        } else if (hours < 24) {
-                            timeAgo = hours + 'ч';
-                        } else {
-                            timeAgo = days + 'д';
-                        }
-                    }
-                    
                     posts.push({
                         text: text,
                         name: name,
-                        time: timeAgo,
-                        timestamp: timestamp,
                         replies: replies,
                         retweets: retweets,
-                        likes: likes,
-                        views: views
+                        likes: likes
                     });
                 } catch(e) {}
             }
@@ -1033,33 +1000,19 @@ async def kalshi(update, context):
             await status_msg.edit_text("📭 Постов не найдено")
             return
         
-        # Фильтруем посты за последний час
-        now = int(time.time() * 1000)
-        oneHour = 60 * 60 * 1000
-        recent_posts = [p for p in posts if p.get('timestamp') and (now - p['timestamp']) <= oneHour]
-        
-        if not recent_posts:
-            await status_msg.edit_text(f"📭 Постов за последний час не найдено. Всего постов: {len(posts)}")
-            return
-        
-        # Сортируем по времени (новые сверху)
-        recent_posts.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        # Берем первые 5 постов
+        posts = posts[:5]
         
         # Формируем ответ
-        response = f"📊 **Kalshi — посты за последний час ({len(recent_posts)})**\n\n"
+        response = f"📊 **Kalshi — последние 5 постов**\n\n"
         
-        for i, post in enumerate(recent_posts[:10], 1):
+        for i, post in enumerate(posts, 1):
             response += f"**{i}.** {post.get('name', 'Unknown')}\n"
-            response += f"⏱ {post.get('time', '')} | 💬 {post.get('replies', '0')} | 🔄 {post.get('retweets', '0')} | ❤️ {post.get('likes', '0')}"
-            if post.get('views'):
-                response += f" | 👁 {post.get('views')}"
-            response += f"\n📝 {post.get('text', '')[:200]}"
-            if len(post.get('text', '')) > 200:
+            response += f"💬 {post.get('replies', '0')} | 🔄 {post.get('retweets', '0')} | ❤️ {post.get('likes', '0')}\n"
+            response += f"📝 {post.get('text', '')[:300]}"
+            if len(post.get('text', '')) > 300:
                 response += "..."
             response += "\n\n"
-        
-        if len(recent_posts) > 10:
-            response += f"\n... и ещё {len(recent_posts) - 10} постов"
         
         await status_msg.edit_text(response, parse_mode='Markdown')
         
