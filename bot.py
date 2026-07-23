@@ -647,6 +647,7 @@ async def start(update, context):
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
         "/run — открыть псевдо-терминал\n"
+        "/run2 — отправить JSON-файл с кодом\n"
         "/run [файл.json] — выполнить код из JSON → ответ JSON\n"
         "/tweets — получить последние 10 твитов в JSON\n"
         "/image — последний скриншот\n"
@@ -658,6 +659,64 @@ async def start(update, context):
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш"
     )
+
+# ============================================================
+# run2 — ПРОСТОЙ ЗАПУСК JSON-ФАЙЛА
+# ============================================================
+
+async def run2_command(update, context):
+    """Принимает JSON-файл и выполняет код"""
+    
+    if not update.message.document:
+        await update.message.reply_text(
+            "📤 Отправь JSON-файл с ключом `code`\n"
+            "Пример: {\"code\": \"print('hello')\"}"
+        )
+        return
+    
+    # Получаем файл
+    file = await update.message.document.get_file()
+    file_content = await file.download_as_bytearray()
+    file_name = update.message.document.file_name
+    
+    # Парсим JSON
+    try:
+        data = json.loads(file_content)
+        if isinstance(data, dict) and 'code' in data:
+            code = data['code']
+        else:
+            code = json.dumps(data, indent=2)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка парсинга JSON: {e}")
+        return
+    
+    # Выполняем
+    await update.message.reply_text("⚙️ Выполняю код...")
+    output, success = execute_code(code)
+    
+    # Результат
+    result = {
+        "success": success,
+        "output": output[:4000] if success else output,
+        "code": code[:500] if len(code) > 500 else code
+    }
+    
+    json_file = "/app/result.json"
+    with open(json_file, "w", encoding='utf-8') as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+    
+    if success:
+        await update.message.reply_document(
+            document=open(json_file, "rb"),
+            filename="result.json",
+            caption=f"✅ Выполнено!\n\n{output[:500]}"
+        )
+    else:
+        await update.message.reply_document(
+            document=open(json_file, "rb"),
+            filename="result.json",
+            caption=f"❌ Ошибка:\n\n{output[:500]}"
+        )
 
 # ============================================================
 # ПСЕВДО-ТЕРМИНАЛ С JSON
@@ -1079,6 +1138,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("run", run_command))
+    app.add_handler(CommandHandler("run2", run2_command))  # <-- НОВАЯ КОМАНДА
     app.add_handler(CommandHandler("tweets", tweets_command))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
