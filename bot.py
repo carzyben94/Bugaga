@@ -423,13 +423,10 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/dom <url> — парсинг DOM страницы\n"
-        "/kalshi — последние 5 постов Kalshi\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть новую вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
         "/tab_switch <номер> — переключить вкладку\n"
-        "/image — последний скриншот\n"
-        "/images — все скриншоты\n"
         "/log — скачать логи"
     )
 
@@ -441,41 +438,6 @@ async def log(update, context):
             return
         with open(log_file, 'rb') as f:
             await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def image(update, context):
-    try:
-        screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
-        if not screenshot_files:
-            await update.message.reply_text("📭 Скриншотов не найдено")
-            return
-        screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
-        latest = screenshot_files[0]
-        file_path = os.path.join(SCREENSHOTS_DIR, latest)
-        with open(file_path, 'rb') as f:
-            await update.message.reply_photo(photo=f, caption=f"📸 {latest}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def images(update, context):
-    try:
-        screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
-        if not screenshot_files:
-            await update.message.reply_text("📭 Скриншотов не найдено")
-            return
-        screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
-        sent_count = 0
-        for s_file in screenshot_files[:10]:
-            file_path = os.path.join(SCREENSHOTS_DIR, s_file)
-            with open(file_path, 'rb') as f:
-                await update.message.reply_photo(photo=f, caption=f"📸 {s_file}")
-            sent_count += 1
-            await asyncio.sleep(0.5)
-        if len(screenshot_files) > 10:
-            await update.message.reply_text(f"📸 Показано 10 из {len(screenshot_files)} скриншотов")
-        else:
-            await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -793,8 +755,6 @@ def main():
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
     app.add_handler(CommandHandler("tab_switch", tab_switch))
-    app.add_handler(CommandHandler("image", image))
-    app.add_handler(CommandHandler("images", images))
     app.add_handler(CommandHandler("log", log))
 
     logger.info("🚀 Бот запущен!")
