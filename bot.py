@@ -422,9 +422,9 @@ def parse_dom():
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
-        "/dom <url> — парсинг DOM страницы\n"
+        "/dom <url> — парсинг DOM\n"
         "/tabs — список вкладок\n"
-        "/tab_new — открыть новую вкладку\n"
+        "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
         "/tab_switch <номер> — переключить вкладку\n"
         "/log — скачать логи"
@@ -437,9 +437,9 @@ async def log(update, context):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
         with open(log_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
+            await update.message.reply_document(document=f, filename='bot.log')
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def dom(update, context):
     """Парсит DOM указанной страницы"""
