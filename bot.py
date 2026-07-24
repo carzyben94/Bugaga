@@ -728,7 +728,7 @@ def parse_dom():
             }
         }
         
-        // Информация о странице
+        # Информация о странице
         const pageInfo = {
             url: window.location.href,
             title: document.title,
@@ -1057,19 +1057,23 @@ async def tabs(update, context):
             return
         
         current = current_tab()
-        response = "📑 **Список вкладок:**\n\n"
+        response = "📑 Список вкладок:\n\n"
         for i, tab in enumerate(tab_list, 1):
             if tab == current:
-                response += f"✅ **{i}.** {tab} (текущая)\n"
+                response += f"✅ {i}. {tab} (текущая)\n"
             else:
-                response += f"🔲 **{i}.** {tab}\n"
+                response += f"🔲 {i}. {tab}\n"
         
         response += "\nКоманды:\n"
         response += "/tab_new — открыть новую вкладку\n"
         response += "/tab_close <номер> — закрыть вкладку\n"
         response += "/tab_switch <номер> — переключиться на вкладку"
         
-        await update.message.reply_text(response, parse_mode='Markdown')
+        # Обрезаем если слишком длинный
+        if len(response) > 4000:
+            response = response[:4000] + "\n\n... (обрезано)"
+        
+        await update.message.reply_text(response)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
