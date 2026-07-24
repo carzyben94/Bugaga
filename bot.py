@@ -754,6 +754,10 @@ async def start(update, context):
         "/ask <запрос> — задать задачу агенту\n"
         "/dom <url> — парсинг DOM страницы\n"
         "/kalshi — последние 5 постов Kalshi\n"
+        "/tabs — список вкладок\n"
+        "/tab_new — открыть новую вкладку\n"
+        "/tab_close <номер> — закрыть вкладку\n"
+        "/tab_switch <номер> — переключить вкладку\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
@@ -932,7 +936,21 @@ async def kalshi(update, context):
         
         # Открываем страницу Kalshi
         try:
+            # Закрываем все старые вкладки кроме текущей
+            tabs = list_tabs()
+            for tab in tabs:
+                if tab != current_tab():
+                    try:
+                        close_tab(tab)
+                    except:
+                        pass
+            
+            # Создаем новую вкладку
             new_tab()
+            
+            # Небольшая пауза перед переходом
+            await asyncio.sleep(1)
+            
             goto_url("https://x.com/Kalshi")
             wait_for_load(timeout=30)
             
@@ -946,6 +964,7 @@ async def kalshi(update, context):
             
             await status_msg.edit_text("✅ Страница загружена, парсинг постов...")
         except Exception as e:
+            logger.error(f"Ошибка загрузки: {e}")
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
         
@@ -1027,6 +1046,93 @@ async def kalshi(update, context):
         
     except Exception as e:
         logger.error(f"❌ Ошибка в /kalshi: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tabs(update, context):
+    """Показать список всех вкладок"""
+    try:
+        tab_list = list_tabs()
+        if not tab_list:
+            await update.message.reply_text("📭 Нет открытых вкладок")
+            return
+        
+        current = current_tab()
+        response = "📑 **Список вкладок:**\n\n"
+        for i, tab in enumerate(tab_list, 1):
+            if tab == current:
+                response += f"✅ **{i}.** {tab} (текущая)\n"
+            else:
+                response += f"🔲 **{i}.** {tab}\n"
+        
+        response += "\nКоманды:\n"
+        response += "/tab_new — открыть новую вкладку\n"
+        response += "/tab_close <номер> — закрыть вкладку\n"
+        response += "/tab_switch <номер> — переключиться на вкладку"
+        
+        await update.message.reply_text(response, parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tab_new(update, context):
+    """Открыть новую вкладку"""
+    try:
+        new_tab()
+        await update.message.reply_text("✅ Новая вкладка открыта")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tab_close(update, context):
+    """Закрыть вкладку по номеру"""
+    try:
+        if not context.args:
+            await update.message.reply_text("❌ Укажите номер вкладки\nПример: /tab_close 1")
+            return
+        
+        try:
+            tab_num = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("❌ Номер должен быть числом")
+            return
+        
+        tabs_list = list_tabs()
+        if tab_num < 0 or tab_num >= len(tabs_list):
+            await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
+            return
+        
+        tab_id = tabs_list[tab_num]
+        current = current_tab()
+        
+        if tab_id == current and len(tabs_list) > 1:
+            await update.message.reply_text("❌ Нельзя закрыть текущую вкладку, если есть другие. Сначала переключитесь на другую.")
+            return
+        
+        close_tab(tab_id)
+        await update.message.reply_text(f"✅ Вкладка {tab_num + 1} закрыта")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tab_switch(update, context):
+    """Переключиться на вкладку по номеру"""
+    try:
+        if not context.args:
+            await update.message.reply_text("❌ Укажите номер вкладки\nПример: /tab_switch 2")
+            return
+        
+        try:
+            tab_num = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("❌ Номер должен быть числом")
+            return
+        
+        tabs_list = list_tabs()
+        if tab_num < 0 or tab_num >= len(tabs_list):
+            await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
+            return
+        
+        tab_id = tabs_list[tab_num]
+        switch_tab(tab_id)
+        await update.message.reply_text(f"✅ Переключился на вкладку {tab_num + 1}")
+    except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def ask(update, context):
@@ -1182,6 +1288,10 @@ def main():
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("dom", dom))
     app.add_handler(CommandHandler("kalshi", kalshi))
+    app.add_handler(CommandHandler("tabs", tabs))
+    app.add_handler(CommandHandler("tab_new", tab_new))
+    app.add_handler(CommandHandler("tab_close", tab_close))
+    app.add_handler(CommandHandler("tab_switch", tab_switch))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
