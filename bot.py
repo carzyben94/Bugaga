@@ -5,31 +5,39 @@ import time
 import logging
 import json
 import re
+import traceback
 import httpx
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# НАСТРОЙКА
+# НАСТРОЙКА ЛОГОВ
 # ============================================================
 
 LOGS_DIR = '/app/logs'
 os.makedirs(LOGS_DIR, exist_ok=True)
 
+# Создаём два логгера: один для бота, один для отладки
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.FileHandler(os.path.join(LOGS_DIR, 'debug.log'), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("telegram").setLevel(logging.CRITICAL)
-logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+debug_logger = logging.getLogger("debug")
 
 sys.path.insert(0, "browser-harness/src")
 
@@ -44,7 +52,54 @@ from browser_harness.admin import ensure_daemon
 # ============================================================
 
 MAX_TABS = 5
-WEBSOCKET_BUFFER_SIZE = 50 * 1024 * 1024  # 50 МБ
+
+# ============================================================
+# ДЕКОРАТОР ДЛЯ ЛОГИРОВАНИЯ ОШИБОК
+# ============================================================
+
+def log_errors(func):
+    """Декоратор для логирования всех ошибок в командах"""
+    async def wrapper(update, context, *args, **kwargs):
+        try:
+            debug_logger.debug(f"🚀 Запуск команды: {func.__name__}")
+            debug_logger.debug(f"   Пользователь: {update.effective_user.username if update.effective_user else 'unknown'}")
+            debug_logger.debug(f"   Чат ID: {update.effective_chat.id if update.effective_chat else 'unknown'}")
+            
+            result = await func(update, context, *args, **kwargs)
+            
+            debug_logger.debug(f"✅ Команда {func.__name__} завершена успешно")
+            return result
+            
+        except Exception as e:
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+            
+            debug_logger.error(f"❌ ОШИБКА в {func.__name__}: {error_msg}")
+            debug_logger.error(f"📋 ТРЕЙС:\n{error_trace}")
+            
+            # Пытаемся отправить пользователю понятную ошибку
+            try:
+                if "cdp_disconnected" in error_msg:
+                    await update.message.reply_text(
+                        "⚠️ Браузер отключился.\n"
+                        "Попробуйте ещё раз через 5 секунд."
+                    )
+                elif "timeout" in error_msg.lower():
+                    await update.message.reply_text(
+                        "⏰ Слишком долгая загрузка.\n"
+                        "Попробуйте ещё раз."
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"❌ Ошибка: {error_msg[:200]}\n"
+                        f"Проверьте логи: /log"
+                    )
+            except:
+                pass
+            
+            return None
+            
+    return wrapper
 
 # ============================================================
 # ФУНКЦИИ
@@ -52,100 +107,123 @@ WEBSOCKET_BUFFER_SIZE = 50 * 1024 * 1024  # 50 МБ
 
 def ensure_browser_ready():
     """Проверяет и перезапускает браузер при необходимости"""
+    debug_logger.debug("🔍 Проверка браузера...")
+    
     try:
-        resp = httpx.get("http://localhost:9222/json/list", timeout=3.0)
+        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
         pages = resp.json()
         if pages:
-            logger.info("✅ Браузер работает")
+            debug_logger.debug("✅ Браузер работает")
             return True
         else:
-            logger.warning("⚠️ Браузер не отвечает, перезапускаю...")
+            debug_logger.warning("⚠️ Браузер не отвечает (пустой ответ), перезапускаю...")
             ensure_daemon()
             time.sleep(3)
+            debug_logger.info("✅ Браузер перезапущен")
             return True
-    except Exception as e:
-        logger.warning(f"⚠️ Браузер недоступен: {e}, перезапускаю...")
+    except httpx.ConnectError as e:
+        debug_logger.error(f"❌ Не удаётся подключиться к браузеру: {e}")
+        debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
+        debug_logger.info("✅ Браузер перезапущен")
+        return True
+    except httpx.TimeoutException as e:
+        debug_logger.error(f"❌ Таймаут подключения к браузеру: {e}")
+        debug_logger.info("🔄 Перезапускаю браузер...")
+        ensure_daemon()
+        time.sleep(3)
+        debug_logger.info("✅ Браузер перезапущен")
+        return True
+    except Exception as e:
+        debug_logger.error(f"❌ Неизвестная ошибка при проверке браузера: {e}")
+        debug_logger.info("🔄 Перезапускаю браузер...")
+        ensure_daemon()
+        time.sleep(3)
+        debug_logger.info("✅ Браузер перезапущен")
         return True
 
 def cleanup_tabs():
     """Закрывает лишние вкладки, оставляя максимум MAX_TABS"""
+    debug_logger.debug(f"🧹 Очистка вкладок (макс: {MAX_TABS})...")
+    
     try:
         tabs = list_tabs()
         if not tabs:
+            debug_logger.debug("📭 Нет вкладок")
             return
         
+        debug_logger.debug(f"📑 Текущих вкладок: {len(tabs)}")
         current = current_tab()
         
-        # Если вкладок больше MAX_TABS, закрываем старые
         if len(tabs) > MAX_TABS:
-            # Закрываем все кроме текущей и MAX_TABS-1 самых новых
-            to_close = tabs[:-(MAX_TABS - 1)]
+            to_close = tabs[:(len(tabs) - MAX_TABS)]
+            debug_logger.info(f"🗑️ Закрываю лишние вкладки: {len(to_close)} шт.")
             for tab in to_close:
                 if tab != current:
                     try:
                         close_tab(tab)
-                        logger.info(f"Закрыта лишняя вкладка: {tab}")
-                    except:
-                        pass
-        
-        # Если текущая вкладка не существует (закрыта), создаём новую
-        try:
-            current = current_tab()
-        except:
-            new_tab()
-            time.sleep(0.5)
+                        debug_logger.debug(f"   Закрыта: {tab}")
+                    except Exception as e:
+                        debug_logger.warning(f"   Не удалось закрыть {tab}: {e}")
             
     except Exception as e:
-        logger.warning(f"Ошибка очистки вкладок: {e}")
+        debug_logger.error(f"❌ Ошибка очистки вкладок: {e}")
 
 def ensure_tab():
     """Создаёт новую вкладку, если нужно"""
+    debug_logger.debug("📂 Создание новой вкладки...")
+    
     try:
         # Проверяем, есть ли активная вкладка
         try:
             current = current_tab()
-        except:
+            debug_logger.debug(f"   Текущая вкладка: {current}")
+        except Exception as e:
+            debug_logger.warning(f"   Нет активной вкладки: {e}")
             current = None
-        
-        if current is None:
-            new_tab()
-            time.sleep(0.5)
-            return
         
         # Проверяем количество вкладок
         tabs = list_tabs()
+        debug_logger.debug(f"   Всего вкладок: {len(tabs)}")
+        
         if len(tabs) >= MAX_TABS:
             # Закрываем самую старую вкладку
             old_tab = tabs[0]
+            debug_logger.info(f"🗑️ Достигнут лимит ({MAX_TABS}), закрываю старую: {old_tab}")
             if old_tab != current:
-                close_tab(old_tab)
-                logger.info(f"Закрыта старая вкладка для освобождения места: {old_tab}")
+                try:
+                    close_tab(old_tab)
+                except:
+                    pass
             else:
-                # Если старая = текущая, закрываем вторую
                 if len(tabs) > 1:
-                    close_tab(tabs[1])
-                    logger.info(f"Закрыта старая вкладка: {tabs[1]}")
+                    try:
+                        close_tab(tabs[1])
+                    except:
+                        pass
         
-        # Создаём новую вкладку
         new_tab()
+        debug_logger.info("✅ Новая вкладка создана")
         time.sleep(0.5)
         
     except Exception as e:
-        logger.warning(f"Ошибка создания вкладки: {e}")
-        # Пробуем принудительно создать
+        debug_logger.error(f"❌ Ошибка создания вкладки: {e}")
+        traceback.print_exc()
         try:
             new_tab()
             time.sleep(0.5)
-        except:
-            pass
+            debug_logger.info("✅ Вкладка создана принудительно")
+        except Exception as e2:
+            debug_logger.error(f"❌ Не удалось создать вкладку: {e2}")
 
 # ============================================================
 # КОМАНДЫ
 # ============================================================
 
+@log_errors
 async def start(update, context):
+    debug_logger.debug("📝 /start вызван")
     await update.message.reply_text(
         "🌐 Браузер\n\n"
         "/dom <url> - парсинг DOM\n"
@@ -158,23 +236,34 @@ async def start(update, context):
         f"📌 Максимум вкладок: {MAX_TABS}"
     )
 
+@log_errors
 async def log(update, context):
+    debug_logger.debug("📝 /log вызван")
     try:
-        log_file = os.path.join(LOGS_DIR, 'bot.log')
-        if not os.path.exists(log_file):
-            await update.message.reply_text("Лог-файл не найден")
-            return
-        with open(log_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename='bot.log')
+        # Собираем все логи
+        log_files = ['bot.log', 'debug.log']
+        for filename in log_files:
+            log_file = os.path.join(LOGS_DIR, filename)
+            if os.path.exists(log_file):
+                with open(log_file, 'rb') as f:
+                    await update.message.reply_document(document=f, filename=filename)
+        
+        await update.message.reply_text("📋 Логи отправлены")
+        
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)[:100]}")
+        debug_logger.error(f"❌ Ошибка отправки логов: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+@log_errors
 async def dom(update, context):
+    debug_logger.debug("📝 /dom вызван")
+    
     try:
         ensure_browser_ready()
         cleanup_tabs()
         
         if not context.args:
+            debug_logger.debug("   Нет аргументов")
             await update.message.reply_text(
                 "Укажите URL\n"
                 "Пример: /dom https://example.com"
@@ -182,33 +271,59 @@ async def dom(update, context):
             return
 
         url = context.args[0].strip()
+        debug_logger.debug(f"   URL: {url}")
+        
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
+            debug_logger.debug(f"   Добавлен https: {url}")
 
         status_msg = await update.message.reply_text(f"🌐 Открываю {url}...")
+        debug_logger.debug("   Статус сообщение отправлено")
 
         try:
             ensure_tab()
+            debug_logger.debug("   Вкладка создана")
+            
+            debug_logger.debug(f"   Переход на {url}")
             goto_url(url)
-            wait_for_load(timeout=60)  # Увеличенный таймаут
+            debug_logger.debug("   goto_url выполнен")
+            
+            debug_logger.debug("   Ожидание загрузки...")
+            wait_for_load(timeout=60)
+            debug_logger.debug("   Страница загружена")
+            
             await status_msg.edit_text("✅ Страница загружена, парсинг...")
+            debug_logger.debug("   Статус обновлён")
+            
         except Exception as e:
-            if "cdp_disconnected" in str(e):
+            error_msg = str(e)
+            debug_logger.error(f"❌ Ошибка загрузки: {error_msg}")
+            debug_logger.error(traceback.format_exc())
+            
+            if "cdp_disconnected" in error_msg:
                 await status_msg.edit_text("⚠️ Браузер отключился, перезапускаю...")
+                debug_logger.info("🔄 Перезапуск браузера...")
                 ensure_daemon()
                 time.sleep(3)
+                debug_logger.info("   Браузер перезапущен")
+                
                 try:
+                    debug_logger.debug("   Повторная попытка...")
                     ensure_tab()
                     goto_url(url)
                     wait_for_load(timeout=60)
                     await status_msg.edit_text("✅ Страница загружена, парсинг...")
+                    debug_logger.info("   Повторная попытка успешна")
                 except Exception as e2:
+                    debug_logger.error(f"❌ Повторная попытка не удалась: {e2}")
+                    debug_logger.error(traceback.format_exc())
                     await status_msg.edit_text(f"❌ Ошибка: {str(e2)[:200]}")
                     return
             else:
-                await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+                await status_msg.edit_text(f"❌ Ошибка загрузки: {error_msg[:200]}")
                 return
 
+        debug_logger.debug("📊 Выполнение JavaScript...")
         js_code = """
         const elements = { buttons: [], inputs: [], links: [], forms: [], selects: [], textareas: [], divs: [], spans: [], lis: [], others: [] };
         const selectors = ['button', 'input:not([type="hidden"])', 'a[href]', 'form', 'select', 'textarea', '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]', '[contenteditable="true"]'];
@@ -268,7 +383,9 @@ async def dom(update, context):
         return JSON.stringify({ page: { url: window.location.href, title: document.title, timestamp: Date.now() }, elements: elements }, null, 2);
         """
 
+        debug_logger.debug("   Выполнение JS...")
         result = js(js_code)
+        debug_logger.debug(f"   JS выполнен, результат: {len(result) if result else 0} символов")
 
         if not result:
             await status_msg.edit_text("❌ Не удалось получить данные DOM")
@@ -276,7 +393,9 @@ async def dom(update, context):
 
         try:
             dom_data = json.loads(result)
-        except:
+            debug_logger.debug(f"   JSON распарсен, элементов: {sum(len(v) for v in dom_data.get('elements', {}).values())}")
+        except Exception as e:
+            debug_logger.error(f"❌ Ошибка парсинга JSON: {e}")
             await status_msg.edit_text("❌ Ошибка парсинга JSON")
             return
 
@@ -285,16 +404,20 @@ async def dom(update, context):
         filename = f"dom_{domain}_{timestamp}.json"
         file_path = os.path.join(LOGS_DIR, filename)
 
+        debug_logger.debug(f"   Сохранение в {file_path}")
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(dom_data, f, ensure_ascii=False, indent=2)
+        debug_logger.debug("   Файл сохранён")
 
         with open(file_path, 'rb') as f:
             await status_msg.edit_text("📄 Отправляю JSON...")
+            debug_logger.debug("   Отправка документа...")
             await update.message.reply_document(
                 document=f,
                 filename=filename,
                 caption=f"📊 DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}"
             )
+            debug_logger.debug("   Документ отправлен")
 
         elements = dom_data.get('elements', {})
         stats = "📊 Статистика DOM:\n\n"
@@ -307,46 +430,75 @@ async def dom(update, context):
         stats += f"\nВсего: {total}"
 
         await update.message.reply_text(stats)
+        debug_logger.debug("   Статистика отправлена")
 
         try:
             os.remove(file_path)
+            debug_logger.debug("   Временный файл удалён")
         except:
             pass
 
-    except Exception as e:
-        logger.error(f"Ошибка в /dom: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        debug_logger.info(f"✅ /dom завершён успешно для {url}")
 
+    except Exception as e:
+        debug_logger.error(f"❌ Критическая ошибка в /dom: {e}")
+        debug_logger.error(traceback.format_exc())
+        raise
+
+@log_errors
 async def kyiv(update, context):
-    """Погода в Киеве на неделю"""
+    debug_logger.debug("📝 /kyiv вызван")
+    
     try:
         ensure_browser_ready()
         cleanup_tabs()
         
         status_msg = await update.message.reply_text("🌤️ Открываю погоду в Киеве...")
+        debug_logger.debug("   Статус сообщение отправлено")
 
         try:
             ensure_tab()
+            debug_logger.debug("   Вкладка создана")
+            
+            debug_logger.debug("   Переход на sinoptik.ua...")
             goto_url("https://sinoptik.ua/pohoda/kyiv")
-            wait_for_load(timeout=60)  # Увеличенный таймаут
+            debug_logger.debug("   goto_url выполнен")
+            
+            debug_logger.debug("   Ожидание загрузки...")
+            wait_for_load(timeout=60)
+            debug_logger.debug("   Страница загружена")
+            
             await status_msg.edit_text("📊 Парсинг погоды...")
+            
         except Exception as e:
-            if "cdp_disconnected" in str(e):
+            error_msg = str(e)
+            debug_logger.error(f"❌ Ошибка загрузки: {error_msg}")
+            debug_logger.error(traceback.format_exc())
+            
+            if "cdp_disconnected" in error_msg:
                 await status_msg.edit_text("⚠️ Браузер отключился, перезапускаю...")
+                debug_logger.info("🔄 Перезапуск браузера...")
                 ensure_daemon()
                 time.sleep(3)
+                debug_logger.info("   Браузер перезапущен")
+                
                 try:
+                    debug_logger.debug("   Повторная попытка...")
                     ensure_tab()
                     goto_url("https://sinoptik.ua/pohoda/kyiv")
                     wait_for_load(timeout=60)
                     await status_msg.edit_text("📊 Парсинг погоды...")
+                    debug_logger.info("   Повторная попытка успешна")
                 except Exception as e2:
+                    debug_logger.error(f"❌ Повторная попытка не удалась: {e2}")
+                    debug_logger.error(traceback.format_exc())
                     await status_msg.edit_text(f"❌ Ошибка: {str(e2)[:200]}")
                     return
             else:
-                await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+                await status_msg.edit_text(f"❌ Ошибка загрузки: {error_msg[:200]}")
                 return
 
+        debug_logger.debug("📊 Выполнение JavaScript...")
         js_code = """
         const days = [];
         const links = document.querySelectorAll('a.tkK415TH');
@@ -360,6 +512,7 @@ async def kyiv(update, context):
         """
 
         result = js(js_code)
+        debug_logger.debug(f"   JS выполнен, результат: {len(result) if result else 0} символов")
 
         if not result:
             await status_msg.edit_text("❌ Не удалось получить погоду")
@@ -367,7 +520,9 @@ async def kyiv(update, context):
 
         try:
             days = json.loads(result)
-        except:
+            debug_logger.debug(f"   Парсинг завершён, дней: {len(days)}")
+        except Exception as e:
+            debug_logger.error(f"❌ Ошибка парсинга JSON: {e}")
             await status_msg.edit_text("❌ Ошибка парсинга")
             return
 
@@ -404,20 +559,28 @@ async def kyiv(update, context):
         # Закрываем вкладку
         try:
             close_tab(current_tab())
-        except:
-            pass
+            debug_logger.debug("   Вкладка закрыта")
+        except Exception as e:
+            debug_logger.warning(f"   Не удалось закрыть вкладку: {e}")
 
         await status_msg.edit_text(response, parse_mode='Markdown')
+        debug_logger.info("✅ /kyiv завершён успешно")
 
     except Exception as e:
-        logger.error(f"Ошибка в /kyiv: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        debug_logger.error(f"❌ Критическая ошибка в /kyiv: {e}")
+        debug_logger.error(traceback.format_exc())
+        raise
 
+@log_errors
 async def tabs(update, context):
+    debug_logger.debug("📝 /tabs вызван")
+    
     try:
         ensure_browser_ready()
         
         tab_list = list_tabs()
+        debug_logger.debug(f"   Вкладок: {len(tab_list)}")
+        
         if not tab_list:
             await update.message.reply_text("📭 Нет открытых вкладок")
             return
@@ -432,19 +595,35 @@ async def tabs(update, context):
 
         response += "\n/tab_new - открыть новую\n/tab_close <номер> - закрыть\n/tab_switch <номер> - переключиться"
         await update.message.reply_text(response)
+        debug_logger.info("✅ /tabs завершён")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        debug_logger.error(f"❌ Ошибка в /tabs: {e}")
+        debug_logger.error(traceback.format_exc())
+        raise
 
+@log_errors
 async def tab_new(update, context):
+    debug_logger.debug("📝 /tab_new вызван")
+    
     try:
         ensure_browser_ready()
         cleanup_tabs()
         ensure_tab()
-        await update.message.reply_text(f"✅ Новая вкладка открыта (всего: {len(list_tabs())}/{MAX_TABS})")
+        
+        tabs_count = len(list_tabs())
+        await update.message.reply_text(f"✅ Новая вкладка открыта (всего: {tabs_count}/{MAX_TABS})")
+        debug_logger.info(f"✅ /tab_new завершён, вкладок: {tabs_count}")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        debug_logger.error(f"❌ Ошибка в /tab_new: {e}")
+        debug_logger.error(traceback.format_exc())
+        raise
 
+@log_errors
 async def tab_close(update, context):
+    debug_logger.debug("📝 /tab_close вызван")
+    
     try:
         ensure_browser_ready()
         
@@ -459,21 +638,32 @@ async def tab_close(update, context):
             return
 
         tabs_list = list_tabs()
+        debug_logger.debug(f"   Вкладок: {len(tabs_list)}, запрошен: {tab_num + 1}")
+        
         if tab_num < 0 or tab_num >= len(tabs_list):
             await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
             return
 
         tab_id = tabs_list[tab_num]
-        if tab_id == current_tab() and len(tabs_list) > 1:
+        current = current_tab()
+
+        if tab_id == current and len(tabs_list) > 1:
             await update.message.reply_text("❌ Нельзя закрыть текущую вкладку")
             return
 
         close_tab(tab_id)
         await update.message.reply_text(f"✅ Вкладка {tab_num + 1} закрыта")
+        debug_logger.info(f"✅ /tab_close завершён, закрыта вкладка {tab_num + 1}")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        debug_logger.error(f"❌ Ошибка в /tab_close: {e}")
+        debug_logger.error(traceback.format_exc())
+        raise
 
+@log_errors
 async def tab_switch(update, context):
+    debug_logger.debug("📝 /tab_switch вызван")
+    
     try:
         ensure_browser_ready()
         
@@ -488,28 +678,42 @@ async def tab_switch(update, context):
             return
 
         tabs_list = list_tabs()
+        debug_logger.debug(f"   Вкладок: {len(tabs_list)}, запрошен: {tab_num + 1}")
+        
         if tab_num < 0 or tab_num >= len(tabs_list):
             await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
             return
 
         switch_tab(tabs_list[tab_num])
         await update.message.reply_text(f"✅ Переключился на вкладку {tab_num + 1}")
+        debug_logger.info(f"✅ /tab_switch завершён, переключён на {tab_num + 1}")
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        debug_logger.error(f"❌ Ошибка в /tab_switch: {e}")
+        debug_logger.error(traceback.format_exc())
+        raise
 
 # ============================================================
 # ЗАПУСК
 # ============================================================
 
 def main():
+    debug_logger.info("=" * 60)
+    debug_logger.info("🚀 ЗАПУСК БОТА")
+    debug_logger.info(f"   Время: {datetime.now()}")
+    debug_logger.info("=" * 60)
+    
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_TOKEN:
+        debug_logger.error("❌ TELEGRAM_BOT_TOKEN не задан!")
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
 
+    debug_logger.info("📡 Запуск браузера...")
     os.environ["BU_CDP_URL"] = "http://localhost:9222"
     ensure_daemon()
-    logger.info("✅ Браузер готов")
+    debug_logger.info("✅ Браузер готов")
 
+    debug_logger.info("📡 Создание приложения...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -521,7 +725,7 @@ def main():
     app.add_handler(CommandHandler("tab_switch", tab_switch))
     app.add_handler(CommandHandler("log", log))
 
-    logger.info("🚀 Бот запущен!")
+    debug_logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
