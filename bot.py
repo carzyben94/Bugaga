@@ -424,7 +424,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/dom <url> — парсинг DOM\n"
-        "/news — свежие заголовки Meduza\n"
+        "/news — свежие заголовки Meduza (за 5 часов)\n"
         "/trends — глобальные тренды X\n"
         "/analyze — анализ вовлеченности\n"
         "/tabs — список вкладок\n"
@@ -867,7 +867,7 @@ async def analyze(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def news(update, context):
-    """Парсит главную страницу Медузы и извлекает свежие заголовки новостей"""
+    """Парсит главную страницу Медузы и извлекает свежие заголовки новостей за последние 5 часов"""
     try:
         status_msg = await update.message.reply_text("🌐 Открываю Meduza...")
         
@@ -964,38 +964,94 @@ async def news(update, context):
             await status_msg.edit_text("📭 Заголовков не найдено")
             return
         
+        # Функция для проверки, попадает ли время в последние 5 часов
+        def is_within_5_hours(time_str):
+            if not time_str:
+                return False
+            
+            time_str_lower = time_str.lower()
+            
+            # Список ключевых слов, указывающих на время в пределах 5 часов
+            recent_keywords = [
+                'только что',
+                'минуту назад',
+                'минуты назад',
+                'минут назад',
+                'час назад',
+                'часа назад',
+                'часов назад',
+                '2 часа',
+                '3 часа',
+                '4 часа',
+                '5 часов'
+            ]
+            
+            for keyword in recent_keywords:
+                if keyword in time_str_lower:
+                    return True
+            
+            # Проверяем числовые значения часов
+            import re
+            # Ищем "X часов назад" где X <= 5
+            match = re.search(r'(\d+)\s*(час|ч|часа|часов)', time_str_lower)
+            if match:
+                hours = int(match.group(1))
+                if hours <= 5:
+                    return True
+            
+            # Ищем "X минут назад" где X <= 60 (все минуты считаем свежими)
+            match = re.search(r'(\d+)\s*мин', time_str_lower)
+            if match:
+                return True
+            
+            return False
+        
+        # Фильтруем заголовки за последние 5 часов
+        recent_headlines = []
+        for item in headlines:
+            time_str = item.get('time', '')
+            if is_within_5_hours(time_str):
+                recent_headlines.append(item)
+        
+        if not recent_headlines:
+            await status_msg.edit_text("📭 За последние 5 часов новых заголовков не найдено")
+            return
+        
         # Группируем по времени
         grouped = {}
-        for item in headlines:
+        for item in recent_headlines:
             time_key = item.get('time', 'неизвестно')
-            if time_key not in grouped:
-                grouped[time_key] = []
-            grouped[time_key].append(item['text'])
+            # Чистим ключ от мусора (убираем "ИСТОРИИ", "НОВОСТИ" и т.д.)
+            cleaned_key = re.sub(r'^(истории|новости|подкасты|разбор)\s*', '', time_key, flags=re.IGNORECASE)
+            if not cleaned_key:
+                cleaned_key = time_key
+            if cleaned_key not in grouped:
+                grouped[cleaned_key] = []
+            grouped[cleaned_key].append(item['text'])
         
         # Формируем ответ
-        response = "📰 **Свежие заголовки Meduza**\n\n"
+        response = "📰 **Свежие заголовки Meduza (последние 5 часов)**\n\n"
         
         # Сортируем по свежести
         time_order = ['только что', 'минуту назад', 'минуты назад', 'минут назад', 
-                      'час назад', 'часа назад', 'часов назад',
-                      'день назад', 'дня назад', 'дней назад',
-                      'неделю назад', 'недели назад', 'недель назад']
+                      'час назад', 'часа назад', 'часов назад']
         
         def sort_key(t):
             for i, pattern in enumerate(time_order):
-                if pattern in t:
+                if pattern in t.lower():
                     return i
             return 999
         
         sorted_times = sorted(grouped.keys(), key=sort_key)
         
         for time_label in sorted_times:
-            items = grouped[time_label][:5]  # Ограничиваем 5 на группу
+            items = grouped[time_label]
             response += f"**🕐 {time_label.upper()}**\n"
             for i, item in enumerate(items, 1):
+                # Обрезаем слишком длинные заголовки
+                if len(item) > 120:
+                    item = item[:117] + "..."
                 response += f"{i}. {item}\n"
-            if len(grouped[time_label]) > 5:
-                response += f"... и ещё {len(grouped[time_label]) - 5}\n"
             response += "\n"
         
         # Если слишком длинно, обрезаем
@@ -1115,7 +1171,7 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("news", news))          # НОВАЯ КОМАНДА
+    app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("kalshi", kalshi))
     app.add_handler(CommandHandler("trends", trends))
     app.add_handler(CommandHandler("analyze", analyze))
