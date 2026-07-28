@@ -424,8 +424,8 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/dom <url> — парсинг DOM\n"
-        "/trends — тренды и хэштеги\n"
-        "/analyze — анализ вовлеченности\n"
+        "/trends — тренды и хэштеги Kalshi\n"
+        "/analyze — анализ вовлеченности Kalshi\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -655,12 +655,34 @@ async def kalshi(update, context):
 async def trends(update, context):
     """Анализ трендов: хэштеги, упоминания, ключевые слова"""
     try:
-        status_msg = await update.message.reply_text("🔍 Сканирую страницу...")
+        status_msg = await update.message.reply_text("🔍 Открываю Kalshi и сканирую...")
         
-        # Скроллим для подгрузки постов
-        for _ in range(5):
-            scroll(0, 600)
+        # Открываем страницу Kalshi
+        try:
+            # Закрываем старые вкладки
+            tabs = list_tabs()
+            for tab in tabs:
+                if tab != current_tab():
+                    try:
+                        close_tab(tab)
+                    except:
+                        pass
+            
+            new_tab()
             await asyncio.sleep(1)
+            goto_url("https://x.com/Kalshi")
+            wait_for_load(timeout=30)
+            
+            # Скроллим для подгрузки постов
+            await asyncio.sleep(3)
+            for _ in range(8):
+                scroll(0, 600)
+                await asyncio.sleep(1.5)
+            
+            await status_msg.edit_text("🔍 Сканирую посты...")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+            return
         
         js_code = """
         const data = {
@@ -714,7 +736,7 @@ async def trends(update, context):
         mention_counts = Counter(data['mentions']).most_common(5)
         keyword_counts = Counter(data['keywords']).most_common(5)
         
-        response = f"🔥 **Тренды X.com** (постов: {len(data['posts'])})\n\n"
+        response = f"🔥 **Тренды Kalshi** (постов: {len(data['posts'])})\n\n"
         
         if hashtag_counts:
             response += "**# Хэштеги:**\n"
@@ -742,12 +764,34 @@ async def trends(update, context):
 async def analyze(update, context):
     """Глубокий анализ вовлеченности и тональности"""
     try:
-        status_msg = await update.message.reply_text("📊 Анализирую вовлеченность...")
+        status_msg = await update.message.reply_text("📊 Открываю Kalshi и анализирую...")
         
-        # Скроллим для подгрузки
-        for _ in range(5):
-            scroll(0, 600)
+        # Открываем страницу Kalshi
+        try:
+            # Закрываем старые вкладки
+            tabs = list_tabs()
+            for tab in tabs:
+                if tab != current_tab():
+                    try:
+                        close_tab(tab)
+                    except:
+                        pass
+            
+            new_tab()
             await asyncio.sleep(1)
+            goto_url("https://x.com/Kalshi")
+            wait_for_load(timeout=30)
+            
+            # Скроллим для подгрузки постов
+            await asyncio.sleep(3)
+            for _ in range(8):
+                scroll(0, 600)
+                await asyncio.sleep(1.5)
+            
+            await status_msg.edit_text("📊 Анализирую вовлеченность...")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+            return
         
         js_code = """
         const posts = [];
@@ -796,8 +840,8 @@ async def analyze(update, context):
         max_engagement = max_engagement_post['likes'] + max_engagement_post['retweets'] + max_engagement_post['replies']
         
         # Тональность (упрощенная)
-        positive_words = ['good', 'great', 'awesome', 'love', 'amazing', 'excellent', 'happy', 'best', 'bullish', 'breakthrough']
-        negative_words = ['bad', 'terrible', 'hate', 'awful', 'disaster', 'bearish', 'crash', 'drop', 'fall', 'loss']
+        positive_words = ['good', 'great', 'awesome', 'love', 'amazing', 'excellent', 'happy', 'best', 'bullish', 'breakthrough', 'win', 'victory', 'positive']
+        negative_words = ['bad', 'terrible', 'hate', 'awful', 'disaster', 'bearish', 'crash', 'drop', 'fall', 'loss', 'fail', 'decline']
         
         positive_count = 0
         negative_count = 0
@@ -814,14 +858,16 @@ async def analyze(update, context):
         neutral_pct = (neutral_count / total_posts * 100) if total_posts else 0
         
         # Формируем ответ
-        response = f"📊 **Анализ вовлеченности** ({total_posts} постов)\n\n"
-        response += f"❤️ Всего лайков: {total_likes}\n"
-        response += f"🔄 Всего репостов: {total_retweets}\n"
-        response += f"💬 Всего ответов: {total_replies}\n"
+        response = f"📊 **Анализ вовлеченности Kalshi** ({total_posts} постов)\n\n"
+        response += f"❤️ Всего лайков: {total_likes:,}\n"
+        response += f"🔄 Всего репостов: {total_retweets:,}\n"
+        response += f"💬 Всего ответов: {total_replies:,}\n"
         response += f"📈 Средняя вовлеченность: {avg_engagement:.1f}\n\n"
         
-        response += f"🔥 Самый виральный пост: +{max_engagement} реакций\n"
-        response += f"📝 \"{max_engagement_post['text'][:80]}...\"\n\n"
+        response += f"🔥 Самый виральный пост: +{max_engagement:,} реакций\n"
+        if max_engagement_post['text']:
+            text_preview = max_engagement_post['text'][:80]
+            response += f"📝 \"{text_preview}...\"\n\n"
         
         response += f"😊 Тональность:\n"
         response += f"• Позитивные: {positive_pct:.1f}% ({positive_count})\n"
