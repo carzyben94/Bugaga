@@ -424,6 +424,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/dom <url> — парсинг DOM\n"
+        "/news — свежие заголовки Meduza\n"
         "/trends — глобальные тренды X\n"
         "/analyze — анализ вовлеченности\n"
         "/tabs — список вкладок\n"
@@ -865,6 +866,154 @@ async def analyze(update, context):
         logger.error(f"❌ Ошибка в /analyze: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def news(update, context):
+    """Парсит главную страницу Медузы и извлекает свежие заголовки новостей"""
+    try:
+        status_msg = await update.message.reply_text("🌐 Открываю Meduza...")
+        
+        # Открываем страницу
+        try:
+            # Закрываем старые вкладки, кроме текущей
+            tabs = list_tabs()
+            for tab in tabs:
+                if tab != current_tab():
+                    try:
+                        close_tab(tab)
+                    except:
+                        pass
+            
+            new_tab()
+            await asyncio.sleep(1)
+            goto_url("https://meduza.io/")
+            wait_for_load(timeout=30)
+            
+            # Скроллим для подгрузки контента
+            await asyncio.sleep(3)
+            for _ in range(3):
+                scroll(0, 800)
+                await asyncio.sleep(1)
+            
+            await status_msg.edit_text("📰 Парсинг заголовков...")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+            return
+        
+        # JavaScript для извлечения заголовков с временными метками
+        js_code = """
+        function extractHeadlines() {
+            const headlines = [];
+            
+            // Ищем все ссылки с заголовками
+            const links = document.querySelectorAll('a.Link-module-root.Link-module-isInBlockTitle');
+            
+            for (const link of links) {
+                const text = link.textContent?.trim();
+                if (!text || text.length < 5) continue;
+                
+                // Ищем родительский блок с мета-информацией
+                let parent = link.closest('article, div[data-testid="feed-item"], div[class*="Block"]');
+                let time = '';
+                
+                if (parent) {
+                    // Ищем время внутри блока
+                    const timeEl = parent.querySelector('time, [data-testid="timestamp"], [data-testid="meta"]');
+                    if (timeEl) {
+                        time = timeEl.textContent?.trim() || '';
+                    }
+                }
+                
+                // Если время не найдено, ищем выше по дереву
+                if (!time) {
+                    let el = link.parentElement;
+                    for (let i = 0; i < 5 && el; i++) {
+                        const timeEl = el.querySelector('time, [data-testid="timestamp"], [data-testid="meta"]');
+                        if (timeEl) {
+                            time = timeEl.textContent?.trim() || '';
+                            break;
+                        }
+                        el = el.parentElement;
+                    }
+                }
+                
+                headlines.push({
+                    text: text,
+                    time: time || 'неизвестно',
+                    url: link.href || ''
+                });
+            }
+            
+            return headlines;
+        }
+        
+        return JSON.stringify(extractHeadlines());
+        """
+        
+        result = js(js_code)
+        
+        if not result:
+            await status_msg.edit_text("❌ Не удалось получить заголовки")
+            return
+        
+        try:
+            headlines = json.loads(result)
+        except:
+            await status_msg.edit_text("❌ Ошибка парсинга JSON")
+            return
+        
+        if not headlines:
+            await status_msg.edit_text("📭 Заголовков не найдено")
+            return
+        
+        # Группируем по времени
+        grouped = {}
+        for item in headlines:
+            time_key = item.get('time', 'неизвестно')
+            if time_key not in grouped:
+                grouped[time_key] = []
+            grouped[time_key].append(item['text'])
+        
+        # Формируем ответ
+        response = "📰 **Свежие заголовки Meduza**\n\n"
+        
+        # Сортируем по свежести
+        time_order = ['только что', 'минуту назад', 'минуты назад', 'минут назад', 
+                      'час назад', 'часа назад', 'часов назад',
+                      'день назад', 'дня назад', 'дней назад',
+                      'неделю назад', 'недели назад', 'недель назад']
+        
+        def sort_key(t):
+            for i, pattern in enumerate(time_order):
+                if pattern in t:
+                    return i
+            return 999
+        
+        sorted_times = sorted(grouped.keys(), key=sort_key)
+        
+        for time_label in sorted_times:
+            items = grouped[time_label][:5]  # Ограничиваем 5 на группу
+            response += f"**🕐 {time_label.upper()}**\n"
+            for i, item in enumerate(items, 1):
+                response += f"{i}. {item}\n"
+            if len(grouped[time_label]) > 5:
+                response += f"... и ещё {len(grouped[time_label]) - 5}\n"
+            response += "\n"
+        
+        # Если слишком длинно, обрезаем
+        if len(response) > 4000:
+            response = response[:3900] + "\n\n... (обрезано)"
+        
+        await status_msg.edit_text(response, parse_mode='Markdown')
+        
+        # Закрываем вкладку
+        try:
+            close_tab(current_tab())
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /news: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def tabs(update, context):
     """Показать список всех вкладок"""
     try:
@@ -966,9 +1115,10 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("kalshi", kalshi))          # скрытая
-    app.add_handler(CommandHandler("trends", trends))          # глобальные тренды
-    app.add_handler(CommandHandler("analyze", analyze))        # анализ трендов
+    app.add_handler(CommandHandler("news", news))          # НОВАЯ КОМАНДА
+    app.add_handler(CommandHandler("kalshi", kalshi))
+    app.add_handler(CommandHandler("trends", trends))
+    app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
