@@ -4,6 +4,7 @@ import sys
 import time
 import logging
 import json
+import re
 import httpx
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -46,6 +47,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер\n\n"
         "/dom <url> - парсинг DOM\n"
+        "/kyiv - погода в Киеве\n"
         "/tabs - список вкладок\n"
         "/tab_new - открыть вкладку\n"
         "/tab_close <номер> - закрыть вкладку\n"
@@ -196,6 +198,90 @@ async def dom(update, context):
         logger.error(f"Ошибка в /dom: {e}")
         await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
 
+async def kyiv(update, context):
+    """Погода в Киеве на неделю"""
+    try:
+        status_msg = await update.message.reply_text("🌤️ Открываю погоду в Киеве...")
+
+        try:
+            new_tab()
+            goto_url("https://sinoptik.ua/pohoda/kyiv")
+            wait_for_load(timeout=30)
+            await status_msg.edit_text("Парсинг погоды...")
+        except Exception as e:
+            await status_msg.edit_text(f"Ошибка загрузки: {str(e)[:200]}")
+            return
+
+        js_code = """
+        const days = [];
+        const links = document.querySelectorAll('a.tkK415TH');
+        for (const link of links) {
+            const text = link.textContent?.trim();
+            if (text) {
+                days.push(text);
+            }
+        }
+        return JSON.stringify(days);
+        """
+
+        result = js(js_code)
+
+        if not result:
+            await status_msg.edit_text("Не удалось получить погоду")
+            return
+
+        try:
+            days = json.loads(result)
+        except:
+            await status_msg.edit_text("Ошибка парсинга")
+            return
+
+        if not days:
+            await status_msg.edit_text("Данные о погоде не найдены")
+            return
+
+        # Формируем ответ
+        response = "🌤️ **Погода в Киеве**\n\n"
+
+        days_uk = {
+            "вівторок": "Вівторок",
+            "середа": "Середа",
+            "четвер": "Четвер",
+            "пʼятниця": "П'ятниця",
+            "субота": "Субота",
+            "неділя": "Неділя",
+            "понеділок": "Понеділок"
+        }
+
+        for day in days[:7]:
+            # "вівторок28липнямін.+16°макс.+22°"
+            match = re.search(r'([а-яіїєґ\']+)(\d+[а-я]+)мін\.([+-]?\d+°)макс\.([+-]?\d+°)', day)
+            if match:
+                day_raw = match.group(1)
+                date = match.group(2)
+                min_temp = match.group(3)
+                max_temp = match.group(4)
+
+                # Переводим день недели
+                day_name = days_uk.get(day_raw, day_raw.capitalize())
+
+                # Форматируем дату: "28липня" -> "28 липня"
+                date_formatted = re.sub(r'(\d+)([а-я]+)', r'\1 \2', date)
+
+                response += f"**{day_name}** {date_formatted}: {min_temp} / {max_temp}\n"
+
+        # Закрываем вкладку
+        try:
+            close_tab(current_tab())
+        except:
+            pass
+
+        await status_msg.edit_text(response, parse_mode='Markdown')
+
+    except Exception as e:
+        logger.error(f"Ошибка в /kyiv: {e}")
+        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+
 async def tabs(update, context):
     try:
         tab_list = list_tabs()
@@ -289,6 +375,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
+    app.add_handler(CommandHandler("kyiv", kyiv))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
