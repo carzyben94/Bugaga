@@ -18,7 +18,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 LOGS_DIR = '/app/logs'
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# Создаём два логгера: один для бота, один для отладки
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -52,6 +51,8 @@ from browser_harness.admin import ensure_daemon
 # ============================================================
 
 MAX_TABS = 5
+_browser_ok = False
+_browser_check_time = 0
 
 # ============================================================
 # ДЕКОРАТОР ДЛЯ ЛОГИРОВАНИЯ ОШИБОК
@@ -106,7 +107,14 @@ def log_errors(func):
 # ============================================================
 
 def ensure_browser_ready():
-    """Проверяет и перезапускает браузер при необходимости"""
+    """Проверяет браузер с кешированием (раз в 30 секунд)"""
+    global _browser_ok, _browser_check_time
+    
+    now = time.time()
+    if now - _browser_check_time < 30:
+        debug_logger.debug(f"🔍 Браузер (кеш): {_browser_ok}")
+        return _browser_ok
+    
     debug_logger.debug("🔍 Проверка браузера...")
     
     try:
@@ -114,34 +122,40 @@ def ensure_browser_ready():
         pages = resp.json()
         if pages:
             debug_logger.debug("✅ Браузер работает")
-            return True
+            _browser_ok = True
         else:
             debug_logger.warning("⚠️ Браузер не отвечает (пустой ответ), перезапускаю...")
             ensure_daemon()
             time.sleep(3)
             debug_logger.info("✅ Браузер перезапущен")
-            return True
+            _browser_ok = True
+            
     except httpx.ConnectError as e:
         debug_logger.error(f"❌ Не удаётся подключиться к браузеру: {e}")
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
         debug_logger.info("✅ Браузер перезапущен")
-        return True
+        _browser_ok = True
+        
     except httpx.TimeoutException as e:
         debug_logger.error(f"❌ Таймаут подключения к браузеру: {e}")
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
         debug_logger.info("✅ Браузер перезапущен")
-        return True
+        _browser_ok = True
+        
     except Exception as e:
         debug_logger.error(f"❌ Неизвестная ошибка при проверке браузера: {e}")
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
         debug_logger.info("✅ Браузер перезапущен")
-        return True
+        _browser_ok = True
+    
+    _browser_check_time = now
+    return _browser_ok
 
 def cleanup_tabs():
     """Закрывает лишние вкладки, оставляя максимум MAX_TABS"""
@@ -556,12 +570,9 @@ async def kyiv(update, context):
 
                 response += f"**{day_name}** {date_formatted}: {min_temp} / {max_temp}\n"
 
-        # Закрываем вкладку
-        try:
-            close_tab(current_tab())
-            debug_logger.debug("   Вкладка закрыта")
-        except Exception as e:
-            debug_logger.warning(f"   Не удалось закрыть вкладку: {e}")
+        # === НЕ ЗАКРЫВАЕМ ВКЛАДКУ ===
+        # Просто оставляем её открытой для следующих команд
+        debug_logger.debug("   Вкладка оставлена открытой")
 
         await status_msg.edit_text(response, parse_mode='Markdown')
         debug_logger.info("✅ /kyiv завершён успешно")
@@ -578,14 +589,37 @@ async def tabs(update, context):
     try:
         ensure_browser_ready()
         
-        tab_list = list_tabs()
-        debug_logger.debug(f"   Вкладок: {len(tab_list)}")
+        # Проверяем, есть ли вкладки
+        try:
+            tab_list = list_tabs()
+            debug_logger.debug(f"   Вкладок: {len(tab_list)}")
+        except RuntimeError as e:
+            if "cdp_disconnected" in str(e):
+                debug_logger.warning("⚠️ CDP отключился, перезапускаю браузер...")
+                ensure_daemon()
+                time.sleep(3)
+                ensure_browser_ready()
+                tab_list = list_tabs()
+                debug_logger.debug(f"   Вкладок после перезапуска: {len(tab_list)}")
+            else:
+                raise
         
         if not tab_list:
             await update.message.reply_text("📭 Нет открытых вкладок")
             return
 
-        current = current_tab()
+        try:
+            current = current_tab()
+        except RuntimeError as e:
+            if "cdp_disconnected" in str(e):
+                debug_logger.warning("⚠️ CDP отключился при получении текущей вкладки")
+                ensure_daemon()
+                time.sleep(3)
+                ensure_browser_ready()
+                current = current_tab()
+            else:
+                raise
+        
         response = f"📑 Список вкладок ({len(tab_list)}/{MAX_TABS}):\n\n"
         for i, tab in enumerate(tab_list, 1):
             if tab == current:
@@ -600,7 +634,7 @@ async def tabs(update, context):
     except Exception as e:
         debug_logger.error(f"❌ Ошибка в /tabs: {e}")
         debug_logger.error(traceback.format_exc())
-        raise
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 @log_errors
 async def tab_new(update, context):
@@ -618,7 +652,7 @@ async def tab_new(update, context):
     except Exception as e:
         debug_logger.error(f"❌ Ошибка в /tab_new: {e}")
         debug_logger.error(traceback.format_exc())
-        raise
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 @log_errors
 async def tab_close(update, context):
@@ -658,7 +692,7 @@ async def tab_close(update, context):
     except Exception as e:
         debug_logger.error(f"❌ Ошибка в /tab_close: {e}")
         debug_logger.error(traceback.format_exc())
-        raise
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 @log_errors
 async def tab_switch(update, context):
@@ -691,7 +725,7 @@ async def tab_switch(update, context):
     except Exception as e:
         debug_logger.error(f"❌ Ошибка в /tab_switch: {e}")
         debug_logger.error(traceback.format_exc())
-        raise
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
 # ЗАПУСК
