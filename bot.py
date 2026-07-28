@@ -424,8 +424,8 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/dom <url> — парсинг DOM\n"
-        "/trends — тренды и хэштеги Kalshi\n"
-        "/analyze — анализ вовлеченности Kalshi\n"
+        "/trends — глобальные тренды X\n"
+        "/analyze — анализ вовлеченности\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -653,11 +653,11 @@ async def kalshi(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def trends(update, context):
-    """Анализ трендов: хэштеги, упоминания, ключевые слова"""
+    """Анализ глобальных трендов X: хэштеги, упоминания, ключевые слова"""
     try:
-        status_msg = await update.message.reply_text("🔍 Открываю Kalshi и сканирую...")
+        status_msg = await update.message.reply_text("🔍 Открываю глобальные тренды X...")
         
-        # Открываем страницу Kalshi
+        # Открываем страницу с трендами
         try:
             # Закрываем старые вкладки
             tabs = list_tabs()
@@ -670,16 +670,16 @@ async def trends(update, context):
             
             new_tab()
             await asyncio.sleep(1)
-            goto_url("https://x.com/Kalshi")
+            goto_url("https://x.com/explore/tabs/trending")
             wait_for_load(timeout=30)
             
-            # Скроллим для подгрузки постов
+            # Скроллим для подгрузки
             await asyncio.sleep(3)
-            for _ in range(8):
+            for _ in range(5):
                 scroll(0, 600)
                 await asyncio.sleep(1.5)
             
-            await status_msg.edit_text("🔍 Сканирую посты...")
+            await status_msg.edit_text("🔍 Сканирую тренды...")
         except Exception as e:
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
@@ -689,27 +689,34 @@ async def trends(update, context):
             hashtags: [],
             mentions: [],
             keywords: [],
-            posts: []
+            posts: [],
+            trends: []
         };
         
-        document.querySelectorAll('article[data-testid="tweet"]').forEach(article => {
-            const textEl = article.querySelector('[data-testid="tweetText"]');
-            if (!textEl) return;
-            const text = textEl.textContent.trim();
-            if (!text) return;
+        // Собираем все текстовые элементы на странице
+        document.querySelectorAll('span, div[role="article"], article').forEach(el => {
+            const text = el.textContent?.trim();
+            if (!text || text.length < 2) return;
             
-            data.posts.push(text);
+            // Пропускаем служебные слова
+            if (/(\\d+[.,]?\\d*[KMB]?|просмотров|постов|тенденция|Follow|Following|Replying)/i.test(text)) return;
             
-            // Хэштеги
-            const hashtags = text.match(/#\\w+/g);
-            if (hashtags) data.hashtags.push(...hashtags);
+            // Проверяем что это похоже на тренд или хэштег
+            if (text.startsWith('#') || 
+                (text.length < 40 && /^[A-ZА-Я]/.test(text) && !text.includes(' '))) {
+                data.trends.push(text);
+                
+                // Извлекаем хэштеги из текста
+                const hashtags = text.match(/#\\w+/g);
+                if (hashtags) data.hashtags.push(...hashtags);
+                
+                // Извлекаем упоминания
+                const mentions = text.match(/@\\w+/g);
+                if (mentions) data.mentions.push(...mentions);
+            }
             
-            // Упоминания
-            const mentions = text.match(/@\\w+/g);
-            if (mentions) data.mentions.push(...mentions);
-            
-            // Ключевые слова (капитализированные слова длиннее 3 букв)
-            const words = text.split(/\\s+/).filter(w => w.length > 3 && /^[A-Z]/.test(w));
+            // Ключевые слова (капитализированные слова)
+            const words = text.split(/\\s+/).filter(w => w.length > 3 && /^[A-ZА-Я]/.test(w) && !/^\\d+$/.test(w));
             if (words) data.keywords.push(...words);
         });
         
@@ -727,16 +734,24 @@ async def trends(update, context):
             await status_msg.edit_text("❌ Ошибка парсинга JSON")
             return
         
-        if not data.get('posts'):
-            await status_msg.edit_text("📭 Постов не найдено")
+        # Если ничего не нашли
+        if not data.get('trends') and not data.get('hashtags'):
+            await status_msg.edit_text("📭 Трендов не найдено. Попробуйте позже.")
             return
         
         # Подсчет частоты
+        trend_counts = Counter(data['trends']).most_common(15)
         hashtag_counts = Counter(data['hashtags']).most_common(10)
         mention_counts = Counter(data['mentions']).most_common(5)
         keyword_counts = Counter(data['keywords']).most_common(5)
         
-        response = f"🔥 **Тренды Kalshi** (постов: {len(data['posts'])})\n\n"
+        response = f"🌍 **Глобальные тренды X**\n\n"
+        
+        if trend_counts:
+            response += "**🔥 Топ трендов:**\n"
+            for i, (trend, count) in enumerate(trend_counts, 1):
+                response += f"{i}. {trend} — {count}\n"
+            response += "\n"
         
         if hashtag_counts:
             response += "**# Хэштеги:**\n"
@@ -762,13 +777,12 @@ async def trends(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def analyze(update, context):
-    """Глубокий анализ вовлеченности и тональности"""
+    """Глубокий анализ вовлеченности глобальных трендов"""
     try:
-        status_msg = await update.message.reply_text("📊 Открываю Kalshi и анализирую...")
+        status_msg = await update.message.reply_text("📊 Открываю глобальные тренды...")
         
-        # Открываем страницу Kalshi
+        # Открываем страницу с трендами
         try:
-            # Закрываем старые вкладки
             tabs = list_tabs()
             for tab in tabs:
                 if tab != current_tab():
@@ -779,12 +793,11 @@ async def analyze(update, context):
             
             new_tab()
             await asyncio.sleep(1)
-            goto_url("https://x.com/Kalshi")
+            goto_url("https://x.com/explore/tabs/trending")
             wait_for_load(timeout=30)
             
-            # Скроллим для подгрузки постов
             await asyncio.sleep(3)
-            for _ in range(8):
+            for _ in range(5):
                 scroll(0, 600)
                 await asyncio.sleep(1.5)
             
@@ -794,23 +807,21 @@ async def analyze(update, context):
             return
         
         js_code = """
-        const posts = [];
-        document.querySelectorAll('article[data-testid="tweet"]').forEach(article => {
-            const textEl = article.querySelector('[data-testid="tweetText"]');
-            const text = textEl ? textEl.textContent.trim() : '';
+        const trends = [];
+        document.querySelectorAll('span, div[role="article"], article').forEach(el => {
+            const text = el.textContent?.trim();
+            if (!text || text.length < 2) return;
+            if (/(\\d+[.,]?\\d*[KMB]?|просмотров|постов|тенденция|Follow|Following|Replying)/i.test(text)) return;
             
-            const replyEl = article.querySelector('[data-testid="reply"]');
-            const replies = parseInt(replyEl ? replyEl.textContent.replace(/[,.]/g, '').trim() : '0');
-            
-            const retweetEl = article.querySelector('[data-testid="retweet"]');
-            const retweets = parseInt(retweetEl ? retweetEl.textContent.replace(/[,.]/g, '').trim() : '0');
-            
-            const likeEl = article.querySelector('[data-testid="like"]');
-            const likes = parseInt(likeEl ? likeEl.textContent.replace(/[,.]/g, '').trim() : '0');
-            
-            posts.push({ text, replies, retweets, likes });
+            if (text.startsWith('#') || 
+                (text.length < 40 && /^[A-ZА-Я]/.test(text) && !text.includes(' '))) {
+                trends.push(text);
+            }
         });
-        return JSON.stringify(posts);
+        
+        // Убираем дубликаты
+        const uniqueTrends = [...new Set(trends)];
+        return JSON.stringify(uniqueTrends.slice(0, 20));
         """
         
         result = js(js_code)
@@ -819,60 +830,34 @@ async def analyze(update, context):
             return
         
         try:
-            posts = json.loads(result)
+            trends = json.loads(result)
         except:
             await status_msg.edit_text("❌ Ошибка парсинга JSON")
             return
         
-        if not posts:
-            await status_msg.edit_text("📭 Постов не найдено")
+        if not trends:
+            await status_msg.edit_text("📭 Трендов не найдено")
             return
         
-        # Аналитика
-        total_posts = len(posts)
-        total_likes = sum(p['likes'] for p in posts)
-        total_retweets = sum(p['retweets'] for p in posts)
-        total_replies = sum(p['replies'] for p in posts)
-        total_engagement = total_likes + total_retweets + total_replies
+        # Аналитика по трендам
+        total_trends = len(trends)
+        hashtag_trends = [t for t in trends if t.startswith('#')]
+        text_trends = [t for t in trends if not t.startswith('#')]
         
-        avg_engagement = total_engagement / total_posts if total_posts else 0
-        max_engagement_post = max(posts, key=lambda x: x['likes'] + x['retweets'] + x['replies'])
-        max_engagement = max_engagement_post['likes'] + max_engagement_post['retweets'] + max_engagement_post['replies']
+        response = f"📊 **Анализ глобальных трендов**\n\n"
+        response += f"📈 Всего трендов: {total_trends}\n"
+        response += f"🏷️ Хэштегов: {len(hashtag_trends)}\n"
+        response += f"📝 Тем: {len(text_trends)}\n\n"
         
-        # Тональность (упрощенная)
-        positive_words = ['good', 'great', 'awesome', 'love', 'amazing', 'excellent', 'happy', 'best', 'bullish', 'breakthrough', 'win', 'victory', 'positive']
-        negative_words = ['bad', 'terrible', 'hate', 'awful', 'disaster', 'bearish', 'crash', 'drop', 'fall', 'loss', 'fail', 'decline']
+        if hashtag_trends:
+            response += "**# Популярные хэштеги:**\n"
+            for i, tag in enumerate(hashtag_trends[:5], 1):
+                response += f"{i}. {tag}\n"
         
-        positive_count = 0
-        negative_count = 0
-        for p in posts:
-            text = p['text'].lower()
-            if any(word in text for word in positive_words):
-                positive_count += 1
-            elif any(word in text for word in negative_words):
-                negative_count += 1
-        
-        neutral_count = total_posts - positive_count - negative_count
-        positive_pct = (positive_count / total_posts * 100) if total_posts else 0
-        negative_pct = (negative_count / total_posts * 100) if total_posts else 0
-        neutral_pct = (neutral_count / total_posts * 100) if total_posts else 0
-        
-        # Формируем ответ
-        response = f"📊 **Анализ вовлеченности Kalshi** ({total_posts} постов)\n\n"
-        response += f"❤️ Всего лайков: {total_likes:,}\n"
-        response += f"🔄 Всего репостов: {total_retweets:,}\n"
-        response += f"💬 Всего ответов: {total_replies:,}\n"
-        response += f"📈 Средняя вовлеченность: {avg_engagement:.1f}\n\n"
-        
-        response += f"🔥 Самый виральный пост: +{max_engagement:,} реакций\n"
-        if max_engagement_post['text']:
-            text_preview = max_engagement_post['text'][:80]
-            response += f"📝 \"{text_preview}...\"\n\n"
-        
-        response += f"😊 Тональность:\n"
-        response += f"• Позитивные: {positive_pct:.1f}% ({positive_count})\n"
-        response += f"• Нейтральные: {neutral_pct:.1f}% ({neutral_count})\n"
-        response += f"• Негативные: {negative_pct:.1f}% ({negative_count})\n"
+        if text_trends:
+            response += "\n**📌 Популярные темы:**\n"
+            for i, topic in enumerate(text_trends[:5], 1):
+                response += f"{i}. {topic}\n"
         
         await status_msg.edit_text(response, parse_mode='Markdown')
         
@@ -982,8 +967,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
     app.add_handler(CommandHandler("kalshi", kalshi))          # скрытая
-    app.add_handler(CommandHandler("trends", trends))          # новая
-    app.add_handler(CommandHandler("analyze", analyze))        # новая
+    app.add_handler(CommandHandler("trends", trends))          # глобальные тренды
+    app.add_handler(CommandHandler("analyze", analyze))        # анализ трендов
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
