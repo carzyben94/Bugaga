@@ -11,6 +11,7 @@ import io
 import json
 import httpx
 import warnings
+from collections import Counter
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from PIL import Image
@@ -423,6 +424,8 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/dom <url> — парсинг DOM\n"
+        "/trends — тренды и хэштеги\n"
+        "/analyze — анализ вовлеченности\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -531,7 +534,7 @@ async def dom(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def kalshi(update, context):
-    """Парсит последние 5 постов Kalshi"""
+    """Парсит последние 5 постов Kalshi (скрытая команда)"""
     try:
         status_msg = await update.message.reply_text("🔍 Открываю Kalshi...")
         
@@ -649,6 +652,188 @@ async def kalshi(update, context):
         logger.error(f"❌ Ошибка в /kalshi: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def trends(update, context):
+    """Анализ трендов: хэштеги, упоминания, ключевые слова"""
+    try:
+        status_msg = await update.message.reply_text("🔍 Сканирую страницу...")
+        
+        # Скроллим для подгрузки постов
+        for _ in range(5):
+            scroll(0, 600)
+            await asyncio.sleep(1)
+        
+        js_code = """
+        const data = {
+            hashtags: [],
+            mentions: [],
+            keywords: [],
+            posts: []
+        };
+        
+        document.querySelectorAll('article[data-testid="tweet"]').forEach(article => {
+            const textEl = article.querySelector('[data-testid="tweetText"]');
+            if (!textEl) return;
+            const text = textEl.textContent.trim();
+            if (!text) return;
+            
+            data.posts.push(text);
+            
+            // Хэштеги
+            const hashtags = text.match(/#\\w+/g);
+            if (hashtags) data.hashtags.push(...hashtags);
+            
+            // Упоминания
+            const mentions = text.match(/@\\w+/g);
+            if (mentions) data.mentions.push(...mentions);
+            
+            // Ключевые слова (капитализированные слова длиннее 3 букв)
+            const words = text.split(/\\s+/).filter(w => w.length > 3 && /^[A-Z]/.test(w));
+            if (words) data.keywords.push(...words);
+        });
+        
+        return JSON.stringify(data);
+        """
+        
+        result = js(js_code)
+        if not result:
+            await status_msg.edit_text("❌ Не удалось получить данные")
+            return
+        
+        try:
+            data = json.loads(result)
+        except:
+            await status_msg.edit_text("❌ Ошибка парсинга JSON")
+            return
+        
+        if not data.get('posts'):
+            await status_msg.edit_text("📭 Постов не найдено")
+            return
+        
+        # Подсчет частоты
+        hashtag_counts = Counter(data['hashtags']).most_common(10)
+        mention_counts = Counter(data['mentions']).most_common(5)
+        keyword_counts = Counter(data['keywords']).most_common(5)
+        
+        response = f"🔥 **Тренды X.com** (постов: {len(data['posts'])})\n\n"
+        
+        if hashtag_counts:
+            response += "**# Хэштеги:**\n"
+            for i, (tag, count) in enumerate(hashtag_counts, 1):
+                response += f"{i}. {tag} — {count}\n"
+            response += "\n"
+        
+        if mention_counts:
+            response += "**👥 Упоминания:**\n"
+            for i, (mention, count) in enumerate(mention_counts, 1):
+                response += f"{i}. {mention} — {count}\n"
+            response += "\n"
+        
+        if keyword_counts:
+            response += "**📈 Ключевые слова:**\n"
+            for i, (word, count) in enumerate(keyword_counts, 1):
+                response += f"{i}. {word} — {count}\n"
+        
+        await status_msg.edit_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /trends: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def analyze(update, context):
+    """Глубокий анализ вовлеченности и тональности"""
+    try:
+        status_msg = await update.message.reply_text("📊 Анализирую вовлеченность...")
+        
+        # Скроллим для подгрузки
+        for _ in range(5):
+            scroll(0, 600)
+            await asyncio.sleep(1)
+        
+        js_code = """
+        const posts = [];
+        document.querySelectorAll('article[data-testid="tweet"]').forEach(article => {
+            const textEl = article.querySelector('[data-testid="tweetText"]');
+            const text = textEl ? textEl.textContent.trim() : '';
+            
+            const replyEl = article.querySelector('[data-testid="reply"]');
+            const replies = parseInt(replyEl ? replyEl.textContent.replace(/[,.]/g, '').trim() : '0');
+            
+            const retweetEl = article.querySelector('[data-testid="retweet"]');
+            const retweets = parseInt(retweetEl ? retweetEl.textContent.replace(/[,.]/g, '').trim() : '0');
+            
+            const likeEl = article.querySelector('[data-testid="like"]');
+            const likes = parseInt(likeEl ? likeEl.textContent.replace(/[,.]/g, '').trim() : '0');
+            
+            posts.push({ text, replies, retweets, likes });
+        });
+        return JSON.stringify(posts);
+        """
+        
+        result = js(js_code)
+        if not result:
+            await status_msg.edit_text("❌ Не удалось получить данные")
+            return
+        
+        try:
+            posts = json.loads(result)
+        except:
+            await status_msg.edit_text("❌ Ошибка парсинга JSON")
+            return
+        
+        if not posts:
+            await status_msg.edit_text("📭 Постов не найдено")
+            return
+        
+        # Аналитика
+        total_posts = len(posts)
+        total_likes = sum(p['likes'] for p in posts)
+        total_retweets = sum(p['retweets'] for p in posts)
+        total_replies = sum(p['replies'] for p in posts)
+        total_engagement = total_likes + total_retweets + total_replies
+        
+        avg_engagement = total_engagement / total_posts if total_posts else 0
+        max_engagement_post = max(posts, key=lambda x: x['likes'] + x['retweets'] + x['replies'])
+        max_engagement = max_engagement_post['likes'] + max_engagement_post['retweets'] + max_engagement_post['replies']
+        
+        # Тональность (упрощенная)
+        positive_words = ['good', 'great', 'awesome', 'love', 'amazing', 'excellent', 'happy', 'best', 'bullish', 'breakthrough']
+        negative_words = ['bad', 'terrible', 'hate', 'awful', 'disaster', 'bearish', 'crash', 'drop', 'fall', 'loss']
+        
+        positive_count = 0
+        negative_count = 0
+        for p in posts:
+            text = p['text'].lower()
+            if any(word in text for word in positive_words):
+                positive_count += 1
+            elif any(word in text for word in negative_words):
+                negative_count += 1
+        
+        neutral_count = total_posts - positive_count - negative_count
+        positive_pct = (positive_count / total_posts * 100) if total_posts else 0
+        negative_pct = (negative_count / total_posts * 100) if total_posts else 0
+        neutral_pct = (neutral_count / total_posts * 100) if total_posts else 0
+        
+        # Формируем ответ
+        response = f"📊 **Анализ вовлеченности** ({total_posts} постов)\n\n"
+        response += f"❤️ Всего лайков: {total_likes}\n"
+        response += f"🔄 Всего репостов: {total_retweets}\n"
+        response += f"💬 Всего ответов: {total_replies}\n"
+        response += f"📈 Средняя вовлеченность: {avg_engagement:.1f}\n\n"
+        
+        response += f"🔥 Самый виральный пост: +{max_engagement} реакций\n"
+        response += f"📝 \"{max_engagement_post['text'][:80]}...\"\n\n"
+        
+        response += f"😊 Тональность:\n"
+        response += f"• Позитивные: {positive_pct:.1f}% ({positive_count})\n"
+        response += f"• Нейтральные: {neutral_pct:.1f}% ({neutral_count})\n"
+        response += f"• Негативные: {negative_pct:.1f}% ({negative_count})\n"
+        
+        await status_msg.edit_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /analyze: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
 async def tabs(update, context):
     """Показать список всех вкладок"""
     try:
@@ -750,7 +935,9 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("kalshi", kalshi))
+    app.add_handler(CommandHandler("kalshi", kalshi))          # скрытая
+    app.add_handler(CommandHandler("trends", trends))          # новая
+    app.add_handler(CommandHandler("analyze", analyze))        # новая
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
