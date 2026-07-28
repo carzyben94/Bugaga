@@ -40,6 +40,108 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
+# НАСТРОЙКИ
+# ============================================================
+
+MAX_TABS = 5
+WEBSOCKET_BUFFER_SIZE = 50 * 1024 * 1024  # 50 МБ
+
+# ============================================================
+# ФУНКЦИИ
+# ============================================================
+
+def ensure_browser_ready():
+    """Проверяет и перезапускает браузер при необходимости"""
+    try:
+        resp = httpx.get("http://localhost:9222/json/list", timeout=3.0)
+        pages = resp.json()
+        if pages:
+            logger.info("✅ Браузер работает")
+            return True
+        else:
+            logger.warning("⚠️ Браузер не отвечает, перезапускаю...")
+            ensure_daemon()
+            time.sleep(3)
+            return True
+    except Exception as e:
+        logger.warning(f"⚠️ Браузер недоступен: {e}, перезапускаю...")
+        ensure_daemon()
+        time.sleep(3)
+        return True
+
+def cleanup_tabs():
+    """Закрывает лишние вкладки, оставляя максимум MAX_TABS"""
+    try:
+        tabs = list_tabs()
+        if not tabs:
+            return
+        
+        current = current_tab()
+        
+        # Если вкладок больше MAX_TABS, закрываем старые
+        if len(tabs) > MAX_TABS:
+            # Закрываем все кроме текущей и MAX_TABS-1 самых новых
+            to_close = tabs[:-(MAX_TABS - 1)]
+            for tab in to_close:
+                if tab != current:
+                    try:
+                        close_tab(tab)
+                        logger.info(f"Закрыта лишняя вкладка: {tab}")
+                    except:
+                        pass
+        
+        # Если текущая вкладка не существует (закрыта), создаём новую
+        try:
+            current = current_tab()
+        except:
+            new_tab()
+            time.sleep(0.5)
+            
+    except Exception as e:
+        logger.warning(f"Ошибка очистки вкладок: {e}")
+
+def ensure_tab():
+    """Создаёт новую вкладку, если нужно"""
+    try:
+        # Проверяем, есть ли активная вкладка
+        try:
+            current = current_tab()
+        except:
+            current = None
+        
+        if current is None:
+            new_tab()
+            time.sleep(0.5)
+            return
+        
+        # Проверяем количество вкладок
+        tabs = list_tabs()
+        if len(tabs) >= MAX_TABS:
+            # Закрываем самую старую вкладку
+            old_tab = tabs[0]
+            if old_tab != current:
+                close_tab(old_tab)
+                logger.info(f"Закрыта старая вкладка для освобождения места: {old_tab}")
+            else:
+                # Если старая = текущая, закрываем вторую
+                if len(tabs) > 1:
+                    close_tab(tabs[1])
+                    logger.info(f"Закрыта старая вкладка: {tabs[1]}")
+        
+        # Создаём новую вкладку
+        new_tab()
+        time.sleep(0.5)
+        
+    except Exception as e:
+        logger.warning(f"Ошибка создания вкладки: {e}")
+        # Пробуем принудительно создать
+        try:
+            new_tab()
+            time.sleep(0.5)
+        except:
+            pass
+
+# ============================================================
 # КОМАНДЫ
 # ============================================================
 
@@ -52,7 +154,8 @@ async def start(update, context):
         "/tab_new - открыть вкладку\n"
         "/tab_close <номер> - закрыть вкладку\n"
         "/tab_switch <номер> - переключить вкладку\n"
-        "/log - скачать логи"
+        "/log - скачать логи\n\n"
+        f"📌 Максимум вкладок: {MAX_TABS}"
     )
 
 async def log(update, context):
@@ -68,6 +171,9 @@ async def log(update, context):
 
 async def dom(update, context):
     try:
+        ensure_browser_ready()
+        cleanup_tabs()
+        
         if not context.args:
             await update.message.reply_text(
                 "Укажите URL\n"
@@ -79,16 +185,29 @@ async def dom(update, context):
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
 
-        status_msg = await update.message.reply_text(f"Открываю {url}...")
+        status_msg = await update.message.reply_text(f"🌐 Открываю {url}...")
 
         try:
-            new_tab()
+            ensure_tab()
             goto_url(url)
-            wait_for_load(timeout=30)
-            await status_msg.edit_text("Страница загружена, парсинг...")
+            wait_for_load(timeout=60)  # Увеличенный таймаут
+            await status_msg.edit_text("✅ Страница загружена, парсинг...")
         except Exception as e:
-            await status_msg.edit_text(f"Ошибка загрузки: {str(e)[:200]}")
-            return
+            if "cdp_disconnected" in str(e):
+                await status_msg.edit_text("⚠️ Браузер отключился, перезапускаю...")
+                ensure_daemon()
+                time.sleep(3)
+                try:
+                    ensure_tab()
+                    goto_url(url)
+                    wait_for_load(timeout=60)
+                    await status_msg.edit_text("✅ Страница загружена, парсинг...")
+                except Exception as e2:
+                    await status_msg.edit_text(f"❌ Ошибка: {str(e2)[:200]}")
+                    return
+            else:
+                await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+                return
 
         js_code = """
         const elements = { buttons: [], inputs: [], links: [], forms: [], selects: [], textareas: [], divs: [], spans: [], lis: [], others: [] };
@@ -152,13 +271,13 @@ async def dom(update, context):
         result = js(js_code)
 
         if not result:
-            await status_msg.edit_text("Не удалось получить данные DOM")
+            await status_msg.edit_text("❌ Не удалось получить данные DOM")
             return
 
         try:
             dom_data = json.loads(result)
         except:
-            await status_msg.edit_text("Ошибка парсинга JSON")
+            await status_msg.edit_text("❌ Ошибка парсинга JSON")
             return
 
         timestamp = int(time.time())
@@ -170,21 +289,21 @@ async def dom(update, context):
             json.dump(dom_data, f, ensure_ascii=False, indent=2)
 
         with open(file_path, 'rb') as f:
-            await status_msg.edit_text("Отправляю JSON...")
+            await status_msg.edit_text("📄 Отправляю JSON...")
             await update.message.reply_document(
                 document=f,
                 filename=filename,
-                caption=f"DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}"
+                caption=f"📊 DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}"
             )
 
         elements = dom_data.get('elements', {})
-        stats = "Статистика DOM:\n\n"
+        stats = "📊 Статистика DOM:\n\n"
         total = 0
         for key, value in elements.items():
             if value:
                 count = len(value)
                 total += count
-                stats += f"- {key}: {count}\n"
+                stats += f"• {key}: {count}\n"
         stats += f"\nВсего: {total}"
 
         await update.message.reply_text(stats)
@@ -196,21 +315,37 @@ async def dom(update, context):
 
     except Exception as e:
         logger.error(f"Ошибка в /dom: {e}")
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def kyiv(update, context):
     """Погода в Киеве на неделю"""
     try:
+        ensure_browser_ready()
+        cleanup_tabs()
+        
         status_msg = await update.message.reply_text("🌤️ Открываю погоду в Киеве...")
 
         try:
-            new_tab()
+            ensure_tab()
             goto_url("https://sinoptik.ua/pohoda/kyiv")
-            wait_for_load(timeout=30)
-            await status_msg.edit_text("Парсинг погоды...")
+            wait_for_load(timeout=60)  # Увеличенный таймаут
+            await status_msg.edit_text("📊 Парсинг погоды...")
         except Exception as e:
-            await status_msg.edit_text(f"Ошибка загрузки: {str(e)[:200]}")
-            return
+            if "cdp_disconnected" in str(e):
+                await status_msg.edit_text("⚠️ Браузер отключился, перезапускаю...")
+                ensure_daemon()
+                time.sleep(3)
+                try:
+                    ensure_tab()
+                    goto_url("https://sinoptik.ua/pohoda/kyiv")
+                    wait_for_load(timeout=60)
+                    await status_msg.edit_text("📊 Парсинг погоды...")
+                except Exception as e2:
+                    await status_msg.edit_text(f"❌ Ошибка: {str(e2)[:200]}")
+                    return
+            else:
+                await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
+                return
 
         js_code = """
         const days = [];
@@ -227,17 +362,17 @@ async def kyiv(update, context):
         result = js(js_code)
 
         if not result:
-            await status_msg.edit_text("Не удалось получить погоду")
+            await status_msg.edit_text("❌ Не удалось получить погоду")
             return
 
         try:
             days = json.loads(result)
         except:
-            await status_msg.edit_text("Ошибка парсинга")
+            await status_msg.edit_text("❌ Ошибка парсинга")
             return
 
         if not days:
-            await status_msg.edit_text("Данные о погоде не найдены")
+            await status_msg.edit_text("📭 Данные о погоде не найдены")
             return
 
         # Формируем ответ
@@ -254,7 +389,6 @@ async def kyiv(update, context):
         }
 
         for day in days[:7]:
-            # "вівторок28липнямін.+16°макс.+22°"
             match = re.search(r'([а-яіїєґ\']+)(\d+[а-я]+)мін\.([+-]?\d+°)макс\.([+-]?\d+°)', day)
             if match:
                 day_raw = match.group(1)
@@ -262,10 +396,7 @@ async def kyiv(update, context):
                 min_temp = match.group(3)
                 max_temp = match.group(4)
 
-                # Переводим день недели
                 day_name = days_uk.get(day_raw, day_raw.capitalize())
-
-                # Форматируем дату: "28липня" -> "28 липня"
                 date_formatted = re.sub(r'(\d+)([а-я]+)', r'\1 \2', date)
 
                 response += f"**{day_name}** {date_formatted}: {min_temp} / {max_temp}\n"
@@ -280,17 +411,19 @@ async def kyiv(update, context):
 
     except Exception as e:
         logger.error(f"Ошибка в /kyiv: {e}")
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tabs(update, context):
     try:
+        ensure_browser_ready()
+        
         tab_list = list_tabs()
         if not tab_list:
-            await update.message.reply_text("Нет открытых вкладок")
+            await update.message.reply_text("📭 Нет открытых вкладок")
             return
 
         current = current_tab()
-        response = "Список вкладок:\n\n"
+        response = f"📑 Список вкладок ({len(tab_list)}/{MAX_TABS}):\n\n"
         for i, tab in enumerate(tab_list, 1):
             if tab == current:
                 response += f"✅ {i}. {tab} (текущая)\n"
@@ -300,63 +433,69 @@ async def tabs(update, context):
         response += "\n/tab_new - открыть новую\n/tab_close <номер> - закрыть\n/tab_switch <номер> - переключиться"
         await update.message.reply_text(response)
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tab_new(update, context):
     try:
-        new_tab()
-        await update.message.reply_text("Новая вкладка открыта")
+        ensure_browser_ready()
+        cleanup_tabs()
+        ensure_tab()
+        await update.message.reply_text(f"✅ Новая вкладка открыта (всего: {len(list_tabs())}/{MAX_TABS})")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tab_close(update, context):
     try:
+        ensure_browser_ready()
+        
         if not context.args:
-            await update.message.reply_text("Укажите номер вкладки\nПример: /tab_close 1")
+            await update.message.reply_text("❌ Укажите номер вкладки\nПример: /tab_close 1")
             return
 
         try:
             tab_num = int(context.args[0]) - 1
         except ValueError:
-            await update.message.reply_text("Номер должен быть числом")
+            await update.message.reply_text("❌ Номер должен быть числом")
             return
 
         tabs_list = list_tabs()
         if tab_num < 0 or tab_num >= len(tabs_list):
-            await update.message.reply_text(f"Вкладка с номером {tab_num + 1} не найдена")
+            await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
             return
 
         tab_id = tabs_list[tab_num]
         if tab_id == current_tab() and len(tabs_list) > 1:
-            await update.message.reply_text("Нельзя закрыть текущую вкладку")
+            await update.message.reply_text("❌ Нельзя закрыть текущую вкладку")
             return
 
         close_tab(tab_id)
-        await update.message.reply_text(f"Вкладка {tab_num + 1} закрыта")
+        await update.message.reply_text(f"✅ Вкладка {tab_num + 1} закрыта")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tab_switch(update, context):
     try:
+        ensure_browser_ready()
+        
         if not context.args:
-            await update.message.reply_text("Укажите номер вкладки\nПример: /tab_switch 2")
+            await update.message.reply_text("❌ Укажите номер вкладки\nПример: /tab_switch 2")
             return
 
         try:
             tab_num = int(context.args[0]) - 1
         except ValueError:
-            await update.message.reply_text("Номер должен быть числом")
+            await update.message.reply_text("❌ Номер должен быть числом")
             return
 
         tabs_list = list_tabs()
         if tab_num < 0 or tab_num >= len(tabs_list):
-            await update.message.reply_text(f"Вкладка с номером {tab_num + 1} не найдена")
+            await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
             return
 
         switch_tab(tabs_list[tab_num])
-        await update.message.reply_text(f"Переключился на вкладку {tab_num + 1}")
+        await update.message.reply_text(f"✅ Переключился на вкладку {tab_num + 1}")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
 # ЗАПУСК
@@ -365,11 +504,11 @@ async def tab_switch(update, context):
 def main():
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+        raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
 
     os.environ["BU_CDP_URL"] = "http://localhost:9222"
     ensure_daemon()
-    logger.info("Браузер готов")
+    logger.info("✅ Браузер готов")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -382,7 +521,7 @@ def main():
     app.add_handler(CommandHandler("tab_switch", tab_switch))
     app.add_handler(CommandHandler("log", log))
 
-    logger.info("Бот запущен!")
+    logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
