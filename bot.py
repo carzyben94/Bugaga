@@ -84,6 +84,12 @@ SYSTEM_PROMPT = """
 # ФУНКЦИИ
 # ============================================================
 
+def escape_js(text):
+    """Экранирует текст для использования в JavaScript строке"""
+    if not text:
+        return ''
+    return text.replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+
 def extract_code(text):
     match = re.search(r'```python\s*([\s\S]*?)\s*```', text)
     return match.group(1).strip() if match else None
@@ -170,6 +176,9 @@ async def z(update, context):
         wait_for_load(30)
         await asyncio.sleep(2)
         
+        # Экранируем запрос
+        query_escaped = escape_js(query)
+        
         # Отправляем запрос
         js_code = f"""
         (function() {{
@@ -177,7 +186,7 @@ async def z(update, context):
             if (!input) return;
             input.value = '';
             input.focus();
-            input.value = '{query.replace("'", "\\'")}';
+            input.value = '{query_escaped}';
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
             const btn = document.querySelector('#send-message-button');
             if (btn && !btn.disabled) btn.click();
@@ -206,6 +215,7 @@ async def z(update, context):
             await status.edit_text("❌ Нет ответа")
             
     except Exception as e:
+        logger.error(f"z error: {e}")
         await status.edit_text(f"❌ Ошибка: {str(e)}")
 
 async def agent(update, context):
@@ -252,13 +262,16 @@ async def z_logic(query):
         wait_for_load(30)
         await asyncio.sleep(2)
         
+        # Экранируем запрос
+        query_escaped = escape_js(query)
+        
         js_code = f"""
         (function() {{
             const input = document.querySelector('#chat-input');
             if (!input) return;
             input.value = '';
             input.focus();
-            input.value = '{query.replace("'", "\\'")}';
+            input.value = '{query_escaped}';
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
             const btn = document.querySelector('#send-message-button');
             if (btn && !btn.disabled) btn.click();
