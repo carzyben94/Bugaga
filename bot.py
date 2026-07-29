@@ -709,14 +709,14 @@ async def zai(update, context):
 
             query_escaped = query[:500].replace("'", "\\'").replace('"', '\\"')
             
-            # === УНИВЕРСАЛЬНЫЙ JS КОД ===
+            # === НОВЫЙ JS КОД — ИЩЕТ ВСЁ ===
             js_code = f"""
             (async function() {{
                 const query = '{query_escaped}';
                 const model = '{_current_model}';
                 const searchEnabled = {str(_search_enabled).lower()};
                 
-                function waitForElement(selector, timeout = 10000) {{
+                function waitForElement(selector, timeout = 15000) {{
                     return new Promise((resolve) => {{
                         const el = document.querySelector(selector);
                         if (el) {{ resolve(el); return; }}
@@ -729,62 +729,77 @@ async def zai(update, context):
                     }});
                 }}
                 
-                function waitForText(timeout = 120000) {{
-                    return new Promise((resolve) => {{
-                        const startTime = Date.now();
-                        let lastText = '';
-                        let lastLength = 0;
-                        
-                        const check = () => {{
-                            // Ищем все возможные селекторы для сообщений
-                            const selectors = [
-                                '[data-message-role="assistant"]',
-                                '[data-testid="message"]',
-                                '.message-role-assistant',
-                                '.assistant-message',
-                                '[role="article"]:last-child',
-                                '.chat-message:last-child'
-                            ];
-                            
-                            let text = '';
-                            for (const sel of selectors) {{
-                                const els = document.querySelectorAll(sel);
-                                if (els.length > 0) {{
-                                    const lastEl = els[els.length - 1];
-                                    const t = lastEl.textContent?.trim() || '';
-                                    if (t.length > text.length) text = t;
+                function getResponseText() {{
+                    // Все возможные селекторы для ответа AI
+                    const selectors = [
+                        // Основные
+                        '[data-message-role="assistant"]',
+                        '[data-testid="message"]',
+                        '.message-role-assistant',
+                        '.assistant-message',
+                        '[role="article"]:last-child',
+                        '.chat-message:last-child',
+                        // Новые (из скриншота)
+                        '.thought-process',
+                        '.thought-process *',
+                        '.message-content',
+                        '.response-content',
+                        '.ai-message',
+                        '.bot-message',
+                        '.assistant-response',
+                        '.chat-response',
+                        // Универсальные
+                        '[class*="assistant"]',
+                        '[class*="response"]',
+                        '[class*="message"]:last-child',
+                        '[class*="chat"]:last-child',
+                        // Просто все большие блоки
+                        'div:last-child',
+                        '.flex-1:last-child',
+                        '.prose'
+                    ];
+                    
+                    let text = '';
+                    let foundEl = null;
+                    
+                    for (const sel of selectors) {{
+                        const els = document.querySelectorAll(sel);
+                        if (els.length > 0) {{
+                            for (const el of els) {{
+                                const t = el.textContent?.trim() || '';
+                                // Проверяем, что это ответ AI (не запрос пользователя)
+                                if (t && t.length > 10 && !t.includes(query) && t !== query) {{
+                                    // Проверяем, что это не "Thought Process" (заголовок)
+                                    if (!t.includes('Thought Process')) {{
+                                        if (t.length > text.length) {{
+                                            text = t;
+                                            foundEl = el;
+                                        }}
+                                    }}
                                 }}
                             }}
-                            
-                            // Если текст есть и он не равен запросу
-                            if (text && text.length > 10 && !text.includes(query)) {{
-                                // Если текст стабилен (не меняется) или длинный
-                                if (text === lastText && text.length > 20) {{
-                                    resolve(text);
-                                    return;
+                        }}
+                    }}
+                    
+                    // Если ничего не нашли через селекторы, ищем любой большой блок текста
+                    if (!text) {{
+                        const allElements = document.querySelectorAll('div, p, span, section, article');
+                        for (const el of allElements) {{
+                            const t = el.textContent?.trim() || '';
+                            // Ищем текст, который похож на ответ AI
+                            if (t && t.length > 20 && !t.includes(query) && t !== query) {{
+                                // Проверяем, что это не навигация, не кнопки
+                                const children = el.children;
+                                if (children.length === 0 || children.length < 3) {{
+                                    if (t.length > text.length) {{
+                                        text = t;
+                                    }}
                                 }}
-                                if (text.length > 50) {{
-                                    resolve(text);
-                                    return;
-                                }}
-                                lastText = text;
                             }}
-                            
-                            // Проверяем наличие индикатора печати
-                            const typing = document.querySelector('[data-typing], .typing-indicator, [role="status"]');
-                            if (!typing && text.length > 10) {{
-                                resolve(text);
-                                return;
-                            }}
-                            
-                            if (Date.now() - startTime > timeout) {{
-                                resolve(text || '⏰ Таймаут');
-                            }} else {{
-                                setTimeout(check, 1000);
-                            }}
-                        }};
-                        check();
-                    }});
+                        }}
+                    }}
+                    
+                    return text;
                 }}
                 
                 try {{
@@ -839,9 +854,41 @@ async def zai(update, context):
                         input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
                     }}
                     
-                    // Ждём ответ
-                    const response = await waitForText(120000);
-                    return response;
+                    // Ждём ответ — проверяем каждые 2 секунды
+                    await new Promise(resolve => {{
+                        let attempts = 0;
+                        const maxAttempts = 60; // 120 секунд
+                        let lastText = '';
+                        
+                        const check = () => {{
+                            attempts++;
+                            const text = getResponseText();
+                            
+                            if (text && text.length > 10) {{
+                                // Если текст стабилен или длинный
+                                if (text === lastText && text.length > 20) {{
+                                    resolve();
+                                    return;
+                                }}
+                                if (text.length > 50) {{
+                                    resolve();
+                                    return;
+                                }}
+                                lastText = text;
+                            }}
+                            
+                            if (attempts >= maxAttempts) {{
+                                resolve();
+                            }} else {{
+                                setTimeout(check, 2000);
+                            }}
+                        }};
+                        check();
+                    }});
+                    
+                    // Получаем финальный ответ
+                    const response = getResponseText();
+                    return response || '⏰ Ответ не получен';
                     
                 }} catch(e) {{
                     return '❌ Ошибка: ' + e.message;
