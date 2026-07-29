@@ -45,7 +45,6 @@ from browser_harness.admin import ensure_daemon
 # ============================================================
 
 MAX_TABS = 5
-_search_enabled = True
 
 # ============================================================
 # КОМАНДЫ
@@ -54,7 +53,7 @@ _search_enabled = True
 async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузер бот**\n\n"
-        "/z <запрос> — спросить Z.ai (GLM-5.2 + поиск)\n"
+        "/z <запрос> — спросить Z.ai\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
@@ -223,21 +222,18 @@ async def dom(update, context):
 
 async def z(update, context):
     """
-    Отправляет запрос к Z.ai: клик по GLM-5.2, потом отправка запроса
+    Просто отправляет запрос к Z.ai и возвращает ответ
     """
     try:
         if not context.args:
             await update.message.reply_text(
                 "❌ Напишите запрос\n"
-                "Пример: /z кто лидер сша?\n\n"
-                "🔍 Поиск всегда включён\n"
-                "🤖 Модель: GLM-5.2"
+                "Пример: /z кто лидер сша?"
             )
             return
 
         query = " ".join(context.args)
         logger.info(f"📝 /z запрос: {query}")
-        logger.info(f"🔍 Поиск: {_search_enabled}")
 
         status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
 
@@ -259,69 +255,24 @@ async def z(update, context):
             await asyncio.sleep(2)
 
             query_escaped = query.replace("'", "\\'").replace('"', '\\"')
-            search_enabled = str(_search_enabled).lower()
 
             js_code = f"""
             (async function() {{
                 const query = '{query_escaped}';
-                const searchEnabled = {search_enabled};
                 
                 let result = '';
                 
-                // === ШАГ 1: ВЫБИРАЕМ GLM-5.2 (ПРЯМОЙ КЛИК) ===
-                const modelBtn = document.querySelector('#model-selector-glm-5_2-button');
-                if (modelBtn) {{
-                    modelBtn.click();
-                    result += '✅ Модель: GLM-5.2\\n';
-                }} else {{
-                    const fallback = document.querySelector('#model-selector-glm-4_7-button');
-                    if (fallback) {{
-                        fallback.click();
-                        result += '✅ Модель: GLM-4.7 (GLM-5.2 не найдена)\\n';
-                    }} else {{
-                        result += '❌ Кнопка модели не найдена\\n';
-                    }}
-                }}
-                
-                // === ШАГ 2: ВКЛЮЧАЕМ ПОИСК ===
-                const deepThinkBtn = document.querySelector('[data-autothink="true"], [data-autothink="false"]');
-                if (deepThinkBtn) {{
-                    const isActive = deepThinkBtn.getAttribute('data-autothink') === 'true';
-                    if (isActive !== searchEnabled) {{
-                        deepThinkBtn.click();
-                        result += '🔄 Deep Think: клик\\n';
-                    }} else {{
-                        result += '✅ Deep Think: уже включён\\n';
-                    }}
-                }} else {{
-                    result += '❌ Deep Think: не найден\\n';
-                }}
-                
-                const webSearchBtn = document.querySelector('[data-active="true"], [data-active="false"]');
-                if (webSearchBtn) {{
-                    const isActive = webSearchBtn.getAttribute('data-active') === 'true';
-                    if (isActive !== searchEnabled) {{
-                        webSearchBtn.click();
-                        result += '🔄 Web Search: клик\\n';
-                    }} else {{
-                        result += '✅ Web Search: уже включён\\n';
-                    }}
-                }} else {{
-                    result += '❌ Web Search: не найден\\n';
-                }}
-                
-                // === ШАГ 3: ВВОДИМ ЗАПРОС ===
+                // === ВВОДИМ ЗАПРОС ===
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
-                if (!input) return result + '❌ Поле ввода не найдено';
+                if (!input) return '❌ Поле ввода не найдено';
                 
                 input.value = '';
                 input.focus();
                 
-                // Вводим текст (можно быстро, без посимвольного)
                 input.value = query;
                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 
-                // === ШАГ 4: ОТПРАВЛЯЕМ ===
+                // === ОТПРАВЛЯЕМ ===
                 const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
@@ -390,9 +341,7 @@ async def z(update, context):
                 response = response[:3950] + "\n\n... (ответ обрезан)"
 
             header = f"🤖 **Z.ai ответ**\n"
-            header += f"📌 Запрос: {query[:100]}\n"
-            header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n"
-            header += f"🤖 Модель: GLM-5.2\n\n"
+            header += f"📌 Запрос: {query[:100]}\n\n"
             
             full_response = header + response
             
