@@ -41,11 +41,11 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# ФУНКЦИЯ ПАРСИНГА DOM
+# ФУНКЦИЯ ПАРСИНГА DOM (СОБИРАЕТ ВСЁ)
 # ============================================================
 
 def parse_dom():
-    """Парсит DOM страницы и возвращает JSON"""
+    """Парсит DOM страницы и возвращает JSON со всеми элементами"""
     try:
         js_code = """
         const elements = {
@@ -61,43 +61,24 @@ def parse_dom():
             others: []
         };
         
-        const selectors = [
-            'button',
-            'input:not([type="hidden"])',
-            'a[href]',
-            'form',
-            'select',
-            'textarea',
-            '[role="button"]',
-            '[role="link"]',
-            '[role="checkbox"]',
-            '[role="radio"]',
-            '[contenteditable="true"]'
-        ];
+        // Собираем ВСЕ элементы
+        const allElements = document.querySelectorAll('*');
         
-        const all = new Set(document.querySelectorAll(selectors.join(',')));
-        document.querySelectorAll('[onclick], [data-testid], [data-test], [data-cy], [data-qa]').forEach(el => all.add(el));
-        
-        for (const el of all) {
+        for (const el of allElements) {
+            // Пропускаем скрытые элементы
+            if (el.offsetParent === null && !el.hasAttribute('data-testid')) continue;
+            
+            // Пропускаем элементы без текста
+            const text = el.textContent?.trim() || '';
+            if (!text || text.length < 1) continue;
+            
+            const tag = el.tagName.toLowerCase();
+            
             const info = {
-                tag: el.tagName.toLowerCase(),
-                text: el.textContent?.trim() || '',
-                value: el.value || '',
-                placeholder: el.placeholder || '',
-                type: el.type || '',
-                name: el.name || '',
-                id: el.id || '',
+                tag: tag,
+                text: text.substring(0, 500), // Обрезаем длинные тексты
                 className: el.className || '',
-                href: el.href || '',
-                src: el.src || '',
-                alt: el.alt || '',
-                title: el.title || '',
-                disabled: el.disabled || false,
-                readonly: el.readOnly || false,
-                required: el.required || false,
-                checked: el.checked || false,
-                selected: el.selected || false,
-                visible: el.offsetParent !== null,
+                id: el.id || '',
                 attributes: {},
                 dataAttributes: {}
             };
@@ -109,8 +90,8 @@ def parse_dom():
                 }
             }
             
-            const tag = info.tag;
-            if (tag === 'button' || (el.hasAttribute('role') && el.getAttribute('role') === 'button')) {
+            // Распределяем по категориям
+            if (tag === 'button' || el.getAttribute('role') === 'button') {
                 elements.buttons.push(info);
             } else if (tag === 'input') {
                 elements.inputs.push(info);
