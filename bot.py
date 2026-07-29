@@ -52,15 +52,14 @@ MAX_TABS = 5
 
 async def start(update, context):
     await update.message.reply_text(
-        "🌐 **Браузер бот**\n\n"
+        "🌐 Браузер бот\n\n"
         "/z <запрос> — спросить Z.ai\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
         "/tab_switch <номер> — переключить вкладку\n"
-        "/log — скачать логи",
-        parse_mode='Markdown'
+        "/log — скачать логи"
     )
 
 async def log(update, context):
