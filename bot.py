@@ -121,15 +121,6 @@ _current_model = "glm-5.2"
 _search_enabled = False
 
 # ============================================================
-# ФУНКЦИЯ ЭКРАНИРОВАНИЯ MARKDOWN
-# ============================================================
-
-def escape_markdown(text):
-    """Экранирует спецсимволы для Telegram Markdown"""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
-
-# ============================================================
 # ДЕКОРАТОР ДЛЯ ЛОГИРОВАНИЯ ОШИБОК
 # ============================================================
 
@@ -698,7 +689,6 @@ async def zai(update, context):
         try:
             ensure_tab()
             
-            # Проверяем URL
             try:
                 test_url = js("return window.location.href;")
                 debug_logger.debug(f"   Текущий URL: {test_url}")
@@ -738,64 +728,58 @@ async def zai(update, context):
                 }}
                 
                 function getResponseText() {{
+                    // Ищем финальный ответ AI — самый последний
                     const selectors = [
-                        '[data-message-role="assistant"]',
-                        '[data-testid="message"]',
-                        '.message-role-assistant',
-                        '.assistant-message',
-                        '[role="article"]:last-child',
+                        '[data-message-role="assistant"]:last-child',
+                        '.assistant-message:last-child',
                         '.chat-message:last-child',
-                        '.thought-process',
-                        '.thought-process *',
-                        '.message-content',
-                        '.response-content',
-                        '.ai-message',
-                        '.bot-message',
-                        '.assistant-response',
-                        '.chat-response',
-                        '[class*="assistant"]',
-                        '[class*="response"]',
-                        '[class*="message"]:last-child',
-                        '[class*="chat"]:last-child',
-                        'div:last-child',
-                        '.flex-1:last-child',
-                        '.prose'
+                        '.message-role-assistant:last-child',
+                        '[role="article"]:last-child',
+                        '.message-content:last-child',
+                        '.response-content:last-child',
+                        '.prose:last-child'
                     ];
                     
-                    let text = '';
+                    let bestText = '';
                     
                     for (const sel of selectors) {{
-                        const els = document.querySelectorAll(sel);
-                        if (els.length > 0) {{
-                            for (const el of els) {{
-                                const t = el.textContent?.trim() || '';
-                                if (t && t.length > 10 && !t.includes(query) && t !== query) {{
-                                    if (!t.includes('Thought Process')) {{
-                                        if (t.length > text.length) {{
-                                            text = t;
-                                        }}
-                                    }}
+                        const el = document.querySelector(sel);
+                        if (el) {{
+                            const t = el.textContent?.trim() || '';
+                            if (t && t.length > 10 && 
+                                !t.includes('Thought Process') && 
+                                !t.includes('Send a Message') &&
+                                !t.includes('Deep Think') &&
+                                !t.includes('Max') &&
+                                !t.includes(query)) {{
+                                if (bestText === '' || t.length < bestText.length) {{
+                                    bestText = t;
                                 }}
                             }}
                         }}
                     }}
                     
-                    if (!text) {{
-                        const allElements = document.querySelectorAll('div, p, span, section, article');
-                        for (const el of allElements) {{
+                    // Если ничего не нашли — ищем любой похожий блок
+                    if (!bestText) {{
+                        const all = document.querySelectorAll('div, p, section');
+                        for (const el of all) {{
                             const t = el.textContent?.trim() || '';
-                            if (t && t.length > 20 && !t.includes(query) && t !== query) {{
+                            if (t && t.length > 20 && 
+                                !t.includes('Thought Process') && 
+                                !t.includes('Send a Message') &&
+                                !t.includes('Deep Think') &&
+                                !t.includes(query)) {{
                                 const children = el.children;
                                 if (children.length === 0 || children.length < 3) {{
-                                    if (t.length > text.length) {{
-                                        text = t;
+                                    if (bestText === '' || t.length < bestText.length) {{
+                                        bestText = t;
                                     }}
                                 }}
                             }}
                         }}
                     }}
                     
-                    return text;
+                    return bestText;
                 }}
                 
                 try {{
@@ -897,8 +881,10 @@ async def zai(update, context):
                 await status_msg.edit_text(result)
                 return
 
-            if len(result) > 4000:
-                result = result[:3900] + "\n\n... (ответ обрезан)"
+            # Обрезаем если слишком длинный
+            max_len = 4000
+            if len(result) > max_len:
+                result = result[:max_len - 50] + "\n\n... (ответ обрезан)"
 
             header = f"🤖 **Z.ai ответ**\n"
             header += f"📌 Модель: `{_current_model}`\n"
@@ -906,10 +892,8 @@ async def zai(update, context):
             
             full_response = header + result
             
-            # === ЭКРАНИРУЕМ MARKDOWN ===
-            safe_response = escape_markdown(full_response)
-            
-            await status_msg.edit_text(safe_response, parse_mode='Markdown')
+            # Отправляем БЕЗ Markdown
+            await status_msg.edit_text(full_response, parse_mode=None)
 
         except Exception as e:
             error_msg = str(e)
