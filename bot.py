@@ -223,7 +223,7 @@ async def dom(update, context):
 
 async def z(update, context):
     """
-    Отправляет запрос к Z.ai с GLM-5.2 (если доступна) и включенным поиском
+    Отправляет запрос к Z.ai: сначала выбирает модель, потом отправляет запрос
     """
     try:
         if not context.args:
@@ -231,7 +231,7 @@ async def z(update, context):
                 "❌ Напишите запрос\n"
                 "Пример: /z кто лидер сша?\n\n"
                 "🔍 Поиск всегда включён\n"
-                "🤖 Модель: GLM-4.7 / GLM-5.2 (выбирается автоматически)"
+                "🤖 Сначала выбирается GLM-5.2 (если есть), иначе GLM-4.7"
             )
             return
 
@@ -268,7 +268,7 @@ async def z(update, context):
                 
                 let result = '';
                 
-                // 1. Выбираем GLM-5.2 (если доступна)
+                // === ШАГ 1: ВЫБИРАЕМ МОДЕЛЬ ===
                 const modelBtn = document.querySelector('#model-selector-glm-4_7-button');
                 if (modelBtn) {{
                     modelBtn.click();
@@ -278,8 +278,11 @@ async def z(update, context):
                     const checkMenu = () => {{
                         const items = document.querySelectorAll('[role="menuitemradio"]');
                         let found = false;
+                        let modelList = [];
+                        
                         for (const item of items) {{
                             const text = item.textContent?.trim() || '';
+                            modelList.push(text);
                             if (text.includes('GLM-5.2')) {{
                                 item.click();
                                 result += '✅ Модель: GLM-5.2\\n';
@@ -287,6 +290,7 @@ async def z(update, context):
                                 break;
                             }}
                         }}
+                        
                         if (!found) {{
                             // Если GLM-5.2 нет, выбираем GLM-4.7
                             for (const item of items) {{
@@ -305,13 +309,20 @@ async def z(update, context):
                                 result += `✅ Модель: ${{name}}\\n`;
                             }}
                         }}
+                        
+                        // Логируем все найденные модели
+                        result += `📋 Доступные модели: ${{modelList.join(', ')}}\\n`;
                     }};
-                    setTimeout(checkMenu, 500);
+                    
+                    // Даём время на открытие меню
+                    setTimeout(checkMenu, 1500);
+                    
                 }} else {{
                     result += '❌ Кнопка модели не найдена\\n';
                 }}
                 
-                // 2. Включаем Deep Think
+                // === ШАГ 2: ВКЛЮЧАЕМ ПОИСК ===
+                // Deep Think
                 const deepThinkBtn = document.querySelector('[data-autothink="true"], [data-autothink="false"]');
                 if (deepThinkBtn) {{
                     const isActive = deepThinkBtn.getAttribute('data-autothink') === 'true';
@@ -325,7 +336,7 @@ async def z(update, context):
                     result += '❌ Deep Think: не найден\\n';
                 }}
                 
-                // 3. Включаем Web Search
+                // Web Search
                 const webSearchBtn = document.querySelector('[data-active="true"], [data-active="false"]');
                 if (webSearchBtn) {{
                     const isActive = webSearchBtn.getAttribute('data-active') === 'true';
@@ -339,7 +350,7 @@ async def z(update, context):
                     result += '❌ Web Search: не найден\\n';
                 }}
                 
-                // 4. Вводим запрос
+                // === ШАГ 3: ВВОДИМ ЗАПРОС ===
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
                 if (!input) return result + '❌ Поле ввода не найдено';
                 
@@ -351,7 +362,7 @@ async def z(update, context):
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 }}
                 
-                // 5. Отправляем
+                // === ШАГ 4: ОТПРАВЛЯЕМ ===
                 const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
@@ -424,7 +435,7 @@ async def z(update, context):
             header = f"🤖 **Z.ai ответ**\n"
             header += f"📌 Запрос: {query[:100]}\n"
             header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n"
-            header += f"🤖 Модель: GLM-5.2 (если доступна)\n\n"
+            header += f"🤖 Модель: GLM-4.7 / GLM-5.2 (выбрана автоматически)\n\n"
             
             full_response = header + response
             
