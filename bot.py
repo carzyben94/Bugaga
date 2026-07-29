@@ -121,6 +121,15 @@ _current_model = "glm-5.2"
 _search_enabled = False
 
 # ============================================================
+# ФУНКЦИЯ ЭКРАНИРОВАНИЯ MARKDOWN
+# ============================================================
+
+def escape_markdown(text):
+    """Экранирует спецсимволы для Telegram Markdown"""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
+
+# ============================================================
 # ДЕКОРАТОР ДЛЯ ЛОГИРОВАНИЯ ОШИБОК
 # ============================================================
 
@@ -709,7 +718,6 @@ async def zai(update, context):
 
             query_escaped = query[:500].replace("'", "\\'").replace('"', '\\"')
             
-            # === НОВЫЙ JS КОД — ИЩЕТ ВСЁ ===
             js_code = f"""
             (async function() {{
                 const query = '{query_escaped}';
@@ -730,16 +738,13 @@ async def zai(update, context):
                 }}
                 
                 function getResponseText() {{
-                    // Все возможные селекторы для ответа AI
                     const selectors = [
-                        // Основные
                         '[data-message-role="assistant"]',
                         '[data-testid="message"]',
                         '.message-role-assistant',
                         '.assistant-message',
                         '[role="article"]:last-child',
                         '.chat-message:last-child',
-                        // Новые (из скриншота)
                         '.thought-process',
                         '.thought-process *',
                         '.message-content',
@@ -748,32 +753,26 @@ async def zai(update, context):
                         '.bot-message',
                         '.assistant-response',
                         '.chat-response',
-                        // Универсальные
                         '[class*="assistant"]',
                         '[class*="response"]',
                         '[class*="message"]:last-child',
                         '[class*="chat"]:last-child',
-                        // Просто все большие блоки
                         'div:last-child',
                         '.flex-1:last-child',
                         '.prose'
                     ];
                     
                     let text = '';
-                    let foundEl = null;
                     
                     for (const sel of selectors) {{
                         const els = document.querySelectorAll(sel);
                         if (els.length > 0) {{
                             for (const el of els) {{
                                 const t = el.textContent?.trim() || '';
-                                // Проверяем, что это ответ AI (не запрос пользователя)
                                 if (t && t.length > 10 && !t.includes(query) && t !== query) {{
-                                    // Проверяем, что это не "Thought Process" (заголовок)
                                     if (!t.includes('Thought Process')) {{
                                         if (t.length > text.length) {{
                                             text = t;
-                                            foundEl = el;
                                         }}
                                     }}
                                 }}
@@ -781,14 +780,11 @@ async def zai(update, context):
                         }}
                     }}
                     
-                    // Если ничего не нашли через селекторы, ищем любой большой блок текста
                     if (!text) {{
                         const allElements = document.querySelectorAll('div, p, span, section, article');
                         for (const el of allElements) {{
                             const t = el.textContent?.trim() || '';
-                            // Ищем текст, который похож на ответ AI
                             if (t && t.length > 20 && !t.includes(query) && t !== query) {{
-                                // Проверяем, что это не навигация, не кнопки
                                 const children = el.children;
                                 if (children.length === 0 || children.length < 3) {{
                                     if (t.length > text.length) {{
@@ -803,7 +799,6 @@ async def zai(update, context):
                 }}
                 
                 try {{
-                    // Смена модели
                     if (model) {{
                         const modelSelector = document.querySelector('#model-selector-glm-5_2-button');
                         if (modelSelector) {{
@@ -821,7 +816,6 @@ async def zai(update, context):
                         }}
                     }}
                     
-                    // Поиск
                     if (searchEnabled !== undefined) {{
                         const toggle = document.querySelector('[aria-label*="search"], [aria-label*="Search"], button[data-search]');
                         if (toggle) {{
@@ -833,7 +827,6 @@ async def zai(update, context):
                         }}
                     }}
                     
-                    // Ввод текста
                     const input = await waitForElement('#chat-input, textarea, [contenteditable="true"]', 15000);
                     if (!input) return '❌ Поле ввода не найдено';
                     
@@ -846,7 +839,6 @@ async def zai(update, context):
                         await new Promise(r => setTimeout(r, 3));
                     }}
                     
-                    // Отправка
                     const sendBtn = await waitForElement('#send-message-button, button[type="submit"]', 15000);
                     if (sendBtn && !sendBtn.disabled) {{
                         sendBtn.click();
@@ -854,10 +846,9 @@ async def zai(update, context):
                         input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
                     }}
                     
-                    // Ждём ответ — проверяем каждые 2 секунды
                     await new Promise(resolve => {{
                         let attempts = 0;
-                        const maxAttempts = 60; // 120 секунд
+                        const maxAttempts = 60;
                         let lastText = '';
                         
                         const check = () => {{
@@ -865,7 +856,6 @@ async def zai(update, context):
                             const text = getResponseText();
                             
                             if (text && text.length > 10) {{
-                                // Если текст стабилен или длинный
                                 if (text === lastText && text.length > 20) {{
                                     resolve();
                                     return;
@@ -886,7 +876,6 @@ async def zai(update, context):
                         check();
                     }});
                     
-                    // Получаем финальный ответ
                     const response = getResponseText();
                     return response || '⏰ Ответ не получен';
                     
@@ -915,7 +904,12 @@ async def zai(update, context):
             header += f"📌 Модель: `{_current_model}`\n"
             header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
             
-            await status_msg.edit_text(header + result, parse_mode='Markdown')
+            full_response = header + result
+            
+            # === ЭКРАНИРУЕМ MARKDOWN ===
+            safe_response = escape_markdown(full_response)
+            
+            await status_msg.edit_text(safe_response, parse_mode='Markdown')
 
         except Exception as e:
             error_msg = str(e)
