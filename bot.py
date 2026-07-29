@@ -163,6 +163,7 @@ async def z(update, context):
         return
     
     query = " ".join(context.args)
+    logger.info(f"📝 /z запрос: {query}")
     status = await update.message.reply_text("🤖 Запрос к Z.ai...")
     
     try:
@@ -176,10 +177,8 @@ async def z(update, context):
         wait_for_load(30)
         await asyncio.sleep(2)
         
-        # Экранируем запрос
         query_escaped = escape_js(query)
         
-        # Отправляем запрос
         js_code = f"""
         (function() {{
             const input = document.querySelector('#chat-input');
@@ -197,7 +196,6 @@ async def z(update, context):
         
         await asyncio.sleep(30)
         
-        # Получаем ответ
         response = js("""
         (function() {
             const el = document.querySelector('.chat-assistant');
@@ -215,8 +213,92 @@ async def z(update, context):
             await status.edit_text("❌ Нет ответа")
             
     except Exception as e:
-        logger.error(f"z error: {e}")
+        logger.error(f"❌ /z ошибка: {e}")
         await status.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def z_logic(query):
+    """Вспомогательная функция для Z.ai с подробным логированием"""
+    logger.info(f"📤 z_logic: запрос длиной {len(query)} символов")
+    logger.info(f"📤 z_logic: первые 200 символов: {query[:200]}...")
+    
+    try:
+        # Закрываем старые вкладки
+        tabs = list_tabs()
+        logger.info(f"📑 z_logic: открыто вкладок: {len(tabs)}")
+        
+        for tab in tabs:
+            if tab != current_tab():
+                try: 
+                    close_tab(tab)
+                    logger.info(f"🗑️ z_logic: закрыта вкладка {tab}")
+                except Exception as e:
+                    logger.warning(f"⚠️ z_logic: не удалось закрыть вкладку: {e}")
+
+        logger.info("🌐 z_logic: открываю новую вкладку с chat.z.ai")
+        new_tab("https://chat.z.ai/")
+        wait_for_load(30)
+        logger.info("✅ z_logic: страница загружена")
+        await asyncio.sleep(2)
+
+        # Экранируем запрос
+        query_escaped = escape_js(query)
+        logger.info(f"✍️ z_logic: экранированный запрос: {query_escaped[:100]}...")
+
+        js_code = f"""
+        (function() {{
+            const input = document.querySelector('#chat-input');
+            if (!input) return '❌ Поле ввода не найдено';
+            input.value = '';
+            input.focus();
+            input.value = '{query_escaped}';
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            const btn = document.querySelector('#send-message-button');
+            if (btn && !btn.disabled) {{
+                btn.click();
+                return '✅ Клик по кнопке';
+            }} else {{
+                input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+                return '✅ Enter';
+            }}
+        }})();
+        """
+        
+        logger.info("📤 z_logic: выполняю JS для отправки запроса")
+        result = js(js_code)
+        logger.info(f"📥 z_logic: результат отправки: {result}")
+        
+        logger.info("⏳ z_logic: жду 30 секунд...")
+        await asyncio.sleep(30)
+
+        logger.info("📤 z_logic: получаю ответ")
+        response = js("""
+        (function() {
+            const el = document.querySelector('.chat-assistant');
+            if (!el) return '';
+            const paragraphs = el.querySelectorAll('p');
+            const texts = [];
+            for (const p of paragraphs) {
+                const t = p.textContent?.trim();
+                if (t) texts.push(t);
+            }
+            return texts.join('\\n\\n');
+        })();
+        """)
+        
+        logger.info(f"📥 z_logic: получен ответ длиной {len(response) if response else 0} символов")
+        
+        if response and len(response) > 5:
+            logger.info("✅ z_logic: ответ получен успешно")
+            return response
+        else:
+            logger.warning("⚠️ z_logic: ответ пустой или слишком короткий")
+            return None
+        
+    except Exception as e:
+        logger.error(f"❌ z_logic: ошибка: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
 async def agent(update, context):
     if not context.args:
@@ -224,80 +306,44 @@ async def agent(update, context):
         return
     
     task = " ".join(context.args)
+    logger.info(f"🧠 Агент: запрос пользователя: {task}")
+    
     status = await update.message.reply_text(f"🧠 Агент: {task}...")
     
     # 1. Генерируем код через Z.ai
     full_query = f"{SYSTEM_PROMPT}\n\nЗапрос: {task}"
+    logger.info(f"📤 Агент: полный запрос к Z.ai: {full_query[:200]}...")
+    
     code_response = await z_logic(full_query)
     
     if not code_response:
-        await status.edit_text("❌ Не удалось сгенерировать код")
+        logger.error("❌ Агент: не удалось получить код от Z.ai")
+        await status.edit_text("❌ Не удалось сгенерировать код. Проверьте логи.")
         return
+    
+    logger.info(f"📥 Агент: получен ответ от Z.ai: {code_response[:200]}...")
     
     code = extract_code(code_response)
     if not code:
-        await status.edit_text(f"❌ Нет кода:\n{code_response[:200]}")
+        logger.error("❌ Агент: код не найден в ответе")
+        logger.error(f"📄 Агент: полный ответ: {code_response}")
+        await status.edit_text(f"❌ Нет кода в ответе:\n{code_response[:500]}")
         return
     
+    logger.info(f"✅ Агент: код извлечён, длина {len(code)} символов")
     await status.edit_text(f"📝 Код:\n```python\n{code}\n```")
     
     # 2. Выполняем код
+    logger.info("⚡ Агент: выполняю код...")
     await status.edit_text("⚡ Выполняю...")
     result = execute_harness_code(code)
     
     if result:
+        logger.info(f"✅ Агент: результат выполнения: {result[:200]}...")
         await status.edit_text(f"✅ Результат:\n{result[:4000]}")
     else:
-        await status.edit_text("✅ Выполнено")
-
-async def z_logic(query):
-    """Вспомогательная функция для Z.ai"""
-    try:
-        for tab in list_tabs():
-            if tab != current_tab():
-                try: close_tab(tab)
-                except: pass
-        
-        new_tab("https://chat.z.ai/")
-        wait_for_load(30)
-        await asyncio.sleep(2)
-        
-        # Экранируем запрос
-        query_escaped = escape_js(query)
-        
-        js_code = f"""
-        (function() {{
-            const input = document.querySelector('#chat-input');
-            if (!input) return;
-            input.value = '';
-            input.focus();
-            input.value = '{query_escaped}';
-            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            const btn = document.querySelector('#send-message-button');
-            if (btn && !btn.disabled) btn.click();
-            else input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
-        }})();
-        """
-        js(js_code)
-        
-        await asyncio.sleep(30)
-        
-        response = js("""
-        (function() {
-            const el = document.querySelector('.chat-assistant');
-            if (!el) return '';
-            return Array.from(el.querySelectorAll('p'))
-                .map(p => p.textContent?.trim())
-                .filter(t => t)
-                .join('\\n\\n');
-        })();
-        """)
-        
-        return response if response and len(response) > 5 else None
-        
-    except Exception as e:
-        logger.error(f"z_logic error: {e}")
-        return None
+        logger.warning("⚠️ Агент: код выполнен без вывода")
+        await status.edit_text("✅ Выполнено (без вывода)")
 
 async def dom(update, context):
     if not context.args:
