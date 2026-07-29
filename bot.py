@@ -689,9 +689,13 @@ async def zai(update, context):
 
             await status_msg.edit_text("✍️ Ввожу запрос...")
 
-            # JavaScript с поддержкой модели и поиска
+            # === ИСПРАВЛЕННЫЙ JS КОД ===
             js_code = """
-            async function sendQuery(query, model, searchEnabled) {
+            async function sendQuery(params) {
+                const query = params.query || '';
+                const model = params.model || '';
+                const searchEnabled = params.searchEnabled || false;
+                
                 // 1. Смена модели (если нужно)
                 if (model) {
                     const modelSelector = document.querySelector('#model-selector-glm-5_2-button');
@@ -793,11 +797,18 @@ async def zai(update, context):
                 return text;
             }
             
-            return await sendQuery(arguments[0], arguments[1], arguments[2]);
+            return await sendQuery(arguments[0]);
             """
 
+            # Передаём все параметры как один JSON-объект
+            params = {
+                "query": query[:500],
+                "model": _current_model,
+                "searchEnabled": _search_enabled
+            }
+            
             debug_logger.debug("📤 Отправка запроса...")
-            result = js(js_code, query[:500], _current_model, _search_enabled)
+            result = js(js_code, params)
             debug_logger.debug(f"📥 Получен ответ: {len(result) if result else 0} символов")
 
             if not result:
@@ -826,7 +837,7 @@ async def zai(update, context):
                     ensure_tab()
                     goto_url("https://chat.z.ai/")
                     wait_for_load(timeout=60)
-                    result = js(js_code, query[:500], _current_model, _search_enabled)
+                    result = js(js_code, params)
                     if result:
                         if len(result) > 4000:
                             result = result[:3900] + "\n\n... (ответ обрезан)"
