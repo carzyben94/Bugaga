@@ -54,7 +54,7 @@ _search_enabled = True
 async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузер бот**\n\n"
-        "/z <запрос> — спросить Z.ai (GLM-4.7/5.2 + поиск)\n"
+        "/z <запрос> — спросить Z.ai (GLM-5.2 + поиск)\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/dom_full — скачать полный DOM с открытым меню моделей\n"
         "/tabs — список вкладок\n"
@@ -223,10 +223,6 @@ async def dom(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dom_full(update, context):
-    """
-    Открывает chat.z.ai, кликает по кнопке модели,
-    ждёт открытия меню, потом парсит полный DOM
-    """
     try:
         status_msg = await update.message.reply_text("🌐 Открываю chat.z.ai...")
 
@@ -238,7 +234,6 @@ async def dom_full(update, context):
             await status_msg.edit_text("🔄 Открываю меню моделей...")
             await asyncio.sleep(1)
             
-            # Кликаем по кнопке модели
             js_click = """
             (function() {
                 const btn = document.querySelector('#model-selector-glm-4_7-button');
@@ -253,7 +248,6 @@ async def dom_full(update, context):
             await status_msg.edit_text(f"✅ {result}, жду 2 секунды...")
             await asyncio.sleep(2)
             
-            # Теперь парсим DOM с открытым меню
             await status_msg.edit_text("📊 Парсинг полного DOM с открытым меню...")
             
             js_code = """
@@ -382,7 +376,7 @@ async def dom_full(update, context):
 
 async def z(update, context):
     """
-    Отправляет запрос к Z.ai: сначала выбирает модель, потом отправляет запрос
+    Отправляет запрос к Z.ai: сразу выбирает GLM-5.2, потом отправляет запрос
     """
     try:
         if not context.args:
@@ -390,7 +384,7 @@ async def z(update, context):
                 "❌ Напишите запрос\n"
                 "Пример: /z кто лидер сша?\n\n"
                 "🔍 Поиск всегда включён\n"
-                "🤖 Сначала выбирается GLM-5.2 (если есть), иначе GLM-4.7"
+                "🤖 Модель: GLM-5.2"
             )
             return
 
@@ -427,26 +421,40 @@ async def z(update, context):
                 
                 let result = '';
                 
-                // === ШАГ 1: ВЫБИРАЕМ МОДЕЛЬ ===
+                // === ШАГ 1: ВЫБИРАЕМ GLM-5.2 ===
                 const modelBtn = document.querySelector('#model-selector-glm-4_7-button');
                 if (modelBtn) {{
                     modelBtn.click();
                     result += '🔄 Открываю меню моделей...\\n';
                     
-                    // Ждём появления меню и ищем GLM-5.2
+                    // Ждём появления меню и выбираем GLM-5.2
                     const checkMenu = () => {{
                         const items = document.querySelectorAll('[role="menuitemradio"]');
                         let found = false;
                         let modelList = [];
                         
+                        // Сначала ищем GLM-5.2 по data-value
                         for (const item of items) {{
                             const text = item.textContent?.trim() || '';
                             modelList.push(text);
-                            if (text.includes('GLM-5.2')) {{
+                            if (item.getAttribute('data-value') === 'glm-5.2') {{
                                 item.click();
                                 result += '✅ Модель: GLM-5.2\\n';
                                 found = true;
                                 break;
+                            }}
+                        }}
+                        
+                        if (!found) {{
+                            // Если GLM-5.2 нет, ищем по тексту
+                            for (const item of items) {{
+                                const text = item.textContent?.trim() || '';
+                                if (text.includes('GLM-5.2')) {{
+                                    item.click();
+                                    result += '✅ Модель: GLM-5.2\\n';
+                                    found = true;
+                                    break;
+                                }}
                             }}
                         }}
                         
@@ -456,7 +464,7 @@ async def z(update, context):
                                 const text = item.textContent?.trim() || '';
                                 if (text.includes('GLM-4.7')) {{
                                     item.click();
-                                    result += '✅ Модель: GLM-4.7\\n';
+                                    result += '✅ Модель: GLM-4.7 (GLM-5.2 не найдена)\\n';
                                     found = true;
                                     break;
                                 }}
@@ -469,11 +477,9 @@ async def z(update, context):
                             }}
                         }}
                         
-                        // Логируем все найденные модели
                         result += `📋 Доступные модели: ${{modelList.join(', ')}}\\n`;
                     }};
                     
-                    // Даём время на открытие меню
                     setTimeout(checkMenu, 1500);
                     
                 }} else {{
@@ -594,7 +600,7 @@ async def z(update, context):
             header = f"🤖 **Z.ai ответ**\n"
             header += f"📌 Запрос: {query[:100]}\n"
             header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n"
-            header += f"🤖 Модель: GLM-4.7 / GLM-5.2 (выбрана автоматически)\n\n"
+            header += f"🤖 Модель: GLM-5.2\n\n"
             
             full_response = header + response
             
