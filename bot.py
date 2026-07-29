@@ -45,7 +45,7 @@ from browser_harness.admin import ensure_daemon
 # ============================================================
 
 MAX_TABS = 5
-_search_enabled = True  # Поиск ВСЕГДА включён
+_search_enabled = True
 
 # ============================================================
 # КОМАНДЫ
@@ -76,6 +76,7 @@ async def log(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def dom(update, context):
+    """Парсит DOM и отправляет JSON файл"""
     try:
         if not context.args:
             await update.message.reply_text(
@@ -99,6 +100,7 @@ async def dom(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
 
+        # === ИСПРАВЛЕННЫЙ JS КОД ===
         js_code = """
         const elements = {
             buttons: [],
@@ -125,7 +127,7 @@ async def dom(update, context):
             
             const info = {
                 tag: tag,
-                text: text[:500],
+                text: text.substring(0, 500),
                 className: el.className || '',
                 id: el.id || '',
                 attributes: {},
@@ -134,7 +136,7 @@ async def dom(update, context):
             
             for (const attr of el.attributes) {
                 info.attributes[attr.name] = attr.value;
-                if (attr.name.startswith('data-')) {
+                if (attr.name.startsWith('data-')) {
                     info.dataAttributes[attr.name] = attr.value;
                 }
             }
@@ -262,7 +264,6 @@ async def z(update, context):
             query_escaped = query.replace("'", "\\'").replace('"', '\\"')
             search_enabled = str(_search_enabled).lower()
 
-            # === JS КОД С GLM-5.2 И ПОИСКОМ ===
             js_code = f"""
             (function() {{
                 const query = '{query_escaped}';
@@ -270,13 +271,26 @@ async def z(update, context):
                 
                 let result = '';
                 
-                // 1. Выбираем GLM-5.2 (последняя модель)
-                const modelBtn = document.querySelector('#model-selector-glm-5_2-button');
+                // 1. Выбираем GLM-5.2
+                const modelBtn = document.querySelector(
+                    '#model-selector-glm-5_2-button, ' +
+                    '#model-selector-glm-4_7-button, ' +
+                    '[aria-label="Select a model"]'
+                );
                 if (modelBtn) {{
                     modelBtn.click();
-                    result += '✅ Модель: GLM-5.2\\n';
+                    // Ждём появления меню
+                    setTimeout(() => {{
+                        const firstModel = document.querySelector('[role="menuitemradio"]');
+                        if (firstModel) {{
+                            const modelName = firstModel.textContent?.trim() || 'неизвестная';
+                            firstModel.click();
+                            result += `✅ Модель: ${{modelName}}\\n`;
+                        }}
+                    }}, 500);
+                    result += '🔄 Выбор модели...\\n';
                 }} else {{
-                    result += '❌ Модель GLM-5.2 не найдена\\n';
+                    result += '❌ Модель не найдена\\n';
                 }}
                 
                 // 2. Включаем Deep Think
@@ -503,7 +517,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("z", z))  # ← Новая команда /z
+    app.add_handler(CommandHandler("z", z))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
