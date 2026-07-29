@@ -421,18 +421,26 @@ async def z(update, context):
                 
                 let result = '';
                 
-                // === ШАГ 1: ВЫБИРАЕМ GLM-5.2 (ждём!) ===
+                // === ШАГ 1: ВЫБИРАЕМ GLM-5.2 ===
                 const modelBtn = document.querySelector('#model-selector-glm-4_7-button');
                 if (modelBtn) {{
                     modelBtn.click();
                     result += '🔄 Открываю меню моделей...\\n';
                     
-                    // Ждём появления меню
-                    await new Promise(resolve => {{
+                    // Ждём появления меню с таймаутом 5 секунд
+                    let items = [];
+                    await new Promise((resolve) => {{
+                        let attempts = 0;
+                        const maxAttempts = 25;
+                        
                         const checkMenu = () => {{
-                            const items = document.querySelectorAll('[role="menuitemradio"]');
-                            if (items.length > 0) {{
-                                resolve(items);
+                            attempts++;
+                            const els = document.querySelectorAll('[role="menuitemradio"]');
+                            if (els.length > 0) {{
+                                items = els;
+                                resolve();
+                            }} else if (attempts >= maxAttempts) {{
+                                resolve();
                             }} else {{
                                 setTimeout(checkMenu, 200);
                             }}
@@ -440,8 +448,11 @@ async def z(update, context):
                         checkMenu();
                     }});
                     
-                    // Теперь ищем GLM-5.2
-                    const items = document.querySelectorAll('[role="menuitemradio"]');
+                    if (items.length === 0) {{
+                        result += '⚠️ Меню не открылось, продолжаю...\\n';
+                    }}
+                    
+                    // Ищем GLM-5.2
                     let found = false;
                     let modelList = [];
                     
@@ -486,7 +497,9 @@ async def z(update, context):
                         }}
                     }}
                     
-                    result += `📋 Доступные модели: ${{modelList.join(', ')}}\\n`;
+                    if (modelList.length > 0) {{
+                        result += `📋 Доступные модели: ${{modelList.join(', ')}}\\n`;
+                    }}
                 }} else {{
                     result += '❌ Кнопка модели не найдена\\n';
                 }}
@@ -518,7 +531,7 @@ async def z(update, context):
                     result += '❌ Web Search: не найден\\n';
                 }}
                 
-                // === ШАГ 3: ВВОДИМ ЗАПРОС (ТОЛЬКО ПОСЛЕ ВЫБОРА МОДЕЛИ) ===
+                // === ШАГ 3: ВВОДИМ ЗАПРОС ===
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
                 if (!input) return result + '❌ Поле ввода не найдено';
                 
@@ -557,7 +570,6 @@ async def z(update, context):
             
             js_response = """
             (function() {
-                // Проверяем "Thinking..."
                 const thinking = document.querySelector('[data-thinking], .thinking, [role="status"]');
                 if (thinking) {
                     const thinkingText = thinking.textContent?.trim() || '';
@@ -566,7 +578,6 @@ async def z(update, context):
                     }
                 }
                 
-                // Ищем ответ AI
                 const assistant = document.querySelector('.chat-assistant');
                 if (!assistant) return '';
                 
