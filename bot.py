@@ -4,11 +4,18 @@ import sys
 import time
 import logging
 import json
+import re
 import asyncio
 import httpx
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
+# ============================================================
+# ИМПОРТ SYSTEM PROMPT
+# ============================================================
+
+from prompt import SYSTEM_PROMPT
 
 # ============================================================
 # НАСТРОЙКА
@@ -53,6 +60,7 @@ MAX_TABS = 5
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер бот\n\n"
+        "/agent <запрос> — умный агент\n"
         "/z <запрос> — спросить Z.ai\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/tabs — список вкладок\n"
@@ -217,6 +225,149 @@ async def dom(update, context):
 
     except Exception as e:
         logger.error(f"❌ Ошибка в /dom: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def agent(update, context):
+    """
+    Умный агент с system prompt
+    """
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Напишите задание для агента\n"
+                "Пример: /agent погода в Киеве"
+            )
+            return
+
+        task = " ".join(context.args)
+        logger.info(f"📝 Агент: {task}")
+
+        status_msg = await update.message.reply_text(f"🤖 Агент выполняет задание...")
+
+        try:
+            # Закрываем старые вкладки
+            tabs = list_tabs()
+            for tab in tabs:
+                if tab != current_tab():
+                    try:
+                        close_tab(tab)
+                    except:
+                        pass
+
+            new_tab()
+            
+            # Формируем запрос с system prompt
+            full_query = f"{SYSTEM_PROMPT}\n\nЗапрос пользователя: {task}"
+            query_escaped = full_query.replace("'", "\\'").replace('"', '\\"')
+
+            # Открываем Z.ai
+            goto_url("https://chat.z.ai/")
+            wait_for_load(timeout=60)
+            
+            await status_msg.edit_text("✍️ Агент думает...")
+            await asyncio.sleep(2)
+
+            js_code = f"""
+            (async function() {{
+                const query = '{query_escaped}';
+                
+                let result = '';
+                
+                // === ВВОДИМ ЗАПРОС ===
+                const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
+                if (!input) return '❌ Поле ввода не найдено';
+                
+                input.value = '';
+                input.focus();
+                
+                input.value = query;
+                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                
+                // === ОТПРАВЛЯЕМ ===
+                const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
+                if (sendBtn && !sendBtn.disabled) {{
+                    sendBtn.click();
+                    result += '✅ Запрос отправлен';
+                }} else {{
+                    input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+                    result += '✅ Запрос отправлен (Enter)';
+                }}
+                
+                return result;
+            }})();
+            """
+            
+            result = js(js_code)
+            logger.info(f"📊 Результат JS: {result}")
+            await status_msg.edit_text(f"✅ {result}")
+
+            # Ждём ответ
+            await status_msg.edit_text("⏳ Жду ответ агента (до 30 секунд)...")
+            await asyncio.sleep(30)
+
+            # Парсим ответ
+            await status_msg.edit_text("📊 Получаю ответ...")
+            
+            js_response = """
+            (function() {
+                const thinking = document.querySelector('[data-thinking], .thinking, [role="status"]');
+                if (thinking) {
+                    const thinkingText = thinking.textContent?.trim() || '';
+                    if (thinkingText.includes('Thinking') || thinkingText.includes('...')) {
+                        return '⏰ Агент всё ещё думает... Попробуйте упростить запрос.';
+                    }
+                }
+                
+                const assistant = document.querySelector('.chat-assistant');
+                if (!assistant) return '';
+                
+                const paragraphs = assistant.querySelectorAll('p');
+                let text = '';
+                for (const p of paragraphs) {
+                    const t = p.textContent?.trim() || '';
+                    if (t) {
+                        text += t + '\\n\\n';
+                    }
+                }
+                return text.trim();
+            })();
+            """
+            
+            response = js(js_response)
+            
+            if not response or len(response) < 5:
+                await status_msg.edit_text("⏳ Агент думает, жду ещё 10 секунд...")
+                await asyncio.sleep(10)
+                response = js(js_response)
+
+            if not response or len(response) < 5:
+                await status_msg.edit_text("❌ Не удалось получить ответ от агента. Попробуйте упростить запрос.")
+                return
+
+            if response.startswith("⏰"):
+                await status_msg.edit_text(response)
+                return
+
+            if len(response) > 4000:
+                response = response[:3950] + "\n\n... (ответ обрезан)"
+
+            header = f"🤖 **Агент ответ**\n"
+            header += f"📌 Запрос: {task[:100]}\n\n"
+            
+            full_response = header + response
+            
+            await status_msg.edit_text(full_response, parse_mode=None)
+
+            try:
+                close_tab(current_tab())
+            except:
+                pass
+
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в агента: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def z(update, context):
@@ -451,6 +602,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
+    app.add_handler(CommandHandler("agent", agent))
     app.add_handler(CommandHandler("z", z))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
