@@ -34,9 +34,10 @@ sys.path.insert(0, "browser-harness/src")
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, js,
     list_tabs, current_tab, close_tab, switch_tab,
-    capture_screenshot, click_at_xy, scroll_at_xy,
+    capture_screenshot, click_at_xy,
     type_text, press_key, fill_input, upload_file,
-    page_info, http_get, cdp
+    page_info, http_get, cdp,
+    ensure_real_tab, drain_events, iframe_target
 )
 from browser_harness.admin import ensure_daemon
 
@@ -47,13 +48,29 @@ from browser_harness.admin import ensure_daemon
 SYSTEM_PROMPT = """
 Ты — агент, который генерирует Python-код для Browser Harness.
 
-Доступные функции:
-- new_tab(url=None), goto_url(url), wait_for_load(timeout)
-- list_tabs(), switch_tab(id), current_tab(), close_tab()
-- js(code), click_at_xy(x,y), fill_input(sel,text)
-- type_text(text), press_key(key), scroll_at_xy(x,y,dy,dx)
-- capture_screenshot(path), page_info(), http_get(url)
-- upload_file(sel, paths), cdp(method, **params)
+Доступные функции (НЕ используй import):
+- new_tab(url=None) — создать вкладку
+- goto_url(url) — перейти по URL
+- wait_for_load(timeout) — ждать загрузки
+- js(expression) — выполнить JavaScript
+- list_tabs() — список вкладок
+- switch_tab(target_id) — переключиться на вкладку
+- current_tab() — ID текущей вкладки
+- close_tab() — закрыть текущую вкладку
+- ensure_real_tab() — переключиться на реальную вкладку
+- click_at_xy(x, y) — клик по координатам
+- fill_input(selector, text) — заполнить поле ввода
+- type_text(text) — напечатать текст
+- press_key(key) — нажать клавишу
+- upload_file(selector, paths) — загрузить файл
+- capture_screenshot(path) — скриншот
+- page_info() — информация о странице
+- http_get(url) — HTTP запрос
+- cdp(method, **params) — CDP команда
+- drain_events() — получить CDP события
+- iframe_target(url_substr) — найти iframe по URL
+
+Для скролла используй js("window.scrollBy(0, 500);")
 
 Правила:
 1. Возвращай ТОЛЬКО код в ```python ... ```
@@ -76,16 +93,18 @@ def execute_harness_code(code):
     import io
     import contextlib
     
-    # Все функции Harness уже в глобальном пространстве
     harness_functions = {
         'new_tab': new_tab, 'goto_url': goto_url, 'wait_for_load': wait_for_load,
         'js': js, 'list_tabs': list_tabs, 'current_tab': current_tab,
         'close_tab': close_tab, 'switch_tab': switch_tab,
-        'capture_screenshot': capture_screenshot, 'click_at_xy': click_at_xy,
-        'scroll_at_xy': scroll_at_xy, 'type_text': type_text,
-        'press_key': press_key, 'fill_input': fill_input,
-        'upload_file': upload_file, 'page_info': page_info,
-        'http_get': http_get, 'cdp': cdp,
+        'ensure_real_tab': ensure_real_tab,
+        'capture_screenshot': capture_screenshot,
+        'click_at_xy': click_at_xy,
+        'type_text': type_text, 'press_key': press_key,
+        'fill_input': fill_input, 'upload_file': upload_file,
+        'page_info': page_info, 'http_get': http_get,
+        'cdp': cdp, 'drain_events': drain_events,
+        'iframe_target': iframe_target,
         'print': print, 'time': time, 'sleep': time.sleep
     }
     
@@ -107,7 +126,10 @@ async def start(update, context):
         "/z <запрос> — спросить Z.ai\n"
         "/agent <запрос> — агент выполняет код в браузере\n"
         "/dom <url> — скачать DOM\n"
-        "/tabs — список вкладок"
+        "/tabs — список вкладок\n"
+        "/tab_new — открыть вкладку\n"
+        "/tab_close <номер> — закрыть вкладку\n"
+        "/tab_switch <номер> — переключить вкладку"
     )
 
 async def z(update, context):
@@ -175,8 +197,10 @@ async def agent(update, context):
     task = " ".join(context.args)
     status = await update.message.reply_text(f"🧠 Агент: {task}...")
     
-    # 1. Генерируем код
-    code_response = await z_logic(f"{SYSTEM_PROMPT}\n\nЗапрос: {task}")
+    # 1. Генерируем код через Z.ai
+    full_query = f"{SYSTEM_PROMPT}\n\nЗапрос: {task}"
+    code_response = await z_logic(full_query)
+    
     if not code_response:
         await status.edit_text("❌ Не удалось сгенерировать код")
         return
@@ -197,8 +221,8 @@ async def agent(update, context):
     else:
         await status.edit_text("✅ Выполнено")
 
-# Вспомогательная функция для Z.ai
 async def z_logic(query):
+    """Вспомогательная функция для Z.ai"""
     try:
         for tab in list_tabs():
             if tab != current_tab():
