@@ -120,7 +120,7 @@ async def dom(update, context):
             
             const info = {
                 tag: tag,
-                text: text[:500],
+                text: text.substring(0, 500),
                 className: el.className || '',
                 id: el.id || '',
                 attributes: {},
@@ -129,7 +129,7 @@ async def dom(update, context):
             
             for (const attr of el.attributes) {
                 info.attributes[attr.name] = attr.value;
-                if (attr.name.startswith('data-')) {
+                if (attr.name.startsWith('data-')) {
                     info.dataAttributes[attr.name] = attr.value;
                 }
             }
@@ -221,7 +221,6 @@ async def zai(update, context):
     Отправляет запрос к Z.ai и возвращает ответ AI
     """
     try:
-        # Проверяем, есть ли запрос
         if not context.args:
             await update.message.reply_text(
                 "❌ Напишите запрос для Z.ai\n"
@@ -251,10 +250,8 @@ async def zai(update, context):
             await status_msg.edit_text("✍️ Ввожу запрос...")
             await asyncio.sleep(2)
 
-            # Экранируем кавычки для JS
             query_escaped = query.replace("'", "\\'").replace('"', '\\"')
 
-            # JavaScript для ввода и отправки запроса
             js_code = f"""
             (function() {{
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
@@ -283,20 +280,28 @@ async def zai(update, context):
             result = js(js_code)
             await status_msg.edit_text(f"✅ {result}")
 
-            # Ждём ответ AI
-            await status_msg.edit_text("⏳ Жду ответ AI...")
-            await asyncio.sleep(20)
+            # Ждём ответ AI — увеличиваем до 30 секунд
+            await status_msg.edit_text("⏳ Жду ответ AI (до 30 секунд)...")
+            await asyncio.sleep(30)
 
             # Парсим ответ AI
             await status_msg.edit_text("📊 Получаю ответ...")
             
             js_response = """
             (function() {
+                // Проверяем, есть ли "Thinking..." 
+                const thinking = document.querySelector('[data-thinking], .thinking, [role="status"]');
+                if (thinking) {
+                    const thinkingText = thinking.textContent?.trim() || '';
+                    if (thinkingText.includes('Thinking') || thinkingText.includes('...')) {
+                        return '⏰ AI всё ещё думает... Попробуйте упростить запрос или подождать ещё.';
+                    }
+                }
+                
                 // Ищем ответ AI
                 const assistant = document.querySelector('.chat-assistant');
                 if (!assistant) return '';
                 
-                // Берём все абзацы внутри
                 const paragraphs = assistant.querySelectorAll('p');
                 let text = '';
                 for (const p of paragraphs) {
@@ -311,38 +316,21 @@ async def zai(update, context):
             
             response = js(js_response)
             
-            # Если не нашли через .chat-assistant, пробуем другие варианты
-            if not response or len(response) < 5:
-                js_response2 = """
-                (function() {
-                    // Ищем любые элементы с ответом
-                    const selectors = [
-                        '.chat-assistant',
-                        '[data-message-role="assistant"]',
-                        '.assistant-message',
-                        '.message-content',
-                        '.response-content'
-                    ];
-                    
-                    for (const sel of selectors) {
-                        const el = document.querySelector(sel);
-                        if (el) {
-                            const text = el.textContent?.trim() || '';
-                            if (text && text.length > 10) {
-                                return text;
-                            }
-                        }
-                    }
-                    return '';
-                })();
-                """
-                response = js(js_response2)
+            # Если ответ содержит "Thinking" или пустой, пробуем ещё раз через 10 секунд
+            if not response or len(response) < 5 or "Thinking" in response:
+                await status_msg.edit_text("⏳ AI думает, жду ещё 10 секунд...")
+                await asyncio.sleep(10)
+                
+                response = js(js_response)
 
             if not response or len(response) < 5:
-                await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai")
+                await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai. Попробуйте упростить запрос.")
                 return
 
-            # Обрезаем длинный ответ
+            if response.startswith("⏰"):
+                await status_msg.edit_text(response)
+                return
+
             if len(response) > 4000:
                 response = response[:3950] + "\n\n... (ответ обрезан)"
 
@@ -353,7 +341,6 @@ async def zai(update, context):
             
             await status_msg.edit_text(full_response, parse_mode=None)
 
-            # Закрываем вкладку
             try:
                 close_tab(current_tab())
             except:
