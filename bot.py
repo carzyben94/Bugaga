@@ -56,6 +56,7 @@ async def start(update, context):
         "🌐 **Браузер бот**\n\n"
         "/z <запрос> — спросить Z.ai (GLM-4.7/5.2 + поиск)\n"
         "/dom <url> — скачать DOM в JSON\n"
+        "/dom_full — скачать полный DOM с открытым меню моделей\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -219,6 +220,164 @@ async def dom(update, context):
 
     except Exception as e:
         logger.error(f"❌ Ошибка в /dom: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def dom_full(update, context):
+    """
+    Открывает chat.z.ai, кликает по кнопке модели,
+    ждёт открытия меню, потом парсит полный DOM
+    """
+    try:
+        status_msg = await update.message.reply_text("🌐 Открываю chat.z.ai...")
+
+        try:
+            new_tab()
+            goto_url("https://chat.z.ai/")
+            wait_for_load(timeout=30)
+            
+            await status_msg.edit_text("🔄 Открываю меню моделей...")
+            await asyncio.sleep(1)
+            
+            # Кликаем по кнопке модели
+            js_click = """
+            (function() {
+                const btn = document.querySelector('#model-selector-glm-4_7-button');
+                if (btn) {
+                    btn.click();
+                    return 'Кликнут';
+                }
+                return 'Кнопка не найдена';
+            })();
+            """
+            result = js(js_click)
+            await status_msg.edit_text(f"✅ {result}, жду 2 секунды...")
+            await asyncio.sleep(2)
+            
+            # Теперь парсим DOM с открытым меню
+            await status_msg.edit_text("📊 Парсинг полного DOM с открытым меню...")
+            
+            js_code = """
+            const elements = {
+                buttons: [],
+                inputs: [],
+                links: [],
+                forms: [],
+                selects: [],
+                textareas: [],
+                divs: [],
+                spans: [],
+                lis: [],
+                others: []
+            };
+            
+            const allElements = document.querySelectorAll('*');
+            
+            for (const el of allElements) {
+                if (el.offsetParent === null && !el.hasAttribute('data-testid')) continue;
+                
+                const text = el.textContent?.trim() || '';
+                if (!text || text.length < 1) continue;
+                
+                const tag = el.tagName.toLowerCase();
+                
+                const info = {
+                    tag: tag,
+                    text: text.substring(0, 500),
+                    className: el.className || '',
+                    id: el.id || '',
+                    attributes: {},
+                    dataAttributes: {}
+                };
+                
+                for (const attr of el.attributes) {
+                    info.attributes[attr.name] = attr.value;
+                    if (attr.name.startsWith('data-')) {
+                        info.dataAttributes[attr.name] = attr.value;
+                    }
+                }
+                
+                if (tag === 'button' || el.getAttribute('role') === 'button') {
+                    elements.buttons.push(info);
+                } else if (tag === 'input') {
+                    elements.inputs.push(info);
+                } else if (tag === 'a') {
+                    elements.links.push(info);
+                } else if (tag === 'form') {
+                    elements.forms.push(info);
+                } else if (tag === 'select') {
+                    elements.selects.push(info);
+                } else if (tag === 'textarea') {
+                    elements.textareas.push(info);
+                } else if (tag === 'div') {
+                    elements.divs.push(info);
+                } else if (tag === 'span') {
+                    elements.spans.push(info);
+                } else if (tag === 'li') {
+                    elements.lis.push(info);
+                } else {
+                    elements.others.push(info);
+                }
+            }
+            
+            return JSON.stringify({
+                page: {
+                    url: window.location.href,
+                    title: document.title,
+                    timestamp: Date.now()
+                },
+                elements: elements
+            }, null, 2);
+            """
+            
+            dom_result = js(js_code)
+
+            if not dom_result:
+                await status_msg.edit_text("❌ Не удалось получить данные DOM")
+                return
+
+            try:
+                dom_data = json.loads(dom_result)
+            except:
+                await status_msg.edit_text("❌ Ошибка парсинга JSON")
+                return
+
+            timestamp = int(time.time())
+            filename = f"dom_full_{timestamp}.json"
+            file_path = os.path.join(LOGS_DIR, filename)
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(dom_data, f, ensure_ascii=False, indent=2)
+
+            with open(file_path, 'rb') as f:
+                await status_msg.edit_text("📄 Отправляю полный DOM...")
+                await update.message.reply_document(
+                    document=f,
+                    filename=filename,
+                    caption=f"📊 Полный DOM с открытым меню\nURL: {dom_data.get('page', {}).get('url', 'unknown')}"
+                )
+
+            elements = dom_data.get('elements', {})
+            stats = "📊 Статистика DOM:\n\n"
+            total = 0
+            for key, value in elements.items():
+                if value:
+                    count = len(value)
+                    total += count
+                    stats += f"• {key}: {count}\n"
+            stats += f"\nВсего: {total}"
+
+            await update.message.reply_text(stats)
+
+            try:
+                os.remove(file_path)
+            except:
+                pass
+
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /dom_full: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def z(update, context):
@@ -546,6 +705,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
+    app.add_handler(CommandHandler("dom_full", dom_full))
     app.add_handler(CommandHandler("z", z))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
