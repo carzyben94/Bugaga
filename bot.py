@@ -129,8 +129,27 @@ async def start(update, context):
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
-        "/tab_switch <номер> — переключить вкладку"
+        "/tab_switch <номер> — переключить вкладку\n"
+        "/log — скачать логи"
     )
+
+async def log(update, context):
+    """Скачать логи бота"""
+    try:
+        log_file = os.path.join(LOGS_DIR, 'bot.log')
+        if not os.path.exists(log_file):
+            await update.message.reply_text("📭 Лог-файл не найден")
+            return
+        
+        size = os.path.getsize(log_file)
+        with open(log_file, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename='bot.log',
+                caption=f"📋 Логи бота ({size} байт)"
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def z(update, context):
     if not context.args:
@@ -382,6 +401,7 @@ def main():
     app = Application.builder().token(token).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("z", z))
     app.add_handler(CommandHandler("agent", agent))
     app.add_handler(CommandHandler("dom", dom))
