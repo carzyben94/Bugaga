@@ -863,8 +863,8 @@ async def zai(update, context):
 
             debug_logger.debug("📤 Отправка запроса...")
             
-            # Увеличиваем таймаут выполнения JS до 180 секунд
-            result = js(js_code, timeout=180)
+            # Вызываем JS без аргументов (все аргументы уже встроены в код)
+            result = js(js_code)
             debug_logger.debug(f"📥 Получен ответ: {len(result) if result else 0} символов")
 
             if not result:
