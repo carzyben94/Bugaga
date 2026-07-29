@@ -689,45 +689,47 @@ async def zai(update, context):
 
             await status_msg.edit_text("✍️ Ввожу запрос...")
 
-            # === ИСПРАВЛЕННЫЙ JS КОД ===
-            js_code = """
-            async function sendQuery(paramsJson) {
-                const params = JSON.parse(paramsJson);
-                const query = params.query || '';
-                const model = params.model || '';
-                const searchEnabled = params.searchEnabled || false;
+            # Экранируем кавычки в запросе
+            query_escaped = query[:500].replace("'", "\\'").replace('"', '\\"')
+            
+            # === JS КОД С ВСТРОЕННЫМИ АРГУМЕНТАМИ ===
+            js_code = f"""
+            (async function() {{
+                const query = '{query_escaped}';
+                const model = '{_current_model}';
+                const searchEnabled = {str(_search_enabled).lower()};
                 
-                // 1. Смена модели (если нужно)
-                if (model) {
+                // 1. Смена модели
+                if (model) {{
                     const modelSelector = document.querySelector('#model-selector-glm-5_2-button');
-                    if (modelSelector) {
+                    if (modelSelector) {{
                         modelSelector.click();
                         await new Promise(r => setTimeout(r, 500));
                         
                         const modelItems = document.querySelectorAll('[role="menuitemradio"]');
-                        for (const item of modelItems) {
+                        for (const item of modelItems) {{
                             const text = item.textContent?.trim() || '';
                             if (text.toLowerCase().includes(model.toLowerCase()) || 
-                                text.includes(model)) {
+                                text.includes(model)) {{
                                 item.click();
                                 await new Promise(r => setTimeout(r, 500));
                                 break;
-                            }
-                        }
-                    }
-                }
+                            }}
+                        }}
+                    }}
+                }}
                 
                 // 2. Включаем/выключаем поиск
-                if (searchEnabled !== undefined) {
+                if (searchEnabled !== undefined) {{
                     const searchToggle = document.querySelector('[aria-label*="search"], [aria-label*="Search"], button[data-search]');
-                    if (searchToggle) {
+                    if (searchToggle) {{
                         const isActive = searchToggle.getAttribute('data-active') === 'true';
-                        if (isActive !== searchEnabled) {
+                        if (isActive !== searchEnabled) {{
                             searchToggle.click();
                             await new Promise(r => setTimeout(r, 500));
-                        }
-                    }
-                }
+                        }}
+                    }}
+                }}
                 
                 // 3. Вводим запрос
                 const input = document.querySelector('#chat-input');
@@ -736,57 +738,57 @@ async def zai(update, context):
                 input.value = '';
                 input.focus();
                 
-                for (let i = 0; i < query.length; i++) {
+                for (let i = 0; i < query.length; i++) {{
                     input.value += query[i];
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     await new Promise(r => setTimeout(r, 5));
-                }
+                }}
                 
                 // 4. Отправляем запрос
                 const sendBtn = document.querySelector('#send-message-button');
                 if (!sendBtn) return '❌ Кнопка отправки не найдена';
                 
-                await new Promise(resolve => {
-                    const checkDisabled = () => {
-                        if (!sendBtn.disabled) {
+                await new Promise(resolve => {{
+                    const checkDisabled = () => {{
+                        if (!sendBtn.disabled) {{
                             resolve();
-                        } else {
+                        }} else {{
                             setTimeout(checkDisabled, 200);
-                        }
-                    };
+                        }}
+                    }};
                     checkDisabled();
-                });
+                }});
                 
                 sendBtn.click();
                 
                 // 5. Ждём ответ
-                await new Promise(resolve => {
+                await new Promise(resolve => {{
                     let lastText = '';
                     let attempts = 0;
                     const maxAttempts = 60;
                     
-                    const checkResponse = () => {
+                    const checkResponse = () => {{
                         attempts++;
                         const messages = document.querySelectorAll('[data-message-role="assistant"]');
-                        if (messages.length > 0) {
+                        if (messages.length > 0) {{
                             const lastMsg = messages[messages.length - 1];
                             const text = lastMsg.textContent?.trim() || '';
-                            if (text && text.length > 10 && text !== lastText) {
+                            if (text && text.length > 10 && text !== lastText) {{
                                 lastText = text;
-                                if (text.length > 100 || attempts > 30) {
+                                if (text.length > 100 || attempts > 30) {{
                                     resolve();
                                     return;
-                                }
-                            }
-                        }
-                        if (attempts >= maxAttempts) {
+                                }}
+                            }}
+                        }}
+                        if (attempts >= maxAttempts) {{
                             resolve();
-                        } else {
+                        }} else {{
                             setTimeout(checkResponse, 1000);
-                        }
-                    };
+                        }}
+                    }};
                     checkResponse();
-                });
+                }});
                 
                 // 6. Получаем ответ
                 const messages = document.querySelectorAll('[data-message-role="assistant"]');
@@ -796,21 +798,13 @@ async def zai(update, context):
                 const text = lastMsg.textContent?.trim() || 'Пустой ответ';
                 
                 return text;
-            }
-            
-            return await sendQuery(arguments[0]);
+            }})();
             """
 
-            # Передаём параметры как JSON-строку
-            params = {
-                "query": query[:500],
-                "model": _current_model,
-                "searchEnabled": _search_enabled
-            }
-            params_json = json.dumps(params)
-            
             debug_logger.debug("📤 Отправка запроса...")
-            result = js(js_code, params_json)
+            
+            # Вызываем JS без аргументов (все аргументы уже встроены в код)
+            result = js(js_code)
             debug_logger.debug(f"📥 Получен ответ: {len(result) if result else 0} символов")
 
             if not result:
@@ -829,30 +823,7 @@ async def zai(update, context):
         except Exception as e:
             error_msg = str(e)
             debug_logger.error(f"❌ Ошибка в /zai: {error_msg}")
-
-            if "cdp_disconnected" in error_msg:
-                await status_msg.edit_text("⚠️ Браузер отключился, перезапускаю...")
-                ensure_daemon()
-                time.sleep(3)
-                set_cookies_global()
-                try:
-                    ensure_tab()
-                    goto_url("https://chat.z.ai/")
-                    wait_for_load(timeout=60)
-                    result = js(js_code, params_json)
-                    if result:
-                        if len(result) > 4000:
-                            result = result[:3900] + "\n\n... (ответ обрезан)"
-                        header = f"🤖 **Z.ai ответ**\n"
-                        header += f"📌 Модель: `{_current_model}`\n"
-                        header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
-                        await status_msg.edit_text(header + result, parse_mode='Markdown')
-                    else:
-                        await status_msg.edit_text("❌ Не удалось получить ответ")
-                except Exception as e2:
-                    await status_msg.edit_text(f"❌ Ошибка: {str(e2)[:200]}")
-            else:
-                await status_msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
+            await status_msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
 
     except Exception as e:
         debug_logger.error(f"❌ Критическая ошибка в /zai: {e}")
