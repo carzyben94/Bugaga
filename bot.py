@@ -728,51 +728,44 @@ async def zai(update, context):
                 }}
                 
                 function getResponseText() {{
-                    // Ищем финальный ответ AI — самый последний
-                    const selectors = [
-                        '[data-message-role="assistant"]:last-child',
-                        '.assistant-message:last-child',
-                        '.chat-message:last-child',
-                        '.message-role-assistant:last-child',
-                        '[role="article"]:last-child',
-                        '.message-content:last-child',
-                        '.response-content:last-child',
-                        '.prose:last-child'
-                    ];
+                    // Ищем все блоки с сообщениями ассистента
+                    const allMessages = document.querySelectorAll('[data-message-role="assistant"], .assistant-message, .chat-message, .message-content, .response-content');
                     
                     let bestText = '';
                     
-                    for (const sel of selectors) {{
-                        const el = document.querySelector(sel);
-                        if (el) {{
-                            const t = el.textContent?.trim() || '';
-                            if (t && t.length > 10 && 
-                                !t.includes('Thought Process') && 
-                                !t.includes('Send a Message') &&
-                                !t.includes('Deep Think') &&
-                                !t.includes('Max') &&
-                                !t.includes(query)) {{
-                                if (bestText === '' || t.length < bestText.length) {{
-                                    bestText = t;
+                    for (const el of allMessages) {{
+                        const text = el.textContent?.trim() || '';
+                        // Исключаем блок с Thought Process
+                        if (text.includes('Thought Process') || text.includes('Analyze the Input')) {{
+                            continue;
+                        }}
+                        // Проверяем, что это похоже на ответ
+                        if (text && text.length > 10 && !text.includes(query)) {{
+                            if (!text.includes('Send a Message') && 
+                                !text.includes('Deep Think') && 
+                                !text.includes('Max')) {{
+                                // Берём самый длинный (финальный ответ)
+                                if (text.length > bestText.length) {{
+                                    bestText = text;
                                 }}
                             }}
                         }}
                     }}
                     
-                    // Если ничего не нашли — ищем любой похожий блок
+                    // Если ничего не нашли — ищем последний большой блок
                     if (!bestText) {{
-                        const all = document.querySelectorAll('div, p, section');
-                        for (const el of all) {{
-                            const t = el.textContent?.trim() || '';
-                            if (t && t.length > 20 && 
-                                !t.includes('Thought Process') && 
-                                !t.includes('Send a Message') &&
-                                !t.includes('Deep Think') &&
-                                !t.includes(query)) {{
+                        const allElements = document.querySelectorAll('div, p, section');
+                        for (const el of allElements) {{
+                            const text = el.textContent?.trim() || '';
+                            if (text && text.length > 20 && 
+                                !text.includes('Thought Process') && 
+                                !text.includes('Analyze the Input') &&
+                                !text.includes('Send a Message') &&
+                                !text.includes(query)) {{
                                 const children = el.children;
                                 if (children.length === 0 || children.length < 3) {{
-                                    if (bestText === '' || t.length < bestText.length) {{
-                                        bestText = t;
+                                    if (text.length > bestText.length) {{
+                                        bestText = text;
                                     }}
                                 }}
                             }}
@@ -881,10 +874,8 @@ async def zai(update, context):
                 await status_msg.edit_text(result)
                 return
 
-            # Обрезаем если слишком длинный
-            max_len = 4000
-            if len(result) > max_len:
-                result = result[:max_len - 50] + "\n\n... (ответ обрезан)"
+            if len(result) > 4000:
+                result = result[:3950] + "\n\n... (ответ обрезан)"
 
             header = f"🤖 **Z.ai ответ**\n"
             header += f"📌 Модель: `{_current_model}`\n"
@@ -892,7 +883,6 @@ async def zai(update, context):
             
             full_response = header + result
             
-            # Отправляем БЕЗ Markdown
             await status_msg.edit_text(full_response, parse_mode=None)
 
         except Exception as e:
