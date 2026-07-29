@@ -150,6 +150,11 @@ def log_errors(func):
                         "⚠️ Браузер отключился.\n"
                         "Попробуйте ещё раз через 5 секунд."
                     )
+                elif "timed out" in error_msg.lower():
+                    await update.message.reply_text(
+                        "⏰ Слишком долгий ответ.\n"
+                        "Попробуйте упростить запрос или сменить модель."
+                    )
                 elif "timeout" in error_msg.lower():
                     await update.message.reply_text(
                         "⏰ Слишком долгая загрузка.\n"
@@ -683,132 +688,191 @@ async def zai(update, context):
 
         try:
             ensure_tab()
-            goto_url("https://chat.z.ai/")
-            wait_for_load(timeout=60)
+            
+            # Проверяем, открыта ли уже страница Z.ai
+            try:
+                test_url = js("return window.location.href;")
+                debug_logger.debug(f"   Текущий URL: {test_url}")
+                if "chat.z.ai" not in str(test_url):
+                    debug_logger.info("   Переход на chat.z.ai...")
+                    goto_url("https://chat.z.ai/")
+                    wait_for_load(timeout=60)
+            except:
+                debug_logger.info("   Переход на chat.z.ai...")
+                goto_url("https://chat.z.ai/")
+                wait_for_load(timeout=60)
+                
             debug_logger.debug("✅ Страница Z.ai загружена")
+            
+            # Дополнительная пауза для полной загрузки страницы
+            await asyncio.sleep(3)
 
             await status_msg.edit_text("✍️ Ввожу запрос...")
 
             # Экранируем кавычки в запросе
             query_escaped = query[:500].replace("'", "\\'").replace('"', '\\"')
             
-            # === JS КОД С ВСТРОЕННЫМИ АРГУМЕНТАМИ ===
+            # === JS КОД С ТАЙМАУТАМИ ===
             js_code = f"""
             (async function() {{
                 const query = '{query_escaped}';
                 const model = '{_current_model}';
                 const searchEnabled = {str(_search_enabled).lower()};
                 
-                // 1. Смена модели
-                if (model) {{
-                    const modelSelector = document.querySelector('#model-selector-glm-5_2-button');
-                    if (modelSelector) {{
-                        modelSelector.click();
-                        await new Promise(r => setTimeout(r, 500));
-                        
-                        const modelItems = document.querySelectorAll('[role="menuitemradio"]');
-                        for (const item of modelItems) {{
-                            const text = item.textContent?.trim() || '';
-                            if (text.toLowerCase().includes(model.toLowerCase()) || 
-                                text.includes(model)) {{
-                                item.click();
-                                await new Promise(r => setTimeout(r, 500));
-                                break;
+                // Функция для ожидания элемента
+                function waitForElement(selector, timeout = 10000) {{
+                    return new Promise((resolve) => {{
+                        if (document.querySelector(selector)) {{
+                            resolve(document.querySelector(selector));
+                            return;
+                        }}
+                        const observer = new MutationObserver(() => {{
+                            const el = document.querySelector(selector);
+                            if (el) {{
+                                observer.disconnect();
+                                resolve(el);
                             }}
-                        }}
-                    }}
+                        }});
+                        observer.observe(document.body, {{ childList: true, subtree: true }});
+                        setTimeout(() => {{
+                            observer.disconnect();
+                            resolve(null);
+                        }}, timeout);
+                    }});
                 }}
                 
-                // 2. Включаем/выключаем поиск
-                if (searchEnabled !== undefined) {{
-                    const searchToggle = document.querySelector('[aria-label*="search"], [aria-label*="Search"], button[data-search]');
-                    if (searchToggle) {{
-                        const isActive = searchToggle.getAttribute('data-active') === 'true';
-                        if (isActive !== searchEnabled) {{
-                            searchToggle.click();
-                            await new Promise(r => setTimeout(r, 500));
+                // Функция для ожидания кнопки
+                function waitForButton(selector, timeout = 10000) {{
+                    return new Promise((resolve) => {{
+                        const btn = document.querySelector(selector);
+                        if (btn && !btn.disabled) {{
+                            resolve(btn);
+                            return;
                         }}
-                    }}
+                        const observer = new MutationObserver(() => {{
+                            const btn = document.querySelector(selector);
+                            if (btn && !btn.disabled) {{
+                                observer.disconnect();
+                                resolve(btn);
+                            }}
+                        }});
+                        observer.observe(document.body, {{ attributes: true, childList: true, subtree: true }});
+                        setTimeout(() => {{
+                            observer.disconnect();
+                            resolve(null);
+                        }}, timeout);
+                    }});
                 }}
                 
-                // 3. Вводим запрос
-                const input = document.querySelector('#chat-input');
-                if (!input) return '❌ Поле ввода не найдено';
-                
-                input.value = '';
-                input.focus();
-                
-                for (let i = 0; i < query.length; i++) {{
-                    input.value += query[i];
-                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    await new Promise(r => setTimeout(r, 5));
-                }}
-                
-                // 4. Отправляем запрос
-                const sendBtn = document.querySelector('#send-message-button');
-                if (!sendBtn) return '❌ Кнопка отправки не найдена';
-                
-                await new Promise(resolve => {{
-                    const checkDisabled = () => {{
-                        if (!sendBtn.disabled) {{
-                            resolve();
-                        }} else {{
-                            setTimeout(checkDisabled, 200);
-                        }}
-                    }};
-                    checkDisabled();
-                }});
-                
-                sendBtn.click();
-                
-                // 5. Ждём ответ
-                await new Promise(resolve => {{
-                    let lastText = '';
-                    let attempts = 0;
-                    const maxAttempts = 60;
-                    
-                    const checkResponse = () => {{
-                        attempts++;
-                        const messages = document.querySelectorAll('[data-message-role="assistant"]');
-                        if (messages.length > 0) {{
-                            const lastMsg = messages[messages.length - 1];
-                            const text = lastMsg.textContent?.trim() || '';
-                            if (text && text.length > 10 && text !== lastText) {{
-                                lastText = text;
-                                if (text.length > 100 || attempts > 30) {{
-                                    resolve();
-                                    return;
+                try {{
+                    // 1. Смена модели
+                    if (model) {{
+                        const modelSelector = document.querySelector('#model-selector-glm-5_2-button');
+                        if (modelSelector) {{
+                            modelSelector.click();
+                            await new Promise(r => setTimeout(r, 1000));
+                            
+                            const modelItems = document.querySelectorAll('[role="menuitemradio"]');
+                            for (const item of modelItems) {{
+                                const text = item.textContent?.trim() || '';
+                                if (text.toLowerCase().includes(model.toLowerCase()) || 
+                                    text.includes(model)) {{
+                                    item.click();
+                                    await new Promise(r => setTimeout(r, 1000));
+                                    break;
                                 }}
                             }}
                         }}
-                        if (attempts >= maxAttempts) {{
-                            resolve();
-                        }} else {{
-                            setTimeout(checkResponse, 1000);
+                    }}
+                    
+                    // 2. Включаем/выключаем поиск
+                    if (searchEnabled !== undefined) {{
+                        const searchToggle = document.querySelector('[aria-label*="search"], [aria-label*="Search"], button[data-search]');
+                        if (searchToggle) {{
+                            const isActive = searchToggle.getAttribute('data-active') === 'true';
+                            if (isActive !== searchEnabled) {{
+                                searchToggle.click();
+                                await new Promise(r => setTimeout(r, 1000));
+                            }}
                         }}
-                    }};
-                    checkResponse();
-                }});
-                
-                // 6. Получаем ответ
-                const messages = document.querySelectorAll('[data-message-role="assistant"]');
-                if (messages.length === 0) return '⏰ Ответ не получен';
-                
-                const lastMsg = messages[messages.length - 1];
-                const text = lastMsg.textContent?.trim() || 'Пустой ответ';
-                
-                return text;
+                    }}
+                    
+                    // 3. Ждём поле ввода и вводим запрос
+                    const input = await waitForElement('#chat-input', 15000);
+                    if (!input) return '❌ Поле ввода не найдено';
+                    
+                    input.value = '';
+                    input.focus();
+                    
+                    // Вводим текст посимвольно с задержкой
+                    for (let i = 0; i < query.length; i++) {{
+                        input.value += query[i];
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        await new Promise(r => setTimeout(r, 3));
+                    }}
+                    
+                    // 4. Ждём кнопку отправки
+                    const sendBtn = await waitForButton('#send-message-button', 15000);
+                    if (!sendBtn) return '❌ Кнопка отправки не найдена';
+                    
+                    sendBtn.click();
+                    
+                    // 5. Ждём ответ (увеличенный таймаут до 120 секунд)
+                    await new Promise(resolve => {{
+                        let lastText = '';
+                        let attempts = 0;
+                        const maxAttempts = 120; // 120 секунд
+                        
+                        const checkResponse = () => {{
+                            attempts++;
+                            const messages = document.querySelectorAll('[data-message-role="assistant"]');
+                            if (messages.length > 0) {{
+                                const lastMsg = messages[messages.length - 1];
+                                const text = lastMsg.textContent?.trim() || '';
+                                if (text && text.length > 10 && text !== lastText) {{
+                                    lastText = text;
+                                    if (text.length > 100 || attempts > 30) {{
+                                        resolve();
+                                        return;
+                                    }}
+                                }}
+                            }}
+                            if (attempts >= maxAttempts) {{
+                                resolve();
+                            }} else {{
+                                setTimeout(checkResponse, 1000);
+                            }}
+                        }};
+                        checkResponse();
+                    }});
+                    
+                    // 6. Получаем ответ
+                    const messages = document.querySelectorAll('[data-message-role="assistant"]');
+                    if (messages.length === 0) return '⏰ Ответ не получен';
+                    
+                    const lastMsg = messages[messages.length - 1];
+                    const text = lastMsg.textContent?.trim() || 'Пустой ответ';
+                    
+                    return text;
+                    
+                }} catch(e) {{
+                    return '❌ Ошибка: ' + e.message;
+                }}
             }})();
             """
 
             debug_logger.debug("📤 Отправка запроса...")
             
-            # Вызываем JS без аргументов (все аргументы уже встроены в код)
-            result = js(js_code)
+            # Увеличиваем таймаут выполнения JS до 180 секунд
+            result = js(js_code, timeout=180)
             debug_logger.debug(f"📥 Получен ответ: {len(result) if result else 0} символов")
 
             if not result:
                 await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai")
+                return
+
+            if result.startswith("❌"):
+                await status_msg.edit_text(result)
                 return
 
             if len(result) > 4000:
@@ -823,7 +887,16 @@ async def zai(update, context):
         except Exception as e:
             error_msg = str(e)
             debug_logger.error(f"❌ Ошибка в /zai: {error_msg}")
-            await status_msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
+            
+            if "timed out" in error_msg:
+                await status_msg.edit_text(
+                    "⏰ AI долго думает... Попробуйте:\n"
+                    "1. Упростить запрос\n"
+                    "2. Сменить модель (/zai_model deepseek-v3)\n"
+                    "3. Попробовать ещё раз через 10 секунд"
+                )
+            else:
+                await status_msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
 
     except Exception as e:
         debug_logger.error(f"❌ Критическая ошибка в /zai: {e}")
