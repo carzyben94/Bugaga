@@ -376,7 +376,7 @@ async def dom_full(update, context):
 
 async def z(update, context):
     """
-    Отправляет запрос к Z.ai: сразу выбирает GLM-5.2, потом отправляет запрос
+    Отправляет запрос к Z.ai: сначала выбирает GLM-5.2, потом отправляет запрос
     """
     try:
         if not context.args:
@@ -415,79 +415,83 @@ async def z(update, context):
             search_enabled = str(_search_enabled).lower()
 
             js_code = f"""
-            (function() {{
+            (async function() {{
                 const query = '{query_escaped}';
                 const searchEnabled = {search_enabled};
                 
                 let result = '';
                 
-                // === ШАГ 1: ВЫБИРАЕМ GLM-5.2 ===
+                // === ШАГ 1: ВЫБИРАЕМ GLM-5.2 (ждём!) ===
                 const modelBtn = document.querySelector('#model-selector-glm-4_7-button');
                 if (modelBtn) {{
                     modelBtn.click();
                     result += '🔄 Открываю меню моделей...\\n';
                     
-                    // Ждём появления меню и выбираем GLM-5.2
-                    const checkMenu = () => {{
-                        const items = document.querySelectorAll('[role="menuitemradio"]');
-                        let found = false;
-                        let modelList = [];
-                        
-                        // Сначала ищем GLM-5.2 по data-value
+                    // Ждём появления меню
+                    await new Promise(resolve => {{
+                        const checkMenu = () => {{
+                            const items = document.querySelectorAll('[role="menuitemradio"]');
+                            if (items.length > 0) {{
+                                resolve(items);
+                            }} else {{
+                                setTimeout(checkMenu, 200);
+                            }}
+                        }};
+                        checkMenu();
+                    }});
+                    
+                    // Теперь ищем GLM-5.2
+                    const items = document.querySelectorAll('[role="menuitemradio"]');
+                    let found = false;
+                    let modelList = [];
+                    
+                    for (const item of items) {{
+                        const text = item.textContent?.trim() || '';
+                        modelList.push(text);
+                        if (item.getAttribute('data-value') === 'glm-5.2') {{
+                            item.click();
+                            result += '✅ Модель: GLM-5.2\\n';
+                            found = true;
+                            break;
+                        }}
+                    }}
+                    
+                    if (!found) {{
                         for (const item of items) {{
                             const text = item.textContent?.trim() || '';
-                            modelList.push(text);
-                            if (item.getAttribute('data-value') === 'glm-5.2') {{
+                            if (text.includes('GLM-5.2')) {{
                                 item.click();
                                 result += '✅ Модель: GLM-5.2\\n';
                                 found = true;
                                 break;
                             }}
                         }}
-                        
-                        if (!found) {{
-                            // Если GLM-5.2 нет, ищем по тексту
-                            for (const item of items) {{
-                                const text = item.textContent?.trim() || '';
-                                if (text.includes('GLM-5.2')) {{
-                                    item.click();
-                                    result += '✅ Модель: GLM-5.2\\n';
-                                    found = true;
-                                    break;
-                                }}
+                    }}
+                    
+                    if (!found) {{
+                        for (const item of items) {{
+                            const text = item.textContent?.trim() || '';
+                            if (text.includes('GLM-4.7')) {{
+                                item.click();
+                                result += '✅ Модель: GLM-4.7 (GLM-5.2 не найдена)\\n';
+                                found = true;
+                                break;
                             }}
                         }}
-                        
-                        if (!found) {{
-                            // Если GLM-5.2 нет, выбираем GLM-4.7
-                            for (const item of items) {{
-                                const text = item.textContent?.trim() || '';
-                                if (text.includes('GLM-4.7')) {{
-                                    item.click();
-                                    result += '✅ Модель: GLM-4.7 (GLM-5.2 не найдена)\\n';
-                                    found = true;
-                                    break;
-                                }}
-                            }}
-                            if (!found && items.length > 0) {{
-                                const first = items[0];
-                                const name = first.textContent?.trim() || 'неизвестная';
-                                first.click();
-                                result += `✅ Модель: ${{name}}\\n`;
-                            }}
+                        if (!found && items.length > 0) {{
+                            const first = items[0];
+                            const name = first.textContent?.trim() || 'неизвестная';
+                            first.click();
+                            result += `✅ Модель: ${{name}}\\n`;
                         }}
-                        
-                        result += `📋 Доступные модели: ${{modelList.join(', ')}}\\n`;
-                    }};
+                    }}
                     
-                    setTimeout(checkMenu, 1500);
-                    
+                    result += `📋 Доступные модели: ${{modelList.join(', ')}}\\n`;
                 }} else {{
                     result += '❌ Кнопка модели не найдена\\n';
                 }}
                 
                 // === ШАГ 2: ВКЛЮЧАЕМ ПОИСК ===
-                // Deep Think
                 const deepThinkBtn = document.querySelector('[data-autothink="true"], [data-autothink="false"]');
                 if (deepThinkBtn) {{
                     const isActive = deepThinkBtn.getAttribute('data-autothink') === 'true';
@@ -501,7 +505,6 @@ async def z(update, context):
                     result += '❌ Deep Think: не найден\\n';
                 }}
                 
-                // Web Search
                 const webSearchBtn = document.querySelector('[data-active="true"], [data-active="false"]');
                 if (webSearchBtn) {{
                     const isActive = webSearchBtn.getAttribute('data-active') === 'true';
@@ -515,7 +518,7 @@ async def z(update, context):
                     result += '❌ Web Search: не найден\\n';
                 }}
                 
-                // === ШАГ 3: ВВОДИМ ЗАПРОС ===
+                // === ШАГ 3: ВВОДИМ ЗАПРОС (ТОЛЬКО ПОСЛЕ ВЫБОРА МОДЕЛИ) ===
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
                 if (!input) return result + '❌ Поле ввода не найдено';
                 
