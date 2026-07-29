@@ -5,6 +5,7 @@ import time
 import logging
 import json
 import re
+import asyncio
 import traceback
 import httpx
 from datetime import datetime
@@ -47,6 +48,59 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
+# КУКИ (WebSocket)
+# ============================================================
+
+try:
+    from cookies import COOKIES
+    import websockets
+    
+    async def set_cookies_async():
+        """Устанавливает куки через WebSocket CDP"""
+        try:
+            import httpx
+            resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+            pages = resp.json()
+            if not pages:
+                debug_logger.error("❌ Нет активных вкладок")
+                return False
+            ws_url = pages[0]["webSocketDebuggerUrl"]
+            debug_logger.info("🔗 Подключаюсь к WebSocket для установки кук...")
+            async with websockets.connect(ws_url) as ws:
+                await ws.send(json.dumps({
+                    "id": 1, 
+                    "method": "Network.setCookies", 
+                    "params": {"cookies": COOKIES}
+                }))
+                response = json.loads(await ws.recv())
+                if "error" in response:
+                    debug_logger.error(f"❌ CDP ошибка: {response['error']}")
+                    return False
+                debug_logger.info(f"🍪 Установлено {len(COOKIES)} кук")
+                return True
+        except Exception as e:
+            debug_logger.error(f"❌ Ошибка установки кук: {e}")
+            return False
+    
+    def set_cookies_global():
+        """Синхронная обёртка для установки кук"""
+        try:
+            loop = asyncio.get_running_loop()
+            return asyncio.run_coroutine_threadsafe(set_cookies_async(), loop).result(timeout=10)
+        except RuntimeError:
+            return asyncio.run(set_cookies_async())
+        except Exception as e:
+            debug_logger.error(f"❌ Ошибка: {e}")
+            return False
+
+except ImportError:
+    debug_logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
+    COOKIES = []
+    def set_cookies_global():
+        debug_logger.warning("⚠️ set_cookies_global вызвана, но cookies.py не найден")
+        return False
+
+# ============================================================
 # НАСТРОЙКИ
 # ============================================================
 
@@ -78,7 +132,6 @@ def log_errors(func):
             debug_logger.error(f"❌ ОШИБКА в {func.__name__}: {error_msg}")
             debug_logger.error(f"📋 ТРЕЙС:\n{error_trace}")
             
-            # Пытаемся отправить пользователю понятную ошибку
             try:
                 if "cdp_disconnected" in error_msg:
                     await update.message.reply_text(
@@ -127,6 +180,7 @@ def ensure_browser_ready():
             debug_logger.warning("⚠️ Браузер не отвечает (пустой ответ), перезапускаю...")
             ensure_daemon()
             time.sleep(3)
+            set_cookies_global()  # ← Восстанавливаем куки
             debug_logger.info("✅ Браузер перезапущен")
             _browser_ok = True
             
@@ -135,6 +189,7 @@ def ensure_browser_ready():
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
+        set_cookies_global()  # ← Восстанавливаем куки
         debug_logger.info("✅ Браузер перезапущен")
         _browser_ok = True
         
@@ -143,6 +198,7 @@ def ensure_browser_ready():
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
+        set_cookies_global()  # ← Восстанавливаем куки
         debug_logger.info("✅ Браузер перезапущен")
         _browser_ok = True
         
@@ -151,6 +207,7 @@ def ensure_browser_ready():
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
+        set_cookies_global()  # ← Восстанавливаем куки
         debug_logger.info("✅ Браузер перезапущен")
         _browser_ok = True
     
@@ -189,7 +246,6 @@ def ensure_tab():
     debug_logger.debug("📂 Создание новой вкладки...")
     
     try:
-        # Проверяем, есть ли активная вкладка
         try:
             current = current_tab()
             debug_logger.debug(f"   Текущая вкладка: {current}")
@@ -197,12 +253,10 @@ def ensure_tab():
             debug_logger.warning(f"   Нет активной вкладки: {e}")
             current = None
         
-        # Проверяем количество вкладок
         tabs = list_tabs()
         debug_logger.debug(f"   Всего вкладок: {len(tabs)}")
         
         if len(tabs) >= MAX_TABS:
-            # Закрываем самую старую вкладку
             old_tab = tabs[0]
             debug_logger.info(f"🗑️ Достигнут лимит ({MAX_TABS}), закрываю старую: {old_tab}")
             if old_tab != current:
@@ -254,7 +308,6 @@ async def start(update, context):
 async def log(update, context):
     debug_logger.debug("📝 /log вызван")
     try:
-        # Собираем все логи
         log_files = ['bot.log', 'debug.log']
         for filename in log_files:
             log_file = os.path.join(LOGS_DIR, filename)
@@ -319,6 +372,7 @@ async def dom(update, context):
                 debug_logger.info("🔄 Перезапуск браузера...")
                 ensure_daemon()
                 time.sleep(3)
+                set_cookies_global()  # ← Восстанавливаем куки
                 debug_logger.info("   Браузер перезапущен")
                 
                 try:
@@ -494,6 +548,7 @@ async def kyiv(update, context):
                 debug_logger.info("🔄 Перезапуск браузера...")
                 ensure_daemon()
                 time.sleep(3)
+                set_cookies_global()  # ← Восстанавливаем куки
                 debug_logger.info("   Браузер перезапущен")
                 
                 try:
@@ -544,7 +599,6 @@ async def kyiv(update, context):
             await status_msg.edit_text("📭 Данные о погоде не найдены")
             return
 
-        # Формируем ответ
         response = "🌤️ **Погода в Киеве**\n\n"
 
         days_uk = {
@@ -570,8 +624,6 @@ async def kyiv(update, context):
 
                 response += f"**{day_name}** {date_formatted}: {min_temp} / {max_temp}\n"
 
-        # === НЕ ЗАКРЫВАЕМ ВКЛАДКУ ===
-        # Просто оставляем её открытой для следующих команд
         debug_logger.debug("   Вкладка оставлена открытой")
 
         await status_msg.edit_text(response, parse_mode='Markdown')
@@ -589,7 +641,6 @@ async def tabs(update, context):
     try:
         ensure_browser_ready()
         
-        # Проверяем, есть ли вкладки
         try:
             tab_list = list_tabs()
             debug_logger.debug(f"   Вкладок: {len(tab_list)}")
@@ -598,6 +649,7 @@ async def tabs(update, context):
                 debug_logger.warning("⚠️ CDP отключился, перезапускаю браузер...")
                 ensure_daemon()
                 time.sleep(3)
+                set_cookies_global()  # ← Восстанавливаем куки
                 ensure_browser_ready()
                 tab_list = list_tabs()
                 debug_logger.debug(f"   Вкладок после перезапуска: {len(tab_list)}")
@@ -615,6 +667,7 @@ async def tabs(update, context):
                 debug_logger.warning("⚠️ CDP отключился при получении текущей вкладки")
                 ensure_daemon()
                 time.sleep(3)
+                set_cookies_global()  # ← Восстанавливаем куки
                 ensure_browser_ready()
                 current = current_tab()
             else:
@@ -746,6 +799,11 @@ def main():
     os.environ["BU_CDP_URL"] = "http://localhost:9222"
     ensure_daemon()
     debug_logger.info("✅ Браузер готов")
+    
+    # ===== УСТАНОВКА КУК ПРИ ЗАПУСКЕ =====
+    debug_logger.info("🍪 Установка кук...")
+    set_cookies_global()
+    # =======================================
 
     debug_logger.info("📡 Создание приложения...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
