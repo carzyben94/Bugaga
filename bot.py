@@ -108,6 +108,18 @@ MAX_TABS = 5
 _browser_ok = False
 _browser_check_time = 0
 
+# Настройки Z.ai
+ZAI_MODELS = {
+    "glm-5.2": "GLM-5.2",
+    "glm-5.1": "GLM-5.1", 
+    "glm-4.5": "GLM-4.5",
+    "deepseek-v3": "DeepSeek V3",
+    "qwen-2.5": "Qwen 2.5",
+    "llama-3.3": "Llama 3.3"
+}
+_current_model = "glm-5.2"
+_search_enabled = False
+
 # ============================================================
 # ДЕКОРАТОР ДЛЯ ЛОГИРОВАНИЯ ОШИБОК
 # ============================================================
@@ -180,7 +192,7 @@ def ensure_browser_ready():
             debug_logger.warning("⚠️ Браузер не отвечает (пустой ответ), перезапускаю...")
             ensure_daemon()
             time.sleep(3)
-            set_cookies_global()  # ← Восстанавливаем куки
+            set_cookies_global()
             debug_logger.info("✅ Браузер перезапущен")
             _browser_ok = True
             
@@ -189,7 +201,7 @@ def ensure_browser_ready():
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
-        set_cookies_global()  # ← Восстанавливаем куки
+        set_cookies_global()
         debug_logger.info("✅ Браузер перезапущен")
         _browser_ok = True
         
@@ -198,7 +210,7 @@ def ensure_browser_ready():
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
-        set_cookies_global()  # ← Восстанавливаем куки
+        set_cookies_global()
         debug_logger.info("✅ Браузер перезапущен")
         _browser_ok = True
         
@@ -207,7 +219,7 @@ def ensure_browser_ready():
         debug_logger.info("🔄 Перезапускаю браузер...")
         ensure_daemon()
         time.sleep(3)
-        set_cookies_global()  # ← Восстанавливаем куки
+        set_cookies_global()
         debug_logger.info("✅ Браузер перезапущен")
         _browser_ok = True
     
@@ -293,15 +305,24 @@ def ensure_tab():
 async def start(update, context):
     debug_logger.debug("📝 /start вызван")
     await update.message.reply_text(
-        "🌐 Браузер\n\n"
-        "/dom <url> - парсинг DOM\n"
-        "/kyiv - погода в Киеве\n"
-        "/tabs - список вкладок\n"
-        "/tab_new - открыть вкладку\n"
-        "/tab_close <номер> - закрыть вкладку\n"
-        "/tab_switch <номер> - переключить вкладку\n"
-        "/log - скачать логи\n\n"
-        f"📌 Максимум вкладок: {MAX_TABS}"
+        "🌐 **Браузер бот**\n\n"
+        "📌 **Основные команды:**\n"
+        "/dom <url> — парсинг DOM\n"
+        "/kyiv — погода в Киеве\n\n"
+        "🤖 **Z.ai команды:**\n"
+        "/zai <запрос> — спросить Z.ai\n"
+        "/zai_model — показать доступные модели\n"
+        "/zai_model <модель> — сменить модель\n"
+        "/zai_search — включить/выключить поиск\n\n"
+        "📑 **Вкладки:**\n"
+        "/tabs — список вкладок\n"
+        "/tab_new — открыть вкладку\n"
+        "/tab_close <номер> — закрыть вкладку\n"
+        "/tab_switch <номер> — переключить вкладку\n\n"
+        "📥 **Логи:**\n"
+        "/log — скачать логи\n\n"
+        f"📌 Максимум вкладок: {MAX_TABS}",
+        parse_mode='Markdown'
     )
 
 @log_errors
@@ -332,7 +353,7 @@ async def dom(update, context):
         if not context.args:
             debug_logger.debug("   Нет аргументов")
             await update.message.reply_text(
-                "Укажите URL\n"
+                "❌ Укажите URL\n"
                 "Пример: /dom https://example.com"
             )
             return
@@ -372,7 +393,7 @@ async def dom(update, context):
                 debug_logger.info("🔄 Перезапуск браузера...")
                 ensure_daemon()
                 time.sleep(3)
-                set_cookies_global()  # ← Восстанавливаем куки
+                set_cookies_global()
                 debug_logger.info("   Браузер перезапущен")
                 
                 try:
@@ -548,7 +569,7 @@ async def kyiv(update, context):
                 debug_logger.info("🔄 Перезапуск браузера...")
                 ensure_daemon()
                 time.sleep(3)
-                set_cookies_global()  # ← Восстанавливаем куки
+                set_cookies_global()
                 debug_logger.info("   Браузер перезапущен")
                 
                 try:
@@ -635,6 +656,262 @@ async def kyiv(update, context):
         raise
 
 @log_errors
+async def zai(update, context):
+    """Отправляет запрос к Z.ai с текущей моделью"""
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Напишите запрос для Z.ai\n"
+                "Пример: /zai Привет, как дела?\n\n"
+                f"📌 Текущая модель: `{_current_model}`\n"
+                f"🔍 Поиск в сети: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
+                "📌 Команды:\n"
+                "/zai_model <модель> — сменить модель\n"
+                "/zai_search — включить/выключить поиск",
+                parse_mode='Markdown'
+            )
+            return
+
+        query = " ".join(context.args)
+        debug_logger.debug(f"📝 /zai запрос: {query[:100]}...")
+
+        ensure_browser_ready()
+        cleanup_tabs()
+
+        status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
+        debug_logger.debug(f"   Модель: {_current_model}, Поиск: {_search_enabled}")
+
+        try:
+            ensure_tab()
+            goto_url("https://chat.z.ai/")
+            wait_for_load(timeout=60)
+            debug_logger.debug("✅ Страница Z.ai загружена")
+
+            await status_msg.edit_text("✍️ Ввожу запрос...")
+
+            # JavaScript с поддержкой модели и поиска
+            js_code = """
+            async function sendQuery(query, model, searchEnabled) {
+                // 1. Смена модели (если нужно)
+                if (model) {
+                    const modelSelector = document.querySelector('#model-selector-glm-5_2-button');
+                    if (modelSelector) {
+                        modelSelector.click();
+                        await new Promise(r => setTimeout(r, 500));
+                        
+                        const modelItems = document.querySelectorAll('[role="menuitemradio"]');
+                        for (const item of modelItems) {
+                            const text = item.textContent?.trim() || '';
+                            if (text.toLowerCase().includes(model.toLowerCase()) || 
+                                text.includes(model)) {
+                                item.click();
+                                await new Promise(r => setTimeout(r, 500));
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // 2. Включаем/выключаем поиск
+                if (searchEnabled !== undefined) {
+                    const searchToggle = document.querySelector('[aria-label*="search"], [aria-label*="Search"], button[data-search]');
+                    if (searchToggle) {
+                        const isActive = searchToggle.getAttribute('data-active') === 'true';
+                        if (isActive !== searchEnabled) {
+                            searchToggle.click();
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+                    }
+                }
+                
+                // 3. Вводим запрос
+                const input = document.querySelector('#chat-input');
+                if (!input) return '❌ Поле ввода не найдено';
+                
+                input.value = '';
+                input.focus();
+                
+                for (let i = 0; i < query.length; i++) {
+                    input.value += query[i];
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    await new Promise(r => setTimeout(r, 5));
+                }
+                
+                // 4. Отправляем запрос
+                const sendBtn = document.querySelector('#send-message-button');
+                if (!sendBtn) return '❌ Кнопка отправки не найдена';
+                
+                await new Promise(resolve => {
+                    const checkDisabled = () => {
+                        if (!sendBtn.disabled) {
+                            resolve();
+                        } else {
+                            setTimeout(checkDisabled, 200);
+                        }
+                    };
+                    checkDisabled();
+                });
+                
+                sendBtn.click();
+                
+                // 5. Ждём ответ
+                await new Promise(resolve => {
+                    let lastText = '';
+                    let attempts = 0;
+                    const maxAttempts = 60;
+                    
+                    const checkResponse = () => {
+                        attempts++;
+                        const messages = document.querySelectorAll('[data-message-role="assistant"]');
+                        if (messages.length > 0) {
+                            const lastMsg = messages[messages.length - 1];
+                            const text = lastMsg.textContent?.trim() || '';
+                            if (text && text.length > 10 && text !== lastText) {
+                                lastText = text;
+                                if (text.length > 100 || attempts > 30) {
+                                    resolve();
+                                    return;
+                                }
+                            }
+                        }
+                        if (attempts >= maxAttempts) {
+                            resolve();
+                        } else {
+                            setTimeout(checkResponse, 1000);
+                        }
+                    };
+                    checkResponse();
+                });
+                
+                // 6. Получаем ответ
+                const messages = document.querySelectorAll('[data-message-role="assistant"]');
+                if (messages.length === 0) return '⏰ Ответ не получен';
+                
+                const lastMsg = messages[messages.length - 1];
+                const text = lastMsg.textContent?.trim() || 'Пустой ответ';
+                
+                return text;
+            }
+            
+            return await sendQuery(arguments[0], arguments[1], arguments[2]);
+            """
+
+            debug_logger.debug("📤 Отправка запроса...")
+            result = js(js_code, query[:500], _current_model, _search_enabled)
+            debug_logger.debug(f"📥 Получен ответ: {len(result) if result else 0} символов")
+
+            if not result:
+                await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai")
+                return
+
+            if len(result) > 4000:
+                result = result[:3900] + "\n\n... (ответ обрезан)"
+
+            header = f"🤖 **Z.ai ответ**\n"
+            header += f"📌 Модель: `{_current_model}`\n"
+            header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
+            
+            await status_msg.edit_text(header + result, parse_mode='Markdown')
+
+        except Exception as e:
+            error_msg = str(e)
+            debug_logger.error(f"❌ Ошибка в /zai: {error_msg}")
+
+            if "cdp_disconnected" in error_msg:
+                await status_msg.edit_text("⚠️ Браузер отключился, перезапускаю...")
+                ensure_daemon()
+                time.sleep(3)
+                set_cookies_global()
+                try:
+                    ensure_tab()
+                    goto_url("https://chat.z.ai/")
+                    wait_for_load(timeout=60)
+                    result = js(js_code, query[:500], _current_model, _search_enabled)
+                    if result:
+                        if len(result) > 4000:
+                            result = result[:3900] + "\n\n... (ответ обрезан)"
+                        header = f"🤖 **Z.ai ответ**\n"
+                        header += f"📌 Модель: `{_current_model}`\n"
+                        header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
+                        await status_msg.edit_text(header + result, parse_mode='Markdown')
+                    else:
+                        await status_msg.edit_text("❌ Не удалось получить ответ")
+                except Exception as e2:
+                    await status_msg.edit_text(f"❌ Ошибка: {str(e2)[:200]}")
+            else:
+                await status_msg.edit_text(f"❌ Ошибка: {error_msg[:200]}")
+
+    except Exception as e:
+        debug_logger.error(f"❌ Критическая ошибка в /zai: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@log_errors
+async def zai_model(update, context):
+    """Сменить модель Z.ai"""
+    global _current_model
+    
+    try:
+        if not context.args:
+            models_list = "\n".join([f"  • `{k}` — {v}" for k, v in ZAI_MODELS.items()])
+            await update.message.reply_text(
+                f"📌 **Доступные модели:**\n\n{models_list}\n\n"
+                f"Текущая: `{_current_model}`\n\n"
+                f"Пример: `/zai_model glm-5.1`\n"
+                f"Пример: `/zai_model deepseek-v3`",
+                parse_mode='Markdown'
+            )
+            return
+
+        model = context.args[0].strip().lower()
+        
+        if model not in ZAI_MODELS:
+            found = None
+            for key in ZAI_MODELS:
+                if model in key or key in model:
+                    found = key
+                    break
+            
+            if found:
+                model = found
+            else:
+                await update.message.reply_text(
+                    f"❌ Модель `{model}` не найдена\n\n"
+                    f"Доступные модели:\n" + "\n".join([f"  • `{k}` — {v}" for k, v in ZAI_MODELS.items()]),
+                    parse_mode='Markdown'
+                )
+                return
+        
+        _current_model = model
+        await update.message.reply_text(
+            f"✅ Модель изменена на: `{ZAI_MODELS[model]}`\n"
+            f"Теперь все запросы будут использовать эту модель.",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        debug_logger.error(f"❌ Ошибка в /zai_model: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@log_errors
+async def zai_search(update, context):
+    """Включить/выключить поиск в сети"""
+    global _search_enabled
+    
+    try:
+        _search_enabled = not _search_enabled
+        status = "✅ Включен" if _search_enabled else "❌ Выключен"
+        
+        await update.message.reply_text(
+            f"🔍 Поиск в сети: {status}\n\n"
+            f"Теперь все запросы будут {'с поиском в интернете' if _search_enabled else 'без поиска в интернете'}.",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        debug_logger.error(f"❌ Ошибка в /zai_search: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+@log_errors
 async def tabs(update, context):
     debug_logger.debug("📝 /tabs вызван")
     
@@ -649,7 +926,7 @@ async def tabs(update, context):
                 debug_logger.warning("⚠️ CDP отключился, перезапускаю браузер...")
                 ensure_daemon()
                 time.sleep(3)
-                set_cookies_global()  # ← Восстанавливаем куки
+                set_cookies_global()
                 ensure_browser_ready()
                 tab_list = list_tabs()
                 debug_logger.debug(f"   Вкладок после перезапуска: {len(tab_list)}")
@@ -667,7 +944,7 @@ async def tabs(update, context):
                 debug_logger.warning("⚠️ CDP отключился при получении текущей вкладки")
                 ensure_daemon()
                 time.sleep(3)
-                set_cookies_global()  # ← Восстанавливаем куки
+                set_cookies_global()
                 ensure_browser_ready()
                 current = current_tab()
             else:
@@ -800,21 +1077,29 @@ def main():
     ensure_daemon()
     debug_logger.info("✅ Браузер готов")
     
-    # ===== УСТАНОВКА КУК ПРИ ЗАПУСКЕ =====
     debug_logger.info("🍪 Установка кук...")
     set_cookies_global()
-    # =======================================
 
     debug_logger.info("📡 Создание приложения...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
     app.add_handler(CommandHandler("kyiv", kyiv))
+    
+    # Z.ai команды
+    app.add_handler(CommandHandler("zai", zai))
+    app.add_handler(CommandHandler("zai_model", zai_model))
+    app.add_handler(CommandHandler("zai_search", zai_search))
+    
+    # Управление вкладками
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
     app.add_handler(CommandHandler("tab_switch", tab_switch))
+    
+    # Логи
     app.add_handler(CommandHandler("log", log))
 
     debug_logger.info("🚀 Бот запущен!")
