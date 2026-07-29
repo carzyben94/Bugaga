@@ -45,7 +45,7 @@ from browser_harness.admin import ensure_daemon
 # ============================================================
 
 MAX_TABS = 5
-_search_enabled = False  # True = включён поиск в интернете
+_search_enabled = True  # Поиск ВСЕГДА включён
 
 # ============================================================
 # КОМАНДЫ
@@ -54,9 +54,8 @@ _search_enabled = False  # True = включён поиск в интернет�
 async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузер бот**\n\n"
+        "/z <запрос> — спросить Z.ai (GLM-5.2 + поиск)\n"
         "/dom <url> — скачать DOM в JSON\n"
-        "/zai <запрос> — спросить Z.ai\n"
-        "/zai_search — включить/выключить поиск (Deep Think + Web Search)\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -77,7 +76,6 @@ async def log(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def dom(update, context):
-    """Парсит DOM и отправляет JSON файл"""
     try:
         if not context.args:
             await update.message.reply_text(
@@ -101,7 +99,6 @@ async def dom(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
 
-        # Парсим DOM
         js_code = """
         const elements = {
             buttons: [],
@@ -224,23 +221,23 @@ async def dom(update, context):
         logger.error(f"❌ Ошибка в /dom: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def zai(update, context):
+async def z(update, context):
     """
-    Отправляет запрос к Z.ai с поддержкой Deep Think и Web Search
+    Отправляет запрос к Z.ai с GLM-5.2 и включенным поиском
+    Команда: /z <запрос>
     """
     try:
         if not context.args:
             await update.message.reply_text(
-                "❌ Напишите запрос для Z.ai\n"
-                "Пример: /zai привет как дела\n\n"
-                f"🔍 Поиск в сети: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
-                "📌 Команды:\n"
-                "/zai_search — включить/выключить поиск (Deep Think + Web Search)"
+                "❌ Напишите запрос\n"
+                "Пример: /z кто лидер сша?\n\n"
+                "🔍 Поиск всегда включён\n"
+                "🤖 Модель: GLM-5.2"
             )
             return
 
         query = " ".join(context.args)
-        logger.info(f"📝 /zai запрос: {query}")
+        logger.info(f"📝 /z запрос: {query}")
         logger.info(f"🔍 Поиск: {_search_enabled}")
 
         status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
@@ -265,7 +262,7 @@ async def zai(update, context):
             query_escaped = query.replace("'", "\\'").replace('"', '\\"')
             search_enabled = str(_search_enabled).lower()
 
-            # === JS КОД С ОТЛАДКОЙ ===
+            # === JS КОД С GLM-5.2 И ПОИСКОМ ===
             js_code = f"""
             (function() {{
                 const query = '{query_escaped}';
@@ -273,7 +270,16 @@ async def zai(update, context):
                 
                 let result = '';
                 
-                // 1. Включаем Deep Think (data-autothink)
+                // 1. Выбираем GLM-5.2 (последняя модель)
+                const modelBtn = document.querySelector('#model-selector-glm-5_2-button');
+                if (modelBtn) {{
+                    modelBtn.click();
+                    result += '✅ Модель: GLM-5.2\\n';
+                }} else {{
+                    result += '❌ Модель GLM-5.2 не найдена\\n';
+                }}
+                
+                // 2. Включаем Deep Think
                 const deepThinkBtn = document.querySelector('[data-autothink="true"], [data-autothink="false"]');
                 if (deepThinkBtn) {{
                     const isActive = deepThinkBtn.getAttribute('data-autothink') === 'true';
@@ -281,13 +287,13 @@ async def zai(update, context):
                         deepThinkBtn.click();
                         result += '🔄 Deep Think: клик\\n';
                     }} else {{
-                        result += '✅ Deep Think: уже ' + (isActive ? 'включён' : 'выключен') + '\\n';
+                        result += '✅ Deep Think: уже включён\\n';
                     }}
                 }} else {{
-                    result += '❌ Deep Think: кнопка не найдена\\n';
+                    result += '❌ Deep Think: не найден\\n';
                 }}
                 
-                // 2. Включаем Web Search (data-active)
+                // 3. Включаем Web Search
                 const webSearchBtn = document.querySelector('[data-active="true"], [data-active="false"]');
                 if (webSearchBtn) {{
                     const isActive = webSearchBtn.getAttribute('data-active') === 'true';
@@ -295,13 +301,13 @@ async def zai(update, context):
                         webSearchBtn.click();
                         result += '🔄 Web Search: клик\\n';
                     }} else {{
-                        result += '✅ Web Search: уже ' + (isActive ? 'включён' : 'выключен') + '\\n';
+                        result += '✅ Web Search: уже включён\\n';
                     }}
                 }} else {{
-                    result += '❌ Web Search: кнопка не найдена\\n';
+                    result += '❌ Web Search: не найден\\n';
                 }}
                 
-                // 3. Вводим запрос
+                // 4. Вводим запрос
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
                 if (!input) return result + '❌ Поле ввода не найдено';
                 
@@ -313,7 +319,7 @@ async def zai(update, context):
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 }}
                 
-                // 4. Отправляем
+                // 5. Отправляем
                 const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
@@ -385,7 +391,8 @@ async def zai(update, context):
 
             header = f"🤖 **Z.ai ответ**\n"
             header += f"📌 Запрос: {query[:100]}\n"
-            header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
+            header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n"
+            header += f"🤖 Модель: GLM-5.2\n\n"
             
             full_response = header + response
             
@@ -400,26 +407,7 @@ async def zai(update, context):
             await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
     except Exception as e:
-        logger.error(f"❌ Ошибка в /zai: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def zai_search(update, context):
-    """Включить/выключить поиск (Deep Think + Web Search)"""
-    global _search_enabled
-    
-    try:
-        _search_enabled = not _search_enabled
-        status = "✅ Включен" if _search_enabled else "❌ Выключен"
-        
-        await update.message.reply_text(
-            f"🔍 Поиск в сети: {status}\n\n"
-            f"Теперь все запросы будут {'с поиском в интернете' if _search_enabled else 'без поиска в интернете'}.\n"
-            f"Включается: **Deep Think** + **Web Search**",
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка в /zai_search: {e}")
+        logger.error(f"❌ Ошибка в /z: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tabs(update, context):
@@ -515,8 +503,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("zai", zai))
-    app.add_handler(CommandHandler("zai_search", zai_search))
+    app.add_handler(CommandHandler("z", z))  # ← Новая команда /z
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
