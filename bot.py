@@ -54,7 +54,7 @@ _search_enabled = True
 async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузер бот**\n\n"
-        "/z <запрос> — спросить Z.ai (GLM-5.2 + поиск)\n"
+        "/z <запрос> — спросить Z.ai (GLM-4.7/5.2 + поиск)\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
@@ -76,7 +76,6 @@ async def log(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 async def dom(update, context):
-    """Парсит DOM и отправляет JSON файл"""
     try:
         if not context.args:
             await update.message.reply_text(
@@ -100,7 +99,6 @@ async def dom(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
 
-        # === ИСПРАВЛЕННЫЙ JS КОД ===
         js_code = """
         const elements = {
             buttons: [],
@@ -225,8 +223,7 @@ async def dom(update, context):
 
 async def z(update, context):
     """
-    Отправляет запрос к Z.ai с GLM-5.2 и включенным поиском
-    Команда: /z <запрос>
+    Отправляет запрос к Z.ai с GLM-5.2 (если доступна) и включенным поиском
     """
     try:
         if not context.args:
@@ -234,7 +231,7 @@ async def z(update, context):
                 "❌ Напишите запрос\n"
                 "Пример: /z кто лидер сша?\n\n"
                 "🔍 Поиск всегда включён\n"
-                "🤖 Модель: GLM-5.2"
+                "🤖 Модель: GLM-4.7 / GLM-5.2 (выбирается автоматически)"
             )
             return
 
@@ -271,26 +268,47 @@ async def z(update, context):
                 
                 let result = '';
                 
-                // 1. Выбираем GLM-5.2
-                const modelBtn = document.querySelector(
-                    '#model-selector-glm-5_2-button, ' +
-                    '#model-selector-glm-4_7-button, ' +
-                    '[aria-label="Select a model"]'
-                );
+                // 1. Выбираем GLM-5.2 (если доступна)
+                const modelBtn = document.querySelector('#model-selector-glm-4_7-button');
                 if (modelBtn) {{
                     modelBtn.click();
-                    // Ждём появления меню
-                    setTimeout(() => {{
-                        const firstModel = document.querySelector('[role="menuitemradio"]');
-                        if (firstModel) {{
-                            const modelName = firstModel.textContent?.trim() || 'неизвестная';
-                            firstModel.click();
-                            result += `✅ Модель: ${{modelName}}\\n`;
+                    result += '🔄 Открываю меню моделей...\\n';
+                    
+                    // Ждём появления меню и ищем GLM-5.2
+                    const checkMenu = () => {{
+                        const items = document.querySelectorAll('[role="menuitemradio"]');
+                        let found = false;
+                        for (const item of items) {{
+                            const text = item.textContent?.trim() || '';
+                            if (text.includes('GLM-5.2')) {{
+                                item.click();
+                                result += '✅ Модель: GLM-5.2\\n';
+                                found = true;
+                                break;
+                            }}
                         }}
-                    }}, 500);
-                    result += '🔄 Выбор модели...\\n';
+                        if (!found) {{
+                            // Если GLM-5.2 нет, выбираем GLM-4.7
+                            for (const item of items) {{
+                                const text = item.textContent?.trim() || '';
+                                if (text.includes('GLM-4.7')) {{
+                                    item.click();
+                                    result += '✅ Модель: GLM-4.7\\n';
+                                    found = true;
+                                    break;
+                                }}
+                            }}
+                            if (!found && items.length > 0) {{
+                                const first = items[0];
+                                const name = first.textContent?.trim() || 'неизвестная';
+                                first.click();
+                                result += `✅ Модель: ${{name}}\\n`;
+                            }}
+                        }}
+                    }};
+                    setTimeout(checkMenu, 500);
                 }} else {{
-                    result += '❌ Модель не найдена\\n';
+                    result += '❌ Кнопка модели не найдена\\n';
                 }}
                 
                 // 2. Включаем Deep Think
@@ -406,7 +424,7 @@ async def z(update, context):
             header = f"🤖 **Z.ai ответ**\n"
             header += f"📌 Запрос: {query[:100]}\n"
             header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n"
-            header += f"🤖 Модель: GLM-5.2\n\n"
+            header += f"🤖 Модель: GLM-5.2 (если доступна)\n\n"
             
             full_response = header + response
             
