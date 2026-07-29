@@ -18,7 +18,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 try:
     from prompt import SYSTEM_PROMPT
 except ImportError:
-    SYSTEM_PROMPT = "Ты — умный браузерный агент."
+    SYSTEM_PROMPT = "Ты — агент, генерирующий код для браузера."
 
 # ============================================================
 # НАСТРОЙКА
@@ -46,7 +46,11 @@ sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, js,
-    list_tabs, current_tab, close_tab, switch_tab
+    list_tabs, current_tab, close_tab, switch_tab,
+    capture_screenshot, scroll_at_xy, scroll,
+    click_at_xy, type_text, press_key,
+    fill_input, upload_file, page_info, http_get,
+    ensure_real_tab, cdp, iframe_target, drain_events
 )
 from browser_harness.admin import ensure_daemon
 
@@ -57,13 +61,11 @@ from browser_harness.admin import ensure_daemon
 MAX_TABS = 5
 
 # ============================================================
-# ФУНКЦИЯ ОТПРАВКИ В Z.AI
+# ФУНКЦИИ
 # ============================================================
 
-async def send_to_zai(query, status_msg=None):
-    """
-    Отправляет запрос в Z.ai и возвращает ответ
-    """
+async def ask_zai(query, status_msg=None):
+    """Отправляет запрос в Z.ai и возвращает ответ"""
     try:
         # Закрываем старые вкладки
         tabs = list_tabs()
@@ -79,64 +81,47 @@ async def send_to_zai(query, status_msg=None):
         wait_for_load(timeout=60)
         
         if status_msg:
-            await status_msg.edit_text("✍️ Ввожу запрос...")
+            await status_msg.edit_text("✍️ Генерирую код...")
         await asyncio.sleep(2)
 
-        # Экранируем кавычки и переносы строк
         query_escaped = query.replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
 
         js_code = f"""
         (async function() {{
             const query = '{query_escaped}';
             
-            let result = '';
-            
-            // === ВВОДИМ ЗАПРОС ===
             const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
             if (!input) return '❌ Поле ввода не найдено';
             
             input.value = '';
             input.focus();
-            
             input.value = query;
             input.dispatchEvent(new Event('input', {{ bubbles: true }}));
             
-            // === ОТПРАВЛЯЕМ ===
             const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
             if (sendBtn && !sendBtn.disabled) {{
                 sendBtn.click();
-                result += '✅ Запрос отправлен';
             }} else {{
                 input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
-                result += '✅ Запрос отправлен (Enter)';
             }}
             
-            return result;
+            return '✅ Запрос отправлен';
         }})();
         """
         
-        result = js(js_code)
-        logger.info(f"📊 Результат JS: {result}")
+        js(js_code)
         
         if status_msg:
-            await status_msg.edit_text(f"✅ {result}")
-
-        # Ждём ответ
-        if status_msg:
-            await status_msg.edit_text("⏳ Жду ответ AI (до 30 секунд)...")
+            await status_msg.edit_text("⏳ Жду ответ...")
         await asyncio.sleep(30)
 
-        # Парсим ответ
-        if status_msg:
-            await status_msg.edit_text("📊 Получаю ответ...")
-        
         js_response = """
         (function() {
             const thinking = document.querySelector('[data-thinking], .thinking, [role="status"]');
             if (thinking) {
                 const thinkingText = thinking.textContent?.trim() || '';
                 if (thinkingText.includes('Thinking') || thinkingText.includes('...')) {
-                    return '⏰ AI всё ещё думает... Попробуйте упростить запрос.';
+                    return '⏰ AI думает...';
                 }
             }
             
@@ -159,7 +144,7 @@ async def send_to_zai(query, status_msg=None):
         
         if not response or len(response) < 5:
             if status_msg:
-                await status_msg.edit_text("⏳ AI думает, жду ещё 10 секунд...")
+                await status_msg.edit_text("⏳ Жду ещё...")
             await asyncio.sleep(10)
             response = js(js_response)
 
@@ -170,13 +155,66 @@ async def send_to_zai(query, status_msg=None):
             return response
 
         if len(response) > 4000:
-            response = response[:3950] + "\n\n... (ответ обрезан)"
+            response = response[:3950] + "\n\n... (обрезано)"
 
         return response
 
     except Exception as e:
-        logger.error(f"❌ Ошибка в send_to_zai: {e}")
+        logger.error(f"❌ Ошибка в ask_zai: {e}")
         return f"❌ Ошибка: {str(e)[:200]}"
+
+def extract_code(text):
+    """Извлекает код из Markdown-блока ```python ... ```"""
+    pattern = r'```python\s*([\s\S]*?)\s*```'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+def safe_execute(code):
+    """Безопасно выполняет сгенерированный код и возвращает вывод"""
+    import io
+    import contextlib
+    
+    # Сохраняем текущие глобалы
+    globals_dict = globals().copy()
+    
+    # Добавляем все функции из Browser Harness
+    globals_dict.update({
+        'new_tab': new_tab,
+        'goto_url': goto_url,
+        'wait_for_load': wait_for_load,
+        'js': js,
+        'list_tabs': list_tabs,
+        'current_tab': current_tab,
+        'close_tab': close_tab,
+        'switch_tab': switch_tab,
+        'capture_screenshot': capture_screenshot,
+        'scroll': scroll,
+        'scroll_at_xy': scroll_at_xy,
+        'click_at_xy': click_at_xy,
+        'type_text': type_text,
+        'press_key': press_key,
+        'fill_input': fill_input,
+        'upload_file': upload_file,
+        'page_info': page_info,
+        'http_get': http_get,
+        'ensure_real_tab': ensure_real_tab,
+        'cdp': cdp,
+        'iframe_target': iframe_target,
+        'drain_events': drain_events,
+        'print': print,
+        'time': time,
+        'sleep': time.sleep
+    })
+    
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            exec(code, globals_dict)
+        return output.getvalue()
+    except Exception as e:
+        return f"❌ Ошибка выполнения: {str(e)}"
 
 # ============================================================
 # КОМАНДЫ
@@ -185,7 +223,7 @@ async def send_to_zai(query, status_msg=None):
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер бот\n\n"
-        "/agent <запрос> — умный агент (с системной инструкцией)\n"
+        "/agent <запрос> — агент генерирует и выполняет код\n"
         "/z <запрос> — спросить Z.ai\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/tabs — список вкладок\n"
@@ -369,7 +407,7 @@ async def z(update, context):
 
         status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
         
-        response = await send_to_zai(query, status_msg)
+        response = await ask_zai(query, status_msg)
         
         if response:
             header = f"🤖 **Z.ai ответ**\n"
@@ -389,7 +427,7 @@ async def z(update, context):
 
 async def agent(update, context):
     """
-    Умный агент с system prompt
+    Агент: генерирует код, выполняет его, возвращает результат
     """
     try:
         if not context.args:
@@ -402,19 +440,40 @@ async def agent(update, context):
         task = " ".join(context.args)
         logger.info(f"📝 Агент: {task}")
 
-        status_msg = await update.message.reply_text(f"🧠 Агент обрабатывает запрос...")
+        status_msg = await update.message.reply_text(f"🧠 Генерирую код для: {task}...")
 
-        # Формируем запрос с system prompt (в одну строку)
-        full_query = f"{SYSTEM_PROMPT} Запрос пользователя: {task}"
+        # 1. Генерируем код через Z.ai
+        full_query = f"{SYSTEM_PROMPT}\n\nЗапрос пользователя: {task}"
         
-        response = await send_to_zai(full_query, status_msg)
+        response = await ask_zai(full_query, status_msg)
         
-        if response:
-            header = f"🧠 **Агент ответ**\n"
-            header += f"📌 Запрос: {task[:100]}\n\n"
-            await status_msg.edit_text(header + response, parse_mode=None)
+        if not response:
+            await status_msg.edit_text("❌ Не удалось получить код от агента")
+            return
+
+        # 2. Извлекаем код из ответа
+        code = extract_code(response)
+        
+        if not code:
+            await status_msg.edit_text(
+                f"❌ Агент не вернул код в правильном формате:\n\n{response[:500]}"
+            )
+            return
+
+        # 3. Показываем код пользователю
+        await status_msg.edit_text(f"📝 Сгенерированный код:\n\n```python\n{code}\n```")
+
+        # 4. Выполняем код
+        await status_msg.edit_text("⚡ Выполняю код...")
+        result = safe_execute(code)
+        
+        # 5. Возвращаем результат
+        if result:
+            if len(result) > 4000:
+                result = result[:3950] + "\n\n... (обрезано)"
+            await status_msg.edit_text(f"✅ **Результат:**\n\n{result}")
         else:
-            await status_msg.edit_text("❌ Не удалось получить ответ от агента")
+            await status_msg.edit_text("✅ Код выполнен (вывод отсутствует)")
 
         try:
             close_tab(current_tab())
@@ -422,7 +481,7 @@ async def agent(update, context):
             pass
 
     except Exception as e:
-        logger.error(f"❌ Ошибка в агента: {e}")
+        logger.error(f"❌ Ошибка в agent: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tabs(update, context):
