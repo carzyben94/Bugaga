@@ -691,7 +691,8 @@ async def zai(update, context):
 
             # === ИСПРАВЛЕННЫЙ JS КОД ===
             js_code = """
-            async function sendQuery(params) {
+            async function sendQuery(paramsJson) {
+                const params = JSON.parse(paramsJson);
                 const query = params.query || '';
                 const model = params.model || '';
                 const searchEnabled = params.searchEnabled || false;
@@ -800,15 +801,16 @@ async def zai(update, context):
             return await sendQuery(arguments[0]);
             """
 
-            # Передаём все параметры как один JSON-объект
+            # Передаём параметры как JSON-строку
             params = {
                 "query": query[:500],
                 "model": _current_model,
                 "searchEnabled": _search_enabled
             }
+            params_json = json.dumps(params)
             
             debug_logger.debug("📤 Отправка запроса...")
-            result = js(js_code, params)
+            result = js(js_code, params_json)
             debug_logger.debug(f"📥 Получен ответ: {len(result) if result else 0} символов")
 
             if not result:
@@ -837,7 +839,7 @@ async def zai(update, context):
                     ensure_tab()
                     goto_url("https://chat.z.ai/")
                     wait_for_load(timeout=60)
-                    result = js(js_code, params)
+                    result = js(js_code, params_json)
                     if result:
                         if len(result) > 4000:
                             result = result[:3900] + "\n\n... (ответ обрезан)"
