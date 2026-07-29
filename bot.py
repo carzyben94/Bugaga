@@ -41,6 +41,13 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
+# НАСТРОЙКИ
+# ============================================================
+
+MAX_TABS = 5
+_search_enabled = False  # True = включён поиск в интернете
+
+# ============================================================
 # КОМАНДЫ
 # ============================================================
 
@@ -49,6 +56,7 @@ async def start(update, context):
         "🌐 **Браузер бот**\n\n"
         "/dom <url> — скачать DOM в JSON\n"
         "/zai <запрос> — спросить Z.ai\n"
+        "/zai_search — включить/выключить поиск (Deep Think + Web Search)\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -120,7 +128,7 @@ async def dom(update, context):
             
             const info = {
                 tag: tag,
-                text: text.substring(0, 500),
+                text: text[:500],
                 className: el.className || '',
                 id: el.id || '',
                 attributes: {},
@@ -129,7 +137,7 @@ async def dom(update, context):
             
             for (const attr of el.attributes) {
                 info.attributes[attr.name] = attr.value;
-                if (attr.name.startsWith('data-')) {
+                if (attr.name.startswith('data-')) {
                     info.dataAttributes[attr.name] = attr.value;
                 }
             }
@@ -218,18 +226,22 @@ async def dom(update, context):
 
 async def zai(update, context):
     """
-    Отправляет запрос к Z.ai и возвращает ответ AI
+    Отправляет запрос к Z.ai с поддержкой Deep Think и Web Search
     """
     try:
         if not context.args:
             await update.message.reply_text(
                 "❌ Напишите запрос для Z.ai\n"
-                "Пример: /zai привет как дела"
+                "Пример: /zai привет как дела\n\n"
+                f"🔍 Поиск в сети: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
+                "📌 Команды:\n"
+                "/zai_search — включить/выключить поиск (Deep Think + Web Search)"
             )
             return
 
         query = " ".join(context.args)
         logger.info(f"📝 /zai запрос: {query}")
+        logger.info(f"🔍 Поиск: {_search_enabled}")
 
         status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
 
@@ -251,50 +263,89 @@ async def zai(update, context):
             await asyncio.sleep(2)
 
             query_escaped = query.replace("'", "\\'").replace('"', '\\"')
+            search_enabled = str(_search_enabled).lower()
 
+            # === JS КОД С ОТЛАДКОЙ ===
             js_code = f"""
             (function() {{
+                const query = '{query_escaped}';
+                const searchEnabled = {search_enabled};
+                
+                let result = '';
+                
+                // 1. Включаем Deep Think (data-autothink)
+                const deepThinkBtn = document.querySelector('[data-autothink="true"], [data-autothink="false"]');
+                if (deepThinkBtn) {{
+                    const isActive = deepThinkBtn.getAttribute('data-autothink') === 'true';
+                    if (isActive !== searchEnabled) {{
+                        deepThinkBtn.click();
+                        result += '🔄 Deep Think: клик\\n';
+                    }} else {{
+                        result += '✅ Deep Think: уже ' + (isActive ? 'включён' : 'выключен') + '\\n';
+                    }}
+                }} else {{
+                    result += '❌ Deep Think: кнопка не найдена\\n';
+                }}
+                
+                // 2. Включаем Web Search (data-active)
+                const webSearchBtn = document.querySelector('[data-active="true"], [data-active="false"]');
+                if (webSearchBtn) {{
+                    const isActive = webSearchBtn.getAttribute('data-active') === 'true';
+                    if (isActive !== searchEnabled) {{
+                        webSearchBtn.click();
+                        result += '🔄 Web Search: клик\\n';
+                    }} else {{
+                        result += '✅ Web Search: уже ' + (isActive ? 'включён' : 'выключен') + '\\n';
+                    }}
+                }} else {{
+                    result += '❌ Web Search: кнопка не найдена\\n';
+                }}
+                
+                // 3. Вводим запрос
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
-                if (!input) return 'Поле ввода не найдено';
+                if (!input) return result + '❌ Поле ввода не найдено';
                 
                 input.value = '';
                 input.focus();
                 
-                const query = '{query_escaped}';
                 for (let i = 0; i < query.length; i++) {{
                     input.value += query[i];
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 }}
                 
+                // 4. Отправляем
                 const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
                 if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
+                    result += '✅ Запрос отправлен';
                 }} else {{
                     input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+                    result += '✅ Запрос отправлен (Enter)';
                 }}
                 
-                return 'Запрос отправлен';
+                return result;
             }})();
             """
             
             result = js(js_code)
+            logger.info(f"📊 Результат JS: {result}")
             await status_msg.edit_text(f"✅ {result}")
 
-            # Ждём ответ AI — увеличиваем до 30 секунд
+            # Ждём ответ
             await status_msg.edit_text("⏳ Жду ответ AI (до 30 секунд)...")
             await asyncio.sleep(30)
 
-            # Парсим ответ AI
+            # Парсим ответ
             await status_msg.edit_text("📊 Получаю ответ...")
             
             js_response = """
             (function() {
-                // Проверяем, есть ли "Thinking..." 
+                // Проверяем "Thinking..."
                 const thinking = document.querySelector('[data-thinking], .thinking, [role="status"]');
                 if (thinking) {
                     const thinkingText = thinking.textContent?.trim() || '';
                     if (thinkingText.includes('Thinking') || thinkingText.includes('...')) {
-                        return '⏰ AI всё ещё думает... Попробуйте упростить запрос или подождать ещё.';
+                        return '⏰ AI всё ещё думает... Попробуйте упростить запрос.';
                     }
                 }
                 
@@ -316,11 +367,9 @@ async def zai(update, context):
             
             response = js(js_response)
             
-            # Если ответ содержит "Thinking" или пустой, пробуем ещё раз через 10 секунд
-            if not response or len(response) < 5 or "Thinking" in response:
+            if not response or len(response) < 5:
                 await status_msg.edit_text("⏳ AI думает, жду ещё 10 секунд...")
                 await asyncio.sleep(10)
-                
                 response = js(js_response)
 
             if not response or len(response) < 5:
@@ -335,7 +384,8 @@ async def zai(update, context):
                 response = response[:3950] + "\n\n... (ответ обрезан)"
 
             header = f"🤖 **Z.ai ответ**\n"
-            header += f"📌 Запрос: {query[:100]}\n\n"
+            header += f"📌 Запрос: {query[:100]}\n"
+            header += f"🔍 Поиск: {'✅ Включен' if _search_enabled else '❌ Выключен'}\n\n"
             
             full_response = header + response
             
@@ -351,6 +401,25 @@ async def zai(update, context):
 
     except Exception as e:
         logger.error(f"❌ Ошибка в /zai: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def zai_search(update, context):
+    """Включить/выключить поиск (Deep Think + Web Search)"""
+    global _search_enabled
+    
+    try:
+        _search_enabled = not _search_enabled
+        status = "✅ Включен" if _search_enabled else "❌ Выключен"
+        
+        await update.message.reply_text(
+            f"🔍 Поиск в сети: {status}\n\n"
+            f"Теперь все запросы будут {'с поиском в интернете' if _search_enabled else 'без поиска в интернете'}.\n"
+            f"Включается: **Deep Think** + **Web Search**",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /zai_search: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tabs(update, context):
@@ -447,6 +516,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
     app.add_handler(CommandHandler("zai", zai))
+    app.add_handler(CommandHandler("zai_search", zai_search))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
