@@ -46,11 +46,10 @@ sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, js,
-    list_tabs, current_tab, close_tab, switch_tab,
-    capture_screenshot, scroll_at_xy, scroll,
-    click_at_xy, type_text, press_key,
+    list_tabs, current_tab, close_tab, switch_tab, ensure_real_tab,
+    capture_screenshot, scroll_at_xy, click_at_xy, type_text, press_key,
     fill_input, upload_file, page_info, http_get,
-    ensure_real_tab, cdp, iframe_target, drain_events
+    cdp, drain_events, iframe_target
 )
 from browser_harness.admin import ensure_daemon
 
@@ -76,9 +75,8 @@ async def ask_zai(query, status_msg=None):
                 except:
                     pass
 
-        new_tab()
-        goto_url("https://chat.z.ai/")
-        wait_for_load(timeout=60)
+        new_tab("https://chat.z.ai/")
+        wait_for_load(60)
         
         if status_msg:
             await status_msg.edit_text("✍️ Генерирую код...")
@@ -189,8 +187,8 @@ def safe_execute(code):
         'current_tab': current_tab,
         'close_tab': close_tab,
         'switch_tab': switch_tab,
+        'ensure_real_tab': ensure_real_tab,
         'capture_screenshot': capture_screenshot,
-        'scroll': scroll,
         'scroll_at_xy': scroll_at_xy,
         'click_at_xy': click_at_xy,
         'type_text': type_text,
@@ -199,10 +197,9 @@ def safe_execute(code):
         'upload_file': upload_file,
         'page_info': page_info,
         'http_get': http_get,
-        'ensure_real_tab': ensure_real_tab,
         'cdp': cdp,
-        'iframe_target': iframe_target,
         'drain_events': drain_events,
+        'iframe_target': iframe_target,
         'print': print,
         'time': time,
         'sleep': time.sleep
@@ -260,9 +257,8 @@ async def dom(update, context):
         status_msg = await update.message.reply_text(f"🌐 Открываю {url}...")
 
         try:
-            new_tab()
-            goto_url(url)
-            wait_for_load(timeout=30)
+            new_tab(url)
+            wait_for_load(30)
             await status_msg.edit_text(f"✅ Страница загружена, парсинг...")
         except Exception as e:
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
@@ -417,7 +413,7 @@ async def z(update, context):
             await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai")
 
         try:
-            close_tab(current_tab())
+            close_tab()
         except:
             pass
 
@@ -476,7 +472,7 @@ async def agent(update, context):
             await status_msg.edit_text("✅ Код выполнен (вывод отсутствует)")
 
         try:
-            close_tab(current_tab())
+            close_tab()
         except:
             pass
 
@@ -533,7 +529,7 @@ async def tab_close(update, context):
             await update.message.reply_text("❌ Нельзя закрыть текущую вкладку")
             return
 
-        close_tab(tab_id)
+        close_tab()
         await update.message.reply_text(f"✅ Вкладка {tab_num + 1} закрыта")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
