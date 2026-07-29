@@ -41,96 +41,6 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# ФУНКЦИЯ ПАРСИНГА DOM (СОБИРАЕТ ВСЁ)
-# ============================================================
-
-def parse_dom():
-    """Парсит DOM страницы и возвращает JSON со всеми элементами"""
-    try:
-        js_code = """
-        const elements = {
-            buttons: [],
-            inputs: [],
-            links: [],
-            forms: [],
-            selects: [],
-            textareas: [],
-            divs: [],
-            spans: [],
-            lis: [],
-            others: []
-        };
-        
-        // Собираем ВСЕ элементы
-        const allElements = document.querySelectorAll('*');
-        
-        for (const el of allElements) {
-            // Пропускаем скрытые элементы
-            if (el.offsetParent === null && !el.hasAttribute('data-testid')) continue;
-            
-            // Пропускаем элементы без текста
-            const text = el.textContent?.trim() || '';
-            if (!text || text.length < 1) continue;
-            
-            const tag = el.tagName.toLowerCase();
-            
-            const info = {
-                tag: tag,
-                text: text.substring(0, 500), // Обрезаем длинные тексты
-                className: el.className || '',
-                id: el.id || '',
-                attributes: {},
-                dataAttributes: {}
-            };
-            
-            for (const attr of el.attributes) {
-                info.attributes[attr.name] = attr.value;
-                if (attr.name.startsWith('data-')) {
-                    info.dataAttributes[attr.name] = attr.value;
-                }
-            }
-            
-            // Распределяем по категориям
-            if (tag === 'button' || el.getAttribute('role') === 'button') {
-                elements.buttons.push(info);
-            } else if (tag === 'input') {
-                elements.inputs.push(info);
-            } else if (tag === 'a') {
-                elements.links.push(info);
-            } else if (tag === 'form') {
-                elements.forms.push(info);
-            } else if (tag === 'select') {
-                elements.selects.push(info);
-            } else if (tag === 'textarea') {
-                elements.textareas.push(info);
-            } else if (tag === 'div') {
-                elements.divs.push(info);
-            } else if (tag === 'span') {
-                elements.spans.push(info);
-            } else if (tag === 'li') {
-                elements.lis.push(info);
-            } else {
-                elements.others.push(info);
-            }
-        }
-        
-        return JSON.stringify({
-            page: {
-                url: window.location.href,
-                title: document.title,
-                timestamp: Date.now()
-            },
-            elements: elements
-        }, null, 2);
-        """
-        
-        result = js(js_code)
-        return result
-    except Exception as e:
-        logger.error(f"❌ Ошибка парсинга DOM: {e}")
-        return None
-
-# ============================================================
 # КОМАНДЫ
 # ============================================================
 
@@ -138,7 +48,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузер бот**\n\n"
         "/dom <url> — скачать DOM в JSON\n"
-        "/zai — открыть Z.ai, ввести запрос, подождать 20 сек, скачать DOM\n"
+        "/zai <запрос> — спросить Z.ai\n"
         "/tabs — список вкладок\n"
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
@@ -183,7 +93,81 @@ async def dom(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
 
-        result = parse_dom()
+        # Парсим DOM
+        js_code = """
+        const elements = {
+            buttons: [],
+            inputs: [],
+            links: [],
+            forms: [],
+            selects: [],
+            textareas: [],
+            divs: [],
+            spans: [],
+            lis: [],
+            others: []
+        };
+        
+        const allElements = document.querySelectorAll('*');
+        
+        for (const el of allElements) {
+            if (el.offsetParent === null && !el.hasAttribute('data-testid')) continue;
+            
+            const text = el.textContent?.trim() || '';
+            if (!text || text.length < 1) continue;
+            
+            const tag = el.tagName.toLowerCase();
+            
+            const info = {
+                tag: tag,
+                text: text[:500],
+                className: el.className || '',
+                id: el.id || '',
+                attributes: {},
+                dataAttributes: {}
+            };
+            
+            for (const attr of el.attributes) {
+                info.attributes[attr.name] = attr.value;
+                if (attr.name.startswith('data-')) {
+                    info.dataAttributes[attr.name] = attr.value;
+                }
+            }
+            
+            if (tag === 'button' || el.getAttribute('role') === 'button') {
+                elements.buttons.push(info);
+            } else if (tag === 'input') {
+                elements.inputs.push(info);
+            } else if (tag === 'a') {
+                elements.links.push(info);
+            } else if (tag === 'form') {
+                elements.forms.push(info);
+            } else if (tag === 'select') {
+                elements.selects.push(info);
+            } else if (tag === 'textarea') {
+                elements.textareas.push(info);
+            } else if (tag === 'div') {
+                elements.divs.push(info);
+            } else if (tag === 'span') {
+                elements.spans.push(info);
+            } else if (tag === 'li') {
+                elements.lis.push(info);
+            } else {
+                elements.others.push(info);
+            }
+        }
+        
+        return JSON.stringify({
+            page: {
+                url: window.location.href,
+                title: document.title,
+                timestamp: Date.now()
+            },
+            elements: elements
+        }, null, 2);
+        """
+        
+        result = js(js_code)
 
         if not result:
             await status_msg.edit_text("❌ Не удалось получить данные DOM")
@@ -234,11 +218,21 @@ async def dom(update, context):
 
 async def zai(update, context):
     """
-    Открывает Z.ai, вводит запрос "привет как дела",
-    ждёт 20 секунд, скачивает DOM
+    Отправляет запрос к Z.ai и возвращает ответ AI
     """
     try:
-        status_msg = await update.message.reply_text("🤖 Открываю Z.ai...")
+        # Проверяем, есть ли запрос
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Напишите запрос для Z.ai\n"
+                "Пример: /zai привет как дела"
+            )
+            return
+
+        query = " ".join(context.args)
+        logger.info(f"📝 /zai запрос: {query}")
+
+        status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
 
         try:
             # Закрываем старые вкладки
@@ -255,91 +249,109 @@ async def zai(update, context):
             wait_for_load(timeout=60)
             
             await status_msg.edit_text("✍️ Ввожу запрос...")
-            
-            # Небольшая пауза для загрузки страницы
             await asyncio.sleep(2)
 
-            # JavaScript для ввода текста и отправки
-            js_code = """
-            (function() {
-                // Находим поле ввода
+            # Экранируем кавычки для JS
+            query_escaped = query.replace("'", "\\'").replace('"', '\\"')
+
+            # JavaScript для ввода и отправки запроса
+            js_code = f"""
+            (function() {{
                 const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
                 if (!input) return 'Поле ввода не найдено';
                 
-                // Очищаем и вводим текст
                 input.value = '';
                 input.focus();
                 
-                const query = 'привет как дела';
-                for (let i = 0; i < query.length; i++) {
+                const query = '{query_escaped}';
+                for (let i = 0; i < query.length; i++) {{
                     input.value += query[i];
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                }
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                }}
                 
-                // Ищем кнопку отправки
                 const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
-                if (sendBtn && !sendBtn.disabled) {
+                if (sendBtn && !sendBtn.disabled) {{
                     sendBtn.click();
-                } else {
-                    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-                }
+                }} else {{
+                    input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+                }}
                 
                 return 'Запрос отправлен';
-            })();
+            }})();
             """
             
             result = js(js_code)
             await status_msg.edit_text(f"✅ {result}")
 
-            # Ждём 20 секунд пока AI ответит
-            await status_msg.edit_text("⏳ Жду 20 секунд пока AI ответит...")
+            # Ждём ответ AI
+            await status_msg.edit_text("⏳ Жду ответ AI...")
             await asyncio.sleep(20)
 
-            # Парсим DOM
-            await status_msg.edit_text("📊 Парсинг DOM...")
-            dom_result = parse_dom()
+            # Парсим ответ AI
+            await status_msg.edit_text("📊 Получаю ответ...")
+            
+            js_response = """
+            (function() {
+                // Ищем ответ AI
+                const assistant = document.querySelector('.chat-assistant');
+                if (!assistant) return '';
+                
+                // Берём все абзацы внутри
+                const paragraphs = assistant.querySelectorAll('p');
+                let text = '';
+                for (const p of paragraphs) {
+                    const t = p.textContent?.trim() || '';
+                    if (t) {
+                        text += t + '\\n\\n';
+                    }
+                }
+                return text.trim();
+            })();
+            """
+            
+            response = js(js_response)
+            
+            # Если не нашли через .chat-assistant, пробуем другие варианты
+            if not response or len(response) < 5:
+                js_response2 = """
+                (function() {
+                    // Ищем любые элементы с ответом
+                    const selectors = [
+                        '.chat-assistant',
+                        '[data-message-role="assistant"]',
+                        '.assistant-message',
+                        '.message-content',
+                        '.response-content'
+                    ];
+                    
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (el) {
+                            const text = el.textContent?.trim() || '';
+                            if (text && text.length > 10) {
+                                return text;
+                            }
+                        }
+                    }
+                    return '';
+                })();
+                """
+                response = js(js_response2)
 
-            if not dom_result:
-                await status_msg.edit_text("❌ Не удалось получить данные DOM")
+            if not response or len(response) < 5:
+                await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai")
                 return
 
-            try:
-                dom_data = json.loads(dom_result)
-            except:
-                await status_msg.edit_text("❌ Ошибка парсинга JSON")
-                return
+            # Обрезаем длинный ответ
+            if len(response) > 4000:
+                response = response[:3950] + "\n\n... (ответ обрезан)"
 
-            timestamp = int(time.time())
-            filename = f"dom_zai_{timestamp}.json"
-            file_path = os.path.join(LOGS_DIR, filename)
-
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(dom_data, f, ensure_ascii=False, indent=2)
-
-            with open(file_path, 'rb') as f:
-                await status_msg.edit_text("📄 Отправляю DOM в JSON...")
-                await update.message.reply_document(
-                    document=f,
-                    filename=filename,
-                    caption=f"📊 DOM страницы Z.ai\nURL: {dom_data.get('page', {}).get('url', 'unknown')}"
-                )
-
-            elements = dom_data.get('elements', {})
-            stats = "📊 Статистика DOM:\n\n"
-            total = 0
-            for key, value in elements.items():
-                if value:
-                    count = len(value)
-                    total += count
-                    stats += f"• {key}: {count}\n"
-            stats += f"\nВсего: {total}"
-
-            await update.message.reply_text(stats)
-
-            try:
-                os.remove(file_path)
-            except:
-                pass
+            header = f"🤖 **Z.ai ответ**\n"
+            header += f"📌 Запрос: {query[:100]}\n\n"
+            
+            full_response = header + response
+            
+            await status_msg.edit_text(full_response, parse_mode=None)
 
             # Закрываем вкладку
             try:
