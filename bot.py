@@ -6,19 +6,9 @@ import logging
 import json
 import re
 import asyncio
-import httpx
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-
-# ============================================================
-# ИМПОРТ SYSTEM PROMPT
-# ============================================================
-
-try:
-    from prompt import SYSTEM_PROMPT
-except ImportError:
-    SYSTEM_PROMPT = "Ты — агент, генерирующий код для браузера."
 
 # ============================================================
 # НАСТРОЙКА
@@ -31,187 +21,81 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log')),
         logging.StreamHandler()
     ]
 )
 
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
+# Подключаем Browser Harness
 sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, js,
-    list_tabs, current_tab, close_tab, switch_tab, ensure_real_tab,
-    capture_screenshot, scroll_at_xy, click_at_xy, type_text, press_key,
-    fill_input, upload_file, page_info, http_get,
-    cdp, drain_events, iframe_target
+    list_tabs, current_tab, close_tab, switch_tab,
+    capture_screenshot, click_at_xy, scroll_at_xy,
+    type_text, press_key, fill_input, upload_file,
+    page_info, http_get, cdp
 )
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# НАСТРОЙКИ
+# SYSTEM PROMPT
 # ============================================================
 
-MAX_TABS = 5
+SYSTEM_PROMPT = """
+Ты — агент, который генерирует Python-код для Browser Harness.
+
+Доступные функции:
+- new_tab(url=None), goto_url(url), wait_for_load(timeout)
+- list_tabs(), switch_tab(id), current_tab(), close_tab()
+- js(code), click_at_xy(x,y), fill_input(sel,text)
+- type_text(text), press_key(key), scroll_at_xy(x,y,dy,dx)
+- capture_screenshot(path), page_info(), http_get(url)
+- upload_file(sel, paths), cdp(method, **params)
+
+Правила:
+1. Возвращай ТОЛЬКО код в ```python ... ```
+2. НЕ используй import
+3. Используй print() для вывода
+4. После goto_url() вызывай wait_for_load()
+5. Используй fill_input() для ввода текста
+"""
 
 # ============================================================
 # ФУНКЦИИ
 # ============================================================
 
-async def ask_zai(query, status_msg=None):
-    """Отправляет запрос в Z.ai и возвращает ответ"""
-    try:
-        # Закрываем старые вкладки
-        tabs = list_tabs()
-        for tab in tabs:
-            if tab != current_tab():
-                try:
-                    close_tab(tab)
-                except:
-                    pass
-
-        new_tab("https://chat.z.ai/")
-        wait_for_load(60)
-        
-        if status_msg:
-            await status_msg.edit_text("✍️ Генерирую код...")
-        await asyncio.sleep(2)
-
-        query_escaped = query.replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
-
-        js_code = f"""
-        (async function() {{
-            const query = '{query_escaped}';
-            
-            const input = document.querySelector('#chat-input, textarea, [contenteditable="true"]');
-            if (!input) return '❌ Поле ввода не найдено';
-            
-            input.value = '';
-            input.focus();
-            input.value = query;
-            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            
-            const sendBtn = document.querySelector('#send-message-button, button[type="submit"]');
-            if (sendBtn && !sendBtn.disabled) {{
-                sendBtn.click();
-            }} else {{
-                input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
-            }}
-            
-            return '✅ Запрос отправлен';
-        }})();
-        """
-        
-        js(js_code)
-        
-        if status_msg:
-            await status_msg.edit_text("⏳ Жду ответ...")
-        await asyncio.sleep(30)
-
-        js_response = """
-        (function() {
-            const thinking = document.querySelector('[data-thinking], .thinking, [role="status"]');
-            if (thinking) {
-                const thinkingText = thinking.textContent?.trim() || '';
-                if (thinkingText.includes('Thinking') || thinkingText.includes('...')) {
-                    return '⏰ AI думает...';
-                }
-            }
-            
-            const assistant = document.querySelector('.chat-assistant');
-            if (!assistant) return '';
-            
-            const paragraphs = assistant.querySelectorAll('p');
-            let text = '';
-            for (const p of paragraphs) {
-                const t = p.textContent?.trim() || '';
-                if (t) {
-                    text += t + '\\n\\n';
-                }
-            }
-            return text.trim();
-        })();
-        """
-        
-        response = js(js_response)
-        
-        if not response or len(response) < 5:
-            if status_msg:
-                await status_msg.edit_text("⏳ Жду ещё...")
-            await asyncio.sleep(10)
-            response = js(js_response)
-
-        if not response or len(response) < 5:
-            return None
-
-        if response.startswith("⏰"):
-            return response
-
-        if len(response) > 4000:
-            response = response[:3950] + "\n\n... (обрезано)"
-
-        return response
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в ask_zai: {e}")
-        return f"❌ Ошибка: {str(e)[:200]}"
-
 def extract_code(text):
-    """Извлекает код из Markdown-блока ```python ... ```"""
-    pattern = r'```python\s*([\s\S]*?)\s*```'
-    match = re.search(pattern, text)
-    if match:
-        return match.group(1).strip()
-    return None
+    match = re.search(r'```python\s*([\s\S]*?)\s*```', text)
+    return match.group(1).strip() if match else None
 
-def safe_execute(code):
-    """Безопасно выполняет сгенерированный код и возвращает вывод"""
+def execute_harness_code(code):
+    """Выполняет код в контексте Browser Harness"""
     import io
     import contextlib
     
-    # Сохраняем текущие глобалы
-    globals_dict = globals().copy()
-    
-    # Добавляем все функции из Browser Harness
-    globals_dict.update({
-        'new_tab': new_tab,
-        'goto_url': goto_url,
-        'wait_for_load': wait_for_load,
-        'js': js,
-        'list_tabs': list_tabs,
-        'current_tab': current_tab,
-        'close_tab': close_tab,
-        'switch_tab': switch_tab,
-        'ensure_real_tab': ensure_real_tab,
-        'capture_screenshot': capture_screenshot,
-        'scroll_at_xy': scroll_at_xy,
-        'click_at_xy': click_at_xy,
-        'type_text': type_text,
-        'press_key': press_key,
-        'fill_input': fill_input,
-        'upload_file': upload_file,
-        'page_info': page_info,
-        'http_get': http_get,
-        'cdp': cdp,
-        'drain_events': drain_events,
-        'iframe_target': iframe_target,
-        'print': print,
-        'time': time,
-        'sleep': time.sleep
-    })
+    # Все функции Harness уже в глобальном пространстве
+    harness_functions = {
+        'new_tab': new_tab, 'goto_url': goto_url, 'wait_for_load': wait_for_load,
+        'js': js, 'list_tabs': list_tabs, 'current_tab': current_tab,
+        'close_tab': close_tab, 'switch_tab': switch_tab,
+        'capture_screenshot': capture_screenshot, 'click_at_xy': click_at_xy,
+        'scroll_at_xy': scroll_at_xy, 'type_text': type_text,
+        'press_key': press_key, 'fill_input': fill_input,
+        'upload_file': upload_file, 'page_info': page_info,
+        'http_get': http_get, 'cdp': cdp,
+        'print': print, 'time': time, 'sleep': time.sleep
+    }
     
     output = io.StringIO()
     try:
         with contextlib.redirect_stdout(output):
-            exec(code, globals_dict)
+            exec(code, harness_functions)
         return output.getvalue()
     except Exception as e:
-        return f"❌ Ошибка выполнения: {str(e)}"
+        return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
 # КОМАНДЫ
@@ -220,366 +104,267 @@ def safe_execute(code):
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер бот\n\n"
-        "/agent <запрос> — агент генерирует и выполняет код\n"
         "/z <запрос> — спросить Z.ai\n"
-        "/dom <url> — скачать DOM в JSON\n"
-        "/tabs — список вкладок\n"
-        "/tab_new — открыть вкладку\n"
-        "/tab_close <номер> — закрыть вкладку\n"
-        "/tab_switch <номер> — переключить вкладку\n"
-        "/log — скачать логи"
+        "/agent <запрос> — агент выполняет код в браузере\n"
+        "/dom <url> — скачать DOM\n"
+        "/tabs — список вкладок"
     )
 
-async def log(update, context):
-    try:
-        log_file = os.path.join(LOGS_DIR, 'bot.log')
-        if not os.path.exists(log_file):
-            await update.message.reply_text("📭 Лог-файл не найден")
-            return
-        with open(log_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename='bot.log')
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
-
-async def dom(update, context):
-    try:
-        if not context.args:
-            await update.message.reply_text(
-                "❌ Укажите URL\n"
-                "Пример: /dom https://example.com"
-            )
-            return
-
-        url = context.args[0].strip()
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-
-        status_msg = await update.message.reply_text(f"🌐 Открываю {url}...")
-
-        try:
-            new_tab(url)
-            wait_for_load(30)
-            await status_msg.edit_text(f"✅ Страница загружена, парсинг...")
-        except Exception as e:
-            await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
-            return
-
-        js_code = """
-        const elements = {
-            buttons: [],
-            inputs: [],
-            links: [],
-            forms: [],
-            selects: [],
-            textareas: [],
-            divs: [],
-            spans: [],
-            lis: [],
-            others: []
-        };
-        
-        const allElements = document.querySelectorAll('*');
-        
-        for (const el of allElements) {
-            if (el.offsetParent === null && !el.hasAttribute('data-testid')) continue;
-            
-            const text = el.textContent?.trim() || '';
-            if (!text || text.length < 1) continue;
-            
-            const tag = el.tagName.toLowerCase();
-            
-            const info = {
-                tag: tag,
-                text: text.substring(0, 500),
-                className: el.className || '',
-                id: el.id || '',
-                attributes: {},
-                dataAttributes: {}
-            };
-            
-            for (const attr of el.attributes) {
-                info.attributes[attr.name] = attr.value;
-                if (attr.name.startsWith('data-')) {
-                    info.dataAttributes[attr.name] = attr.value;
-                }
-            }
-            
-            if (tag === 'button' || el.getAttribute('role') === 'button') {
-                elements.buttons.push(info);
-            } else if (tag === 'input') {
-                elements.inputs.push(info);
-            } else if (tag === 'a') {
-                elements.links.push(info);
-            } else if (tag === 'form') {
-                elements.forms.push(info);
-            } else if (tag === 'select') {
-                elements.selects.push(info);
-            } else if (tag === 'textarea') {
-                elements.textareas.push(info);
-            } else if (tag === 'div') {
-                elements.divs.push(info);
-            } else if (tag === 'span') {
-                elements.spans.push(info);
-            } else if (tag === 'li') {
-                elements.lis.push(info);
-            } else {
-                elements.others.push(info);
-            }
-        }
-        
-        return JSON.stringify({
-            page: {
-                url: window.location.href,
-                title: document.title,
-                timestamp: Date.now()
-            },
-            elements: elements
-        }, null, 2);
-        """
-        
-        result = js(js_code)
-
-        if not result:
-            await status_msg.edit_text("❌ Не удалось получить данные DOM")
-            return
-
-        try:
-            dom_data = json.loads(result)
-        except:
-            await status_msg.edit_text("❌ Ошибка парсинга JSON")
-            return
-
-        timestamp = int(time.time())
-        domain = url.replace('https://', '').replace('http://', '').split('/')[0]
-        filename = f"dom_{domain}_{timestamp}.json"
-        file_path = os.path.join(LOGS_DIR, filename)
-
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(dom_data, f, ensure_ascii=False, indent=2)
-
-        with open(file_path, 'rb') as f:
-            await status_msg.edit_text("📄 Отправляю JSON...")
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=f"📊 DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}"
-            )
-
-        elements = dom_data.get('elements', {})
-        stats = "📊 Статистика DOM:\n\n"
-        total = 0
-        for key, value in elements.items():
-            if value:
-                count = len(value)
-                total += count
-                stats += f"• {key}: {count}\n"
-        stats += f"\nВсего: {total}"
-
-        await update.message.reply_text(stats)
-
-        try:
-            os.remove(file_path)
-        except:
-            pass
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в /dom: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
 async def z(update, context):
-    """
-    Просто отправляет запрос к Z.ai и возвращает ответ
-    """
+    if not context.args:
+        await update.message.reply_text("❌ /z <запрос>")
+        return
+    
+    query = " ".join(context.args)
+    status = await update.message.reply_text("🤖 Запрос к Z.ai...")
+    
     try:
-        if not context.args:
-            await update.message.reply_text(
-                "❌ Напишите запрос\n"
-                "Пример: /z кто лидер сша?"
-            )
-            return
-
-        query = " ".join(context.args)
-        logger.info(f"📝 /z запрос: {query}")
-
-        status_msg = await update.message.reply_text(f"🤖 Отправляю запрос к Z.ai...")
+        # Закрываем старые вкладки
+        for tab in list_tabs():
+            if tab != current_tab():
+                try: close_tab(tab)
+                except: pass
         
-        response = await ask_zai(query, status_msg)
+        new_tab("https://chat.z.ai/")
+        wait_for_load(30)
+        await asyncio.sleep(2)
         
-        if response:
-            header = f"🤖 **Z.ai ответ**\n"
-            header += f"📌 Запрос: {query[:100]}\n\n"
-            await status_msg.edit_text(header + response, parse_mode=None)
+        # Отправляем запрос
+        js_code = f"""
+        (function() {{
+            const input = document.querySelector('#chat-input');
+            if (!input) return;
+            input.value = '';
+            input.focus();
+            input.value = '{query.replace("'", "\\'")}';
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            const btn = document.querySelector('#send-message-button');
+            if (btn && !btn.disabled) btn.click();
+            else input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+        }})();
+        """
+        js(js_code)
+        
+        await asyncio.sleep(30)
+        
+        # Получаем ответ
+        response = js("""
+        (function() {
+            const el = document.querySelector('.chat-assistant');
+            if (!el) return '';
+            return Array.from(el.querySelectorAll('p'))
+                .map(p => p.textContent?.trim())
+                .filter(t => t)
+                .join('\\n\\n');
+        })();
+        """)
+        
+        if response and len(response) > 5:
+            await status.edit_text(f"🤖 {response}", parse_mode=None)
         else:
-            await status_msg.edit_text("❌ Не удалось получить ответ от Z.ai")
-
-        try:
-            close_tab()
-        except:
-            pass
-
+            await status.edit_text("❌ Нет ответа")
+            
     except Exception as e:
-        logger.error(f"❌ Ошибка в /z: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await status.edit_text(f"❌ Ошибка: {str(e)}")
 
 async def agent(update, context):
-    """
-    Агент: генерирует код, выполняет его, возвращает результат
-    """
+    if not context.args:
+        await update.message.reply_text("❌ /agent <задание>")
+        return
+    
+    task = " ".join(context.args)
+    status = await update.message.reply_text(f"🧠 Агент: {task}...")
+    
+    # 1. Генерируем код
+    code_response = await z_logic(f"{SYSTEM_PROMPT}\n\nЗапрос: {task}")
+    if not code_response:
+        await status.edit_text("❌ Не удалось сгенерировать код")
+        return
+    
+    code = extract_code(code_response)
+    if not code:
+        await status.edit_text(f"❌ Нет кода:\n{code_response[:200]}")
+        return
+    
+    await status.edit_text(f"📝 Код:\n```python\n{code}\n```")
+    
+    # 2. Выполняем код
+    await status.edit_text("⚡ Выполняю...")
+    result = execute_harness_code(code)
+    
+    if result:
+        await status.edit_text(f"✅ Результат:\n{result[:4000]}")
+    else:
+        await status.edit_text("✅ Выполнено")
+
+# Вспомогательная функция для Z.ai
+async def z_logic(query):
     try:
-        if not context.args:
-            await update.message.reply_text(
-                "❌ Напишите задание для агента\n"
-                "Пример: /agent погода в Киеве"
-            )
-            return
-
-        task = " ".join(context.args)
-        logger.info(f"📝 Агент: {task}")
-
-        status_msg = await update.message.reply_text(f"🧠 Генерирую код для: {task}...")
-
-        # 1. Генерируем код через Z.ai
-        full_query = f"{SYSTEM_PROMPT}\n\nЗапрос пользователя: {task}"
+        for tab in list_tabs():
+            if tab != current_tab():
+                try: close_tab(tab)
+                except: pass
         
-        response = await ask_zai(full_query, status_msg)
+        new_tab("https://chat.z.ai/")
+        wait_for_load(30)
+        await asyncio.sleep(2)
         
-        if not response:
-            await status_msg.edit_text("❌ Не удалось получить код от агента")
-            return
-
-        # 2. Извлекаем код из ответа
-        code = extract_code(response)
+        js_code = f"""
+        (function() {{
+            const input = document.querySelector('#chat-input');
+            if (!input) return;
+            input.value = '';
+            input.focus();
+            input.value = '{query.replace("'", "\\'")}';
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            const btn = document.querySelector('#send-message-button');
+            if (btn && !btn.disabled) btn.click();
+            else input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+        }})();
+        """
+        js(js_code)
         
-        if not code:
-            await status_msg.edit_text(
-                f"❌ Агент не вернул код в правильном формате:\n\n{response[:500]}"
-            )
-            return
-
-        # 3. Показываем код пользователю
-        await status_msg.edit_text(f"📝 Сгенерированный код:\n\n```python\n{code}\n```")
-
-        # 4. Выполняем код
-        await status_msg.edit_text("⚡ Выполняю код...")
-        result = safe_execute(code)
+        await asyncio.sleep(30)
         
-        # 5. Возвращаем результат
-        if result:
-            if len(result) > 4000:
-                result = result[:3950] + "\n\n... (обрезано)"
-            await status_msg.edit_text(f"✅ **Результат:**\n\n{result}")
-        else:
-            await status_msg.edit_text("✅ Код выполнен (вывод отсутствует)")
-
-        try:
-            close_tab()
-        except:
-            pass
-
+        response = js("""
+        (function() {
+            const el = document.querySelector('.chat-assistant');
+            if (!el) return '';
+            return Array.from(el.querySelectorAll('p'))
+                .map(p => p.textContent?.trim())
+                .filter(t => t)
+                .join('\\n\\n');
+        })();
+        """)
+        
+        return response if response and len(response) > 5 else None
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка в agent: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        logger.error(f"z_logic error: {e}")
+        return None
+
+async def dom(update, context):
+    if not context.args:
+        await update.message.reply_text("❌ /dom <url>")
+        return
+    
+    url = context.args[0].strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    status = await update.message.reply_text(f"🌐 {url}...")
+    
+    try:
+        new_tab(url)
+        wait_for_load(30)
+        
+        result = js("""
+        const all = document.querySelectorAll('*');
+        const data = [];
+        for (const el of all) {
+            const text = el.textContent?.trim() || '';
+            if (!text || text.length < 1) continue;
+            data.push({
+                tag: el.tagName.toLowerCase(),
+                text: text.substring(0, 200),
+                id: el.id || '',
+                class: el.className || ''
+            });
+        }
+        return JSON.stringify(data.slice(0, 50));
+        """)
+        
+        if result:
+            await status.edit_text(f"📊 DOM:\n{result[:3000]}")
+        else:
+            await status.edit_text("❌ Нет данных")
+            
+    except Exception as e:
+        await status.edit_text(f"❌ Ошибка: {str(e)}")
 
 async def tabs(update, context):
     try:
-        tab_list = list_tabs()
-        if not tab_list:
-            await update.message.reply_text("📭 Нет открытых вкладок")
+        tabs = list_tabs()
+        if not tabs:
+            await update.message.reply_text("📭 Нет вкладок")
             return
-
+        
         current = current_tab()
-        response = "📑 Список вкладок:\n\n"
-        for i, tab in enumerate(tab_list, 1):
-            if tab == current:
-                response += f"✅ {i}. {tab} (текущая)\n"
-            else:
-                response += f"🔲 {i}. {tab}\n"
-
-        response += "\n/tab_new - открыть новую\n/tab_close <номер> - закрыть\n/tab_switch <номер> - переключиться"
-        await update.message.reply_text(response)
+        text = "📑 Вкладки:\n\n"
+        for i, tab in enumerate(tabs, 1):
+            text += f"{'✅' if tab == current else '🔲'} {i}. {tab}\n"
+        
+        text += "\n/tab_new, /tab_close <номер>, /tab_switch <номер>"
+        await update.message.reply_text(text)
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ {str(e)}")
 
 async def tab_new(update, context):
     try:
         new_tab()
-        await update.message.reply_text("✅ Новая вкладка открыта")
+        await update.message.reply_text("✅ Новая вкладка")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ {str(e)}")
 
 async def tab_close(update, context):
+    if not context.args:
+        await update.message.reply_text("❌ /tab_close <номер>")
+        return
+    
     try:
-        if not context.args:
-            await update.message.reply_text("❌ Укажите номер вкладки\nПример: /tab_close 1")
-            return
-
-        try:
-            tab_num = int(context.args[0]) - 1
-        except ValueError:
-            await update.message.reply_text("❌ Номер должен быть числом")
-            return
-
-        tabs_list = list_tabs()
-        if tab_num < 0 or tab_num >= len(tabs_list):
-            await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
-            return
-
-        tab_id = tabs_list[tab_num]
-        if tab_id == current_tab() and len(tabs_list) > 1:
-            await update.message.reply_text("❌ Нельзя закрыть текущую вкладку")
-            return
-
-        close_tab()
-        await update.message.reply_text(f"✅ Вкладка {tab_num + 1} закрыта")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        num = int(context.args[0]) - 1
+        tabs = list_tabs()
+        if 0 <= num < len(tabs):
+            if tabs[num] == current_tab() and len(tabs) > 1:
+                await update.message.reply_text("❌ Нельзя закрыть текущую")
+                return
+            close_tab()
+            await update.message.reply_text(f"✅ Закрыта")
+        else:
+            await update.message.reply_text("❌ Нет такой вкладки")
+    except:
+        await update.message.reply_text("❌ Ошибка")
 
 async def tab_switch(update, context):
+    if not context.args:
+        await update.message.reply_text("❌ /tab_switch <номер>")
+        return
+    
     try:
-        if not context.args:
-            await update.message.reply_text("❌ Укажите номер вкладки\nПример: /tab_switch 2")
-            return
-
-        try:
-            tab_num = int(context.args[0]) - 1
-        except ValueError:
-            await update.message.reply_text("❌ Номер должен быть числом")
-            return
-
-        tabs_list = list_tabs()
-        if tab_num < 0 or tab_num >= len(tabs_list):
-            await update.message.reply_text(f"❌ Вкладка с номером {tab_num + 1} не найдена")
-            return
-
-        switch_tab(tabs_list[tab_num])
-        await update.message.reply_text(f"✅ Переключился на вкладку {tab_num + 1}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        num = int(context.args[0]) - 1
+        tabs = list_tabs()
+        if 0 <= num < len(tabs):
+            switch_tab(tabs[num])
+            await update.message.reply_text(f"✅ Переключено на {num + 1}")
+        else:
+            await update.message.reply_text("❌ Нет такой вкладки")
+    except:
+        await update.message.reply_text("❌ Ошибка")
 
 # ============================================================
 # ЗАПУСК
 # ============================================================
 
 def main():
-    TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not TELEGRAM_TOKEN:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
         raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан!")
 
     os.environ["BU_CDP_URL"] = "http://localhost:9222"
     ensure_daemon()
     logger.info("✅ Браузер готов")
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
+    app = Application.builder().token(token).build()
+    
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("agent", agent))
     app.add_handler(CommandHandler("z", z))
+    app.add_handler(CommandHandler("agent", agent))
+    app.add_handler(CommandHandler("dom", dom))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
     app.add_handler(CommandHandler("tab_switch", tab_switch))
-    app.add_handler(CommandHandler("log", log))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
