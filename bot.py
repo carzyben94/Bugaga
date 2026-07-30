@@ -585,7 +585,7 @@ async def qwen_send(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки Qwen: {str(e)[:200]}")
             return
         
-        # Находим поле ввода
+        # Находим поле ввода и отправляем сообщение
         try:
             textarea_found = False
             for attempt in range(10):
@@ -605,10 +605,27 @@ async def qwen_send(update, context):
                 
                 if target_textarea:
                     textarea_found = True
-                    xpath = target_textarea.get('xpath')
-                    if xpath:
-                        fill_input(xpath, query)
-                        await asyncio.sleep(1)
+                    
+                    # ✅ ИСПРАВЛЕНО: Используем CSS-селектор вместо XPath
+                    css_selector = target_textarea.get('cssSelector')
+                    if css_selector:
+                        # Вводим текст через JavaScript напрямую
+                        js_code = f"""
+                        const el = document.querySelector(`{css_selector}`);
+                        if (el) {{
+                            el.focus();
+                            el.value = '';
+                            el.value = `{query}`;
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return true;
+                        }}
+                        return false;
+                        """
+                        js(js_code)
+                        await asyncio.sleep(0.5)
+                        
+                        # Нажимаем Enter
                         press_key('Enter')
                         await status_msg.edit_text("✉️ Сообщение отправлено, жду ответа...")
                         break
@@ -626,7 +643,7 @@ async def qwen_send(update, context):
         # Ждем ответа
         await status_msg.edit_text("⏳ Qwen думает...")
         
-        timeout = 120  # 2 минуты
+        timeout = 120
         start_time = time.time()
         last_message_count = 0
         last_text = ""
@@ -640,25 +657,21 @@ async def qwen_send(update, context):
             
             messages = messages_data.get('messages', [])
             
-            # Ищем новые сообщения от ассистента
             if len(messages) > last_message_count:
                 new_messages = messages[last_message_count:]
                 for msg in new_messages:
                     if msg.get('role') == 'assistant' or msg.get('isAssistant'):
                         answer = msg.get('text', '')
                         
-                        # Проверяем, что это не дубликат и не наш запрос
                         if answer and answer != query and answer != last_text:
                             last_text = answer
                             
-                            # Отправляем ответ
                             if len(answer) <= 2000:
                                 await status_msg.edit_text(
                                     f"🤖 **Qwen ответил:**\n\n{answer}",
                                     parse_mode='Markdown'
                                 )
                             else:
-                                # Длинный ответ - отправляем частями
                                 await status_msg.edit_text(
                                     f"🤖 **Qwen ответил:**\n\n{answer[:2000]}\n\n...(продолжение в файле)",
                                     parse_mode='Markdown'
@@ -684,18 +697,6 @@ async def qwen_send(update, context):
                             return
                 
                 last_message_count = len(messages)
-            
-            # Проверяем, не появилась ли кнопка Stop (значит еще думает)
-            dom_data, _ = parse_dom()
-            if dom_data:
-                dom_json = json.loads(dom_data)
-                buttons = dom_json.get('elements', {}).get('buttons', [])
-                stop_button = any('stop' in btn.get('text', '').lower() or 
-                                 'stop' in btn.get('id', '').lower() 
-                                 for btn in buttons)
-                if stop_button:
-                    # Еще думает
-                    pass
         
         await status_msg.edit_text("⏰ Превышено время ожидания ответа от Qwen (2 минуты)")
         
@@ -762,7 +763,7 @@ async def qwen_clear(update, context):
             
             await asyncio.sleep(2)
             
-            # Ищем кнопку "New Chat" (пробуем разные варианты)
+            # Ищем кнопку "New Chat" через CSS-селекторы
             dom_data, _ = parse_dom()
             if dom_data:
                 dom_json = json.loads(dom_data)
@@ -773,16 +774,10 @@ async def qwen_clear(update, context):
                 
                 for btn in buttons:
                     if 'New Chat' in btn.get('text', '') or 'new chat' in btn.get('text', '').lower():
-                        if btn.get('xpath'):
-                            # Используем JS для клика
+                        css_selector = btn.get('cssSelector')
+                        if css_selector:
                             js_code = f"""
-                            const el = document.evaluate(
-                                `{btn['xpath']}`,
-                                document,
-                                null,
-                                XPathResult.FIRST_ORDERED_NODE_TYPE,
-                                null
-                            ).singleNodeValue;
+                            const el = document.querySelector(`{css_selector}`);
                             if (el) el.click();
                             """
                             js(js_code)
@@ -792,15 +787,10 @@ async def qwen_clear(update, context):
                 
                 for div in divs:
                     if 'New Chat' in div.get('text', '') or 'new chat' in div.get('text', '').lower():
-                        if div.get('xpath'):
+                        css_selector = div.get('cssSelector')
+                        if css_selector:
                             js_code = f"""
-                            const el = document.evaluate(
-                                `{div['xpath']}`,
-                                document,
-                                null,
-                                XPathResult.FIRST_ORDERED_NODE_TYPE,
-                                null
-                            ).singleNodeValue;
+                            const el = document.querySelector(`{css_selector}`);
                             if (el) el.click();
                             """
                             js(js_code)
@@ -808,7 +798,7 @@ async def qwen_clear(update, context):
                             await asyncio.sleep(1)
                             return
             
-            # Если не нашли кнопку, пробуем через DOM
+            # Если не нашли кнопку, пробуем перезагрузить
             await status_msg.edit_text("❌ Не найдена кнопка New Chat, пробую перезагрузить...")
             goto_url("https://chat.qwen.ai/")
             wait_for_load(timeout=30)
