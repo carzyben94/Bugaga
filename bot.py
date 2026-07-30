@@ -10,12 +10,28 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ============================================================
-# КОНСОЛЬНЫЕ ЛОГИ
+# НАСТРОЙКА ЛОГИРОВАНИЯ
 # ============================================================
 
+LOGS_DIR = '/app/logs'
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# Логирование в файл И в консоль
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
 def log(msg):
+    """Вывод в консоль с временем"""
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     print(f"[{timestamp}] {msg}", flush=True)
+    # Также пишем в лог-файл
+    logging.info(msg)
 
 # ============================================================
 # ПУТИ
@@ -24,9 +40,6 @@ def log(msg):
 agent_workspace = "/app/browser-harness/agent-workspace"
 sys.path.insert(0, agent_workspace)
 sys.path.insert(0, "browser-harness/src")
-
-LOGS_DIR = '/app/logs'
-os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
 # ИМПОРТЫ BROWSER-HARNESS
@@ -103,7 +116,7 @@ set_cookies()
 log("✅ Куки установлены")
 
 # ============================================================
-# ПАРСИНГ DOM (ПРОСТОЙ)
+# ПАРСИНГ DOM
 # ============================================================
 
 def get_dom():
@@ -112,10 +125,11 @@ def get_dom():
         js_code = """
         const result = {
             textareas: [],
-            buttons: []
+            buttons: [],
+            divs: []
         };
         
-        document.querySelectorAll('textarea, button, [role="button"]').forEach(el => {
+        document.querySelectorAll('textarea, button, [role="button"], div').forEach(el => {
             const info = {
                 tag: el.tagName.toLowerCase(),
                 text: el.textContent?.trim() || '',
@@ -134,8 +148,10 @@ def get_dom():
             
             if (el.tagName.toLowerCase() === 'textarea') {
                 result.textareas.push(info);
-            } else {
+            } else if (el.tagName.toLowerCase() === 'button' || el.getAttribute('role') === 'button') {
                 result.buttons.push(info);
+            } else {
+                result.divs.push(info);
             }
         });
         
@@ -148,48 +164,111 @@ def get_dom():
         return None
 
 # ============================================================
-# ПАРСИНГ СООБЩЕНИЙ
+# ПАРСИНГ СООБЩЕНИЙ (УЛУЧШЕННЫЙ)
 # ============================================================
 
 def get_messages():
-    """Получить сообщения из чата"""
+    """Получить сообщения из чата (только реальные диалоги)"""
     try:
         js_code = """
         const messages = [];
-        document.querySelectorAll('div, span, p, article').forEach(el => {
+        
+        // ЧЕРНЫЙ СПИСКОК — текст, который игнорируем
+        const blacklist = [
+            'How can I help you',
+            'Search Chats',
+            'New Chat',
+            'Toggle sidebar',
+            'QR code',
+            'scan the QR',
+            'download',
+            'Press and hold',
+            'Kuvaff',
+            'Qwen Studio',
+            'Select Model',
+            'Temporary Chat',
+            'Show shortcuts',
+            'Voice Input',
+            'Voice mode',
+            'Upload files'
+        ];
+        
+        // Ищем все текстовые элементы
+        document.querySelectorAll('div, span, p, article, section').forEach(el => {
             const text = el.textContent?.trim() || '';
-            if (text.length < 15) return;
-            if (text.includes('How can I help you')) return;
-            if (text.includes('Search Chats')) return;
-            if (text.includes('New Chat')) return;
-            if (text.includes('Toggle sidebar')) return;
+            if (text.length < 10) return;
             
+            // Пропускаем черный список
+            let skip = false;
+            for (const word of blacklist) {
+                if (text.includes(word)) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip) return;
+            
+            // Проверяем, что элемент видимый
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            
+            // Проверяем фон для определения автора
             const bg = window.getComputedStyle(el).backgroundColor || '';
-            const isDark = bg.includes('rgb(30') || bg.includes('rgb(40') || bg.includes('#1a') || bg.includes('#2d');
+            const isDark = bg.includes('rgb(30') || bg.includes('rgb(40') || 
+                           bg.includes('#1a') || bg.includes('#2d') || 
+                           bg.includes('rgb(20') || bg.includes('rgb(10'));
             
-            messages.push({
-                text: text,
-                isUser: isDark,
-                isAssistant: !isDark
-            });
+            // Проверяем, есть ли элемент в контейнере чата
+            const inChat = el.closest('[role="log"]') || 
+                          el.closest('.chat-container') ||
+                          el.closest('.message-list') ||
+                          el.closest('[class*="message"]');
+            
+            // Если текст длинный или в чате — сохраняем
+            if (inChat || text.length > 50) {
+                messages.push({
+                    text: text,
+                    isUser: isDark,
+                    isAssistant: !isDark,
+                    inChat: !!inChat
+                });
+            }
         });
         
-        // Убираем дубликаты
+        // Убираем дубликаты и сортируем
         const unique = [];
         const seen = new Set();
-        for (const m of messages.reverse()) {
+        
+        // Сначала сообщения из чата (приоритет)
+        const sorted = messages.sort((a, b) => (b.inChat ? 1 : 0) - (a.inChat ? 1 : 0));
+        
+        for (const m of sorted) {
             const key = m.text.substring(0, 50);
             if (!seen.has(key)) {
                 seen.add(key);
                 unique.push(m);
             }
-            if (unique.length >= 10) break;
+            if (unique.length >= 15) break;
         }
         
         return JSON.stringify(unique);
         """
         result = js(js_code)
-        return json.loads(result) if result else []
+        messages = json.loads(result) if result else []
+        
+        # Дополнительная фильтрация в Python
+        filtered = []
+        for m in messages:
+            text = m.get('text', '')
+            # Пропускаем слишком короткие
+            if len(text) < 10:
+                continue
+            # Пропускаем мусор
+            if any(word in text for word in ['QR', 'scan', 'download', 'Press and hold']):
+                continue
+            filtered.append(m)
+        
+        return filtered
     except Exception as e:
         log(f"❌ Ошибка get_messages: {e}")
         return []
@@ -216,7 +295,7 @@ def open_qwen():
         time.sleep(1)
         goto_url("https://chat.qwen.ai/")
         wait_for_load(timeout=30)
-        time.sleep(3)
+        time.sleep(5)  # Даем больше времени на загрузку
         log("✅ Qwen Chat открыт")
         return True
     except Exception as e:
@@ -259,6 +338,7 @@ def send_message(text):
                         el.value = `{text}`;
                         el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
                     }}
                     """
                     js(js_code)
@@ -276,26 +356,35 @@ def send_message(text):
         return False
 
 # ============================================================
-# ОЖИДАНИЕ ОТВЕТА
+# ОЖИДАНИЕ ОТВЕТА (УЛУЧШЕННОЕ)
 # ============================================================
 
-def wait_for_response(query, timeout=60):
+def wait_for_response(query, timeout=90):
     """Ожидать ответ от Qwen"""
     log("⏳ Жду ответ...")
     start_time = time.time()
     last_text = ""
+    last_count = 0
     
     while time.time() - start_time < timeout:
         time.sleep(3)
         messages = get_messages()
         
-        if messages:
-            for msg in messages:
-                if msg.get('isAssistant'):
+        if messages and len(messages) > last_count:
+            # Проверяем новые сообщения
+            new_messages = messages[last_count:]
+            for msg in new_messages:
+                if msg.get('isAssistant') and not msg.get('isUser'):
                     answer = msg.get('text', '')
-                    if answer and answer != query and answer != last_text:
+                    # Проверяем, что это не наш запрос и не мусор
+                    if (answer and 
+                        answer != query and 
+                        answer != last_text and
+                        len(answer) > 10 and
+                        not any(word in answer for word in ['QR', 'scan', 'download'])):
                         log(f"✅ Ответ получен! Длина: {len(answer)}")
                         return answer
+            last_count = len(messages)
         
         log("🔄 Проверяю...")
     
@@ -345,7 +434,7 @@ async def qwen(update, context):
         await msg.edit_text("⏳ Qwen думает...")
         
         # Ждем ответ
-        answer = wait_for_response(query, timeout=60)
+        answer = wait_for_response(query, timeout=90)
         
         if answer:
             if len(answer) <= 2000:
@@ -371,8 +460,8 @@ async def read(update, context):
     response = "💬 **Сообщения:**\n\n"
     for i, m in enumerate(messages[-5:], 1):
         author = "👤 Вы" if m.get('isUser') else "🤖 Qwen"
-        text = m.get('text', '')[:200]
-        response += f"{author}:\n{text}...\n\n"
+        text = m.get('text', '')[:300]
+        response += f"{author}:\n{text}\n\n"
     
     await update.message.reply_text(response)
 
@@ -429,7 +518,7 @@ async def status(update, context):
     await update.message.reply_text(response)
 
 # ============================================================
-# КОМАНДА /log — ПОЛНЫЕ ЛОГИ
+# КОМАНДА /log
 # ============================================================
 
 async def get_logs(update, context):
@@ -443,11 +532,9 @@ async def get_logs(update, context):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
         
-        # Читаем лог
         with open(log_file, 'r', encoding='utf-8') as f:
             logs = f.read()
         
-        # Если лог слишком большой - отправляем файлом
         if len(logs) > 4000:
             filename = f"logs_{int(time.time())}.txt"
             file_path = os.path.join(LOGS_DIR, filename)
@@ -470,7 +557,6 @@ async def get_logs(update, context):
             except:
                 pass
         else:
-            # Отправляем текстом
             await update.message.reply_text(
                 f"📋 **ЛОГ-ФАЙЛ:**\n\n```\n{logs}\n```",
                 parse_mode='Markdown'
@@ -493,7 +579,7 @@ def main():
     app.add_handler(CommandHandler("read", read))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("log", get_logs))  # ← Команда для логов
+    app.add_handler(CommandHandler("log", get_logs))
     
     log("✅ Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
