@@ -355,6 +355,195 @@ COOKIES = [
         "secure": False,
         "session": True,
         "value": "1-iqmxuD0i0=KeqRx4uxRx7IeYK0K07DpoaDBP01G8DuxiK08D6iDB_2jqDtjmtdBDciDy4tCfQmqExBKi4iT3olu2Nbe_D7psCFG1hq0eD055j0CGc0NR7rmzCyuE5YKvOnKQWV\/lZRbLv1ROD1a7KxXg5_fE7s2hvzVC78tYImqbypi8oseRIkg2gGS=ivnhYASOikD39fGz3LKQKfZgKj_hIkqAvUZgLxCmLjazkLK5fXVjKRSOQ7tuSDnhl7Ro5xaGG7KN=y7hIqe7ZDK3THdWx5BQFO0lw1h\/UMtWFxHrMwpRY7IoEvL8inbFnx7qeTU_aTohq45QeNO8bKA4_8rWerYjFu87Yl8kSQV0=0Y77hqeAbQ0Q1hrwuQL8wiATLrbseQ9g3MM5noxy2izR4\/d=4d5fmbgbmMqtbmtNfN8fap3a_rwSxrk47Lx7f_G_8T4RL13iRjrNGjLhzoR1d_tA=W=pr2Orrb_tQGB2hAxh=wwA2kMc7BG_ROHQqC5ThP9=sgkG8kqYUWxd5EY_rKpxQUr3ZDxl7OaG57hxUOdpE4Wwb9MD7ODY7_qkFBOxwU0_ufnCDCEbhLprzhOzYErkGdYq=nDs_3I_U2xgOBEOdd77QsaZ9h0fdeGqAgmSlcNtn85CYAocwckuxpMlWEHGODSz_PjzSFCPQMaYOCBxwrCaY1g8YMvBDxg4ShHCiYrGdrUmDqate1FDMiGgiPn1_uRiDmGtr4CKv6QlGNeeq2Z1eyyK8_KDt7PEY4YDD"
+    },
+
+    # === chat.qwen.ai cookies ===
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "acw_tc",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "0a03e58c17854132788371257e493d0bf6508ae037f98bf6881a6e0b9bf076"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "x-ap",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "eu-central-1"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "sca",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "a7ce4259"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "cna",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "oCzyIocOjQECAbKFlPmTst6p"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "qwen-theme",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "light"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "qwen-locale",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "ru-RU"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "xlly_s",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "_c_WBKFRo",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "9x0wmbJ5TK9vyb7WUUOP1txc6zIT1FM1q4S6pFBG"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "_nb_ioWEgULi",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": ""
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "token",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImJlNWQwNGIzLTY0MDQtNGRiZC1iMTBhLWFmMGU4OWZjMzlhNCIsImxhc3RfcGFzc3dvcmRfY2hhbmdlIjoxNzg1NDEzMzkxLCJleHAiOjE3ODgwMDU0MjV9.VMUns9QzpJdRNC7QH3JhtF9ge_CuIXa4oWDW9Zb4eSA"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "cnaui",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "be5d04b3-6404-4dbd-b10a-af0e89fc39a4"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "aui",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "be5d04b3-6404-4dbd-b10a-af0e89fc39a4"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "atpsida",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "19a194cbe9de439f3c8d1a55_1785413426_6"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ssxmod_itna",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1-mqUxBD0DRDcAqqeKYIx0QG73iOG2UDm2DBP01k7Dux4jKid3DUDQTlmxBBnxqD=TuSE74DkinTyQ1DBk4oDRxAtHDm4iawC1qht_ei00gmI3YQ7RAs3FzI2RswoKzo4SXxRUBZcRHHvL4wDDTDmKDUPPDBxDYre2T1DD8ehmxwDiTrDDkeS4D5g0_H40iLxiiW1gY3nubjt4H2byYuinQdiiieG9QqG0DDTGHYhKHPwojLIlNe=_vDl9uDCIIkjYDoO752Q_pqOy8w2dx37eqeOGOSAqNVeWgmyQqDTogtQ4o37OFAhWjwQD\/pQeYD"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "ssxmod_itna2",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "1-mqUxBD0DRDcAqqeKYIx0QG73iOG2UDm2DBP01k7Dux4jKid3DUDQTlmxBBnxqD=TuSE74DkinTyjrD88e_rwWGGYbeDFOIho7y3p3D\/9IaCHANNLT5XsxaimGkvRvmKhD"
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "tfstk",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "gR7iih0P1_HG_rkUrx8_YSK-P-j05FTXqt3vHEp4YpJCWtE6HMYVaTxv0lsOKf_hEq3TCl1qoEL4e8U8y1G6lEyRfhMsFdOfTKPpbrrNjWY4e8UpNxeECE5vWP-VT6JBiCo2gtzELpOM_EJw0voeapJ2ut-ZLvR6GKkqudJUtI9e3E8V36PHMpJ2uEWVTBDmCdIFAwy8CVeeSg7V-CxMU1ziuqbnyhvP_p04WwAghL5wKquvFip75_X0I4ONoCbkjMwj51THVOxGoR4yWeJ1ICtQomTV4qoE4NztlLUhGmiXbBOHegSMFwjuK1bbtWmPUhRBT5F3tmiXbBOHeWVnqt-wOBPO."
+    },
+    {
+        "domain": ".chat.qwen.ai",
+        "hostOnly": False,
+        "httpOnly": False,
+        "name": "isg",
+        "path": "/",
+        "sameSite": "unspecified",
+        "secure": False,
+        "session": True,
+        "value": "BLe3U08PkeVqshVpxzob2N4jTakBfIvejF3bOAlkzgbtuNT6EU1RLpWKnUZDfmNW"
     }
 ]
 
