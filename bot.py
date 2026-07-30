@@ -234,6 +234,7 @@ def push_to_github(content, filename, host="x.com"):
 def parse_dom():
     """Парсит DOM страницы и возвращает JSON со всеми интерактивными элементами"""
     try:
+        logger.info("🔍 Запуск parse_dom()")
         js_code = """
         function getElementInfo(el) {
             const info = {
@@ -394,24 +395,29 @@ def parse_dom():
             timestamp: Date.now()
         };
         
+        logger.info('✅ DOM собран');
         return JSON.stringify({ page: pageInfo, elements: elements }, null, 2);
         """
         
         result = js(js_code)
+        logger.info(f"📥 Результат parse_dom: {str(result)[:200]}...")
         return result, None
     except Exception as e:
         logger.error(f"❌ Ошибка парсинга DOM: {e}")
         return None, str(e)
 
 # ============================================================
-# ПАРСИНГ СООБЩЕНИЙ QWEN (ИСПРАВЛЕННЫЙ)
+# ПАРСИНГ СООБЩЕНИЙ QWEN (С ЛОГАМИ)
 # ============================================================
 
 def parse_qwen_messages():
     """Специальный парсер для сообщений Qwen Chat"""
     try:
+        logger.info("🔍 Запуск parse_qwen_messages()")
+        
         js_code = """
         function getMessages() {
+            console.log('🔍 Начинаю парсинг сообщений...');
             const messages = [];
             const selectors = [
                 '[data-testid="message"]',
@@ -426,13 +432,16 @@ def parse_qwen_messages():
             let messageElements = [];
             for (const selector of selectors) {
                 const elements = document.querySelectorAll(selector);
+                console.log('🔍 Селектор "' + selector + '": найдено ' + elements.length + ' элементов');
                 if (elements.length > 0) {
                     messageElements = elements;
+                    console.log('✅ Выбран селектор: ' + selector);
                     break;
                 }
             }
             
             if (messageElements.length === 0) {
+                console.log('⚠️ По селекторам ничего не найдено, ищу по тексту...');
                 const allElements = document.querySelectorAll('div, span, p, article');
                 for (const el of allElements) {
                     const text = el.textContent?.trim() || '';
@@ -443,6 +452,7 @@ def parse_qwen_messages():
                         messageElements.push(el);
                     }
                 }
+                console.log('📝 Найдено по тексту: ' + messageElements.length + ' элементов');
             }
             
             let userMessages = [];
@@ -476,16 +486,19 @@ def parse_qwen_messages():
                 
                 if (message.isUser) {
                     userMessages.push(message);
+                    console.log('👤 User: ' + text.substring(0, 50) + '...');
                 } else if (message.isAssistant) {
                     assistantMessages.push(message);
+                    console.log('🤖 Assistant: ' + text.substring(0, 50) + '...');
                 } else {
-                    // ✅ ИСПРАВЛЕНО: используем двойные кавычки
                     if (text.includes('Qwen') || text.includes('I am') || text.includes("I'm")) {
                         message.isAssistant = true;
                         assistantMessages.push(message);
+                        console.log('🤖 Assistant (определен по тексту): ' + text.substring(0, 50) + '...');
                     } else {
                         message.isUser = true;
                         userMessages.push(message);
+                        console.log('👤 User (определен по умолчанию): ' + text.substring(0, 50) + '...');
                     }
                 }
             }
@@ -505,6 +518,7 @@ def parse_qwen_messages():
             }
             
             const recentMessages = allMessages.slice(-20);
+            console.log('📊 Итого: user=' + userMessages.length + ', assistant=' + assistantMessages.length + ', total=' + allMessages.length);
             
             return {
                 messages: recentMessages,
@@ -518,9 +532,14 @@ def parse_qwen_messages():
         return JSON.stringify(getMessages());
         """
         
+        logger.info("🔄 Выполняю JavaScript...")
         result = js(js_code)
+        logger.info(f"📥 Результат JS: {str(result)[:200]}...")
+        
         if result:
+            logger.info("✅ JS выполнен успешно, парсинг JSON...")
             return json.loads(result)
+        logger.warning("⚠️ JS вернул None")
         return None
     except Exception as e:
         logger.error(f"❌ Ошибка парсинга сообщений Qwen: {e}")
@@ -541,15 +560,21 @@ async def qwen_send(update, context):
             return
         
         query = ' '.join(context.args).strip()
+        logger.info(f"📩 ПОЛУЧЕН ЗАПРОС: {query[:50]}...")
+        
         status_msg = await update.message.reply_text(f"💬 Отправляю запрос в Qwen: {query[:50]}...")
         
         # Проверяем, открыт ли Qwen Chat
         try:
+            logger.info("🔍 Проверяю, открыт ли Qwen Chat...")
             dom_data, _ = parse_dom()
             if dom_data:
                 dom_json = json.loads(dom_data)
                 current_url = dom_json.get('page', {}).get('url', '')
+                logger.info(f"🌐 Текущий URL: {current_url}")
+                
                 if 'chat.qwen.ai' not in current_url:
+                    logger.info("🔄 Qwen не открыт, открываю...")
                     # Закрываем старые вкладки
                     tabs = list_tabs()
                     for tab in tabs:
@@ -563,36 +588,44 @@ async def qwen_send(update, context):
                     await asyncio.sleep(1)
                     goto_url("https://chat.qwen.ai/")
                     wait_for_load(timeout=30)
+                    logger.info("✅ Qwen Chat загружен")
                     await status_msg.edit_text("✅ Qwen Chat загружен, отправляю запрос...")
                     await asyncio.sleep(2)
             else:
+                logger.info("🔄 DOM не получен, открываю Qwen...")
                 new_tab()
                 await asyncio.sleep(1)
                 goto_url("https://chat.qwen.ai/")
                 wait_for_load(timeout=30)
+                logger.info("✅ Qwen Chat загружен")
                 await status_msg.edit_text("✅ Qwen Chat загружен, отправляю запрос...")
                 await asyncio.sleep(2)
                 
         except Exception as e:
+            logger.error(f"❌ Ошибка загрузки Qwen: {e}")
             await status_msg.edit_text(f"❌ Ошибка загрузки Qwen: {str(e)[:200]}")
             return
         
         # Находим поле ввода и отправляем сообщение
         try:
+            logger.info("🔍 Ищу поле ввода...")
             textarea_found = False
             for attempt in range(10):
                 dom_data, _ = parse_dom()
                 if not dom_data:
+                    logger.warning(f"⚠️ Попытка {attempt+1}: DOM не получен")
                     await asyncio.sleep(1)
                     continue
                 
                 dom_json = json.loads(dom_data)
                 textareas = dom_json.get('elements', {}).get('textareas', [])
+                logger.info(f"📝 Найдено textarea: {len(textareas)}")
                 
                 target_textarea = None
                 for ta in textareas:
                     if 'message-input-textarea' in ta.get('className', ''):
                         target_textarea = ta
+                        logger.info(f"✅ Найдено поле ввода: {ta.get('cssSelector')}")
                         break
                 
                 if target_textarea:
@@ -601,6 +634,7 @@ async def qwen_send(update, context):
                     # Используем CSS-селектор
                     css_selector = target_textarea.get('cssSelector')
                     if css_selector:
+                        logger.info(f"✏️ Ввожу текст: {query[:50]}...")
                         # Вводим текст через JavaScript напрямую
                         js_code = f"""
                         const el = document.querySelector(`{css_selector}`);
@@ -618,6 +652,7 @@ async def qwen_send(update, context):
                         await asyncio.sleep(0.5)
                         
                         # Нажимаем Enter
+                        logger.info("⌨️ Нажимаю Enter...")
                         press_key('Enter')
                         await status_msg.edit_text("✉️ Сообщение отправлено, жду ответа...")
                         break
@@ -625,38 +660,53 @@ async def qwen_send(update, context):
                 await asyncio.sleep(2)
             
             if not textarea_found:
+                logger.error("❌ Не найдено поле ввода Qwen")
                 await status_msg.edit_text("❌ Не найдено поле ввода Qwen")
                 return
                 
         except Exception as e:
+            logger.error(f"❌ Ошибка отправки: {e}")
             await status_msg.edit_text(f"❌ Ошибка отправки: {str(e)[:200]}")
             return
         
         # Ждем ответа
+        logger.info("⏳ Жду ответ от Qwen...")
         await status_msg.edit_text("⏳ Qwen думает...")
         
         timeout = 120
         start_time = time.time()
         last_message_count = 0
         last_text = ""
+        attempt = 0
         
         while time.time() - start_time < timeout:
             await asyncio.sleep(3)
+            attempt += 1
+            logger.info(f"🔄 Попытка {attempt}: проверяю ответ...")
             
             messages_data = parse_qwen_messages()
             if not messages_data:
+                logger.warning(f"⚠️ Попытка {attempt}: parse_qwen_messages() вернул None")
                 continue
             
             messages = messages_data.get('messages', [])
+            logger.info(f"📊 Найдено сообщений: {len(messages)}")
+            
+            if messages:
+                for msg in messages:
+                    logger.info(f"📝 Сообщение: {msg.get('text', '')[:50]}... role={msg.get('role')}")
             
             if len(messages) > last_message_count:
+                logger.info(f"🆕 Новые сообщения: {len(messages) - last_message_count}")
                 new_messages = messages[last_message_count:]
                 for msg in new_messages:
                     if msg.get('role') == 'assistant' or msg.get('isAssistant'):
                         answer = msg.get('text', '')
+                        logger.info(f"🤖 Найден ответ Qwen: {answer[:100]}...")
                         
                         if answer and answer != query and answer != last_text:
                             last_text = answer
+                            logger.info(f"✅ ОТВЕТ ПОЛУЧЕН! Длина: {len(answer)}")
                             
                             if len(answer) <= 2000:
                                 await status_msg.edit_text(
@@ -686,10 +736,12 @@ async def qwen_send(update, context):
                                 except:
                                     pass
                             
+                            logger.info("✅ Ответ отправлен в Telegram")
                             return
                 
                 last_message_count = len(messages)
         
+        logger.error("⏰ Таймаут ожидания ответа от Qwen")
         await status_msg.edit_text("⏰ Превышено время ожидания ответа от Qwen (2 минуты)")
         
     except Exception as e:
@@ -699,6 +751,7 @@ async def qwen_send(update, context):
 async def qwen_read(update, context):
     """Прочитать последние сообщения из Qwen Chat"""
     try:
+        logger.info("📖 Запрос на чтение сообщений")
         status_msg = await update.message.reply_text("📖 Читаю сообщения...")
         
         messages_data = parse_qwen_messages()
@@ -731,6 +784,7 @@ async def qwen_read(update, context):
             response = response[:4000] + "\n\n... (обрезано)"
         
         await status_msg.edit_text(response, parse_mode='Markdown')
+        logger.info("✅ Сообщения отправлены")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в /qwen_read: {e}")
@@ -739,6 +793,7 @@ async def qwen_read(update, context):
 async def qwen_clear(update, context):
     """Очистить чат Qwen (начать новый диалог)"""
     try:
+        logger.info("🧹 Запрос на очистку чата")
         status_msg = await update.message.reply_text("🧹 Очищаю чат...")
         
         # Проверяем, открыт ли Qwen
@@ -767,12 +822,14 @@ async def qwen_clear(update, context):
                     if 'New Chat' in btn.get('text', '') or 'new chat' in btn.get('text', '').lower():
                         css_selector = btn.get('cssSelector')
                         if css_selector:
+                            logger.info(f"🔘 Найдена кнопка New Chat: {css_selector}")
                             js_code = f"""
                             const el = document.querySelector(`{css_selector}`);
                             if (el) el.click();
                             """
                             js(js_code)
                             await status_msg.edit_text("✅ Чат очищен, можно начинать новый диалог")
+                            logger.info("✅ Чат очищен")
                             await asyncio.sleep(1)
                             return
                 
@@ -780,22 +837,27 @@ async def qwen_clear(update, context):
                     if 'New Chat' in div.get('text', '') or 'new chat' in div.get('text', '').lower():
                         css_selector = div.get('cssSelector')
                         if css_selector:
+                            logger.info(f"🔘 Найдена кнопка New Chat (div): {css_selector}")
                             js_code = f"""
                             const el = document.querySelector(`{css_selector}`);
                             if (el) el.click();
                             """
                             js(js_code)
                             await status_msg.edit_text("✅ Чат очищен, можно начинать новый диалог")
+                            logger.info("✅ Чат очищен")
                             await asyncio.sleep(1)
                             return
             
             # Если не нашли кнопку
+            logger.warning("⚠️ Кнопка New Chat не найдена, перезагружаю...")
             await status_msg.edit_text("❌ Не найдена кнопка New Chat, пробую перезагрузить...")
             goto_url("https://chat.qwen.ai/")
             wait_for_load(timeout=30)
             await status_msg.edit_text("✅ Страница перезагружена, чат очищен")
+            logger.info("✅ Страница перезагружена")
             
         except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
             await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
             
     except Exception as e:
@@ -805,6 +867,7 @@ async def qwen_clear(update, context):
 async def qwen_status(update, context):
     """Проверить статус Qwen Chat"""
     try:
+        logger.info("📊 Запрос статуса Qwen")
         dom_data, _ = parse_dom()
         if not dom_data:
             await update.message.reply_text("❌ Не удалось получить DOM")
@@ -846,13 +909,14 @@ async def qwen_status(update, context):
             response += f"\n🤖 Qwen: {messages_data.get('assistantCount', 0)}"
         
         await update.message.reply_text(response, parse_mode='Markdown')
+        logger.info("✅ Статус отправлен")
         
     except Exception as e:
         logger.error(f"❌ Ошибка в /qwen_status: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# КОМАНДЫ
+# ОСТАЛЬНЫЕ КОМАНДЫ
 # ============================================================
 
 async def start(update, context):
