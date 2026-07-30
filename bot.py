@@ -9,6 +9,10 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# ============================================================
+# НАСТРОЙКА
+# ============================================================
+
 LOGS_DIR = '/app/logs'
 os.makedirs(LOGS_DIR, exist_ok=True)
 
@@ -25,6 +29,10 @@ def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     print(f"[{timestamp}] {msg}", flush=True)
     logging.info(msg)
+
+# ============================================================
+# ПУТИ
+# ============================================================
 
 agent_workspace = "/app/browser-harness/agent-workspace"
 sys.path.insert(0, agent_workspace)
@@ -114,59 +122,54 @@ def get_dom():
         };
         
         document.querySelectorAll('textarea').forEach(el => {
-            let cssSelector = '';
+            let css = '';
             if (el.id) {
-                cssSelector = '#' + el.id;
+                css = '#' + el.id;
             } else if (el.className) {
-                cssSelector = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
+                css = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
             } else {
-                cssSelector = el.tagName.toLowerCase();
+                css = el.tagName.toLowerCase();
             }
             
             result.textareas.push({
-                id: el.id || '',
                 className: el.className || '',
                 placeholder: el.placeholder || '',
-                cssSelector: cssSelector,
+                cssSelector: css,
                 visible: el.offsetParent !== null
             });
         });
         
         document.querySelectorAll('button, [role="button"]').forEach(el => {
-            let cssSelector = '';
+            let css = '';
             if (el.id) {
-                cssSelector = '#' + el.id;
+                css = '#' + el.id;
             } else if (el.className) {
-                cssSelector = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
+                css = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
             } else {
-                cssSelector = el.tagName.toLowerCase();
+                css = el.tagName.toLowerCase();
             }
             
             result.buttons.push({
-                id: el.id || '',
-                className: el.className || '',
                 text: (el.textContent?.trim() || '').substring(0, 50),
-                cssSelector: cssSelector,
+                cssSelector: css,
                 visible: el.offsetParent !== null
             });
         });
         
         document.querySelectorAll('input').forEach(el => {
-            let cssSelector = '';
+            let css = '';
             if (el.id) {
-                cssSelector = '#' + el.id;
+                css = '#' + el.id;
             } else if (el.className) {
-                cssSelector = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
+                css = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
             } else {
-                cssSelector = el.tagName.toLowerCase();
+                css = el.tagName.toLowerCase();
             }
             
             result.inputs.push({
-                id: el.id || '',
-                className: el.className || '',
                 type: el.type || '',
                 placeholder: el.placeholder || '',
-                cssSelector: cssSelector,
+                cssSelector: css,
                 visible: el.offsetParent !== null
             });
         });
@@ -180,61 +183,49 @@ def get_dom():
         return None
 
 # ============================================================
-# ПАРСИНГ СООБЩЕНИЙ (УПРОЩЕННЫЙ И ИСПРАВЛЕННЫЙ)
+# ПАРСИНГ СООБЩЕНИЙ (УПРОЩЕННЫЙ, РАБОЧИЙ)
 # ============================================================
 
 def get_messages():
-    """Получить сообщения из чата (упрощенный)"""
+    """Получить сообщения из чата (максимально простой)"""
     try:
         js_code = """
         const messages = [];
-        const blacklist = [
-            'How can I help you',
-            'Search Chats',
-            'New Chat',
-            'Toggle sidebar',
-            'QR code',
-            'scan the QR',
-            'download',
-            'Press and hold',
-            'Kuvaff',
-            'Qwen Studio'
-        ];
         
-        document.querySelectorAll('div, span, p, article, section').forEach(el => {
+        // Просто берем все div с большим текстом
+        document.querySelectorAll('div').forEach(el => {
             const text = el.textContent?.trim() || '';
-            if (text.length < 10) return;
             
-            let skip = false;
-            for (const word of blacklist) {
-                if (text.includes(word)) {
-                    skip = true;
-                    break;
-                }
-            }
-            if (skip) return;
+            // Только длинные тексты
+            if (text.length < 30) return;
             
-            const rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return;
+            // Пропускаем мусор
+            if (text.includes('How can I help you')) return;
+            if (text.includes('Search Chats')) return;
+            if (text.includes('New Chat')) return;
+            if (text.includes('Toggle sidebar')) return;
+            if (text.includes('QR code')) return;
+            if (text.includes('Kuvaff')) return;
+            if (text.includes('Qwen Studio')) return;
+            if (text.includes('Select Model')) return;
+            if (text.includes('Temporary Chat')) return;
+            if (text.includes('Show shortcuts')) return;
+            if (text.includes('Voice Input')) return;
             
+            // Определяем цвет фона
             const bg = window.getComputedStyle(el).backgroundColor || '';
             const isDark = bg.includes('rgb(30') || bg.includes('rgb(40') || 
-                           bg.includes('#1a') || bg.includes('#2d');
+                           bg.includes('#1a') || bg.includes('#2d') ||
+                           bg.includes('rgb(20') || bg.includes('rgb(10'));
             
-            const inChat = el.closest('[role="log"]') || 
-                          el.closest('.chat-container') ||
-                          el.closest('.message-list') ||
-                          el.closest('[class*="message"]');
-            
-            if (inChat || text.length > 50) {
-                messages.push({
-                    text: text,
-                    isUser: isDark,
-                    isAssistant: !isDark
-                });
-            }
+            messages.push({
+                text: text,
+                isUser: isDark,
+                isAssistant: !isDark
+            });
         });
         
+        // Убираем дубликаты
         const unique = [];
         const seen = new Set();
         for (const m of messages) {
@@ -243,35 +234,25 @@ def get_messages():
                 seen.add(key);
                 unique.push(m);
             }
-            if (unique.length >= 15) break;
+            if (unique.length >= 20) break;
         }
         
         return JSON.stringify(unique);
         """
         result = js(js_code)
-        messages = json.loads(result) if result else []
-        
-        filtered = []
-        for m in messages:
-            text = m.get('text', '')
-            if len(text) < 10:
-                continue
-            if any(word in text for word in ['QR', 'scan', 'download', 'Press and hold']):
-                continue
-            filtered.append(m)
-        
-        return filtered
+        return json.loads(result) if result else []
     except Exception as e:
         log(f"❌ Ошибка get_messages: {e}")
         return []
 
 # ============================================================
-# ОТКРЫТИЕ QWEN
+# QWEN ФУНКЦИИ
 # ============================================================
 
 def open_qwen():
     try:
         log("🌐 Открываю Qwen Chat...")
+        
         tabs = list_tabs()
         for tab in tabs:
             if tab != current_tab():
@@ -279,6 +260,7 @@ def open_qwen():
                     close_tab(tab)
                 except:
                     pass
+        
         new_tab()
         time.sleep(1)
         goto_url("https://chat.qwen.ai/")
@@ -290,24 +272,24 @@ def open_qwen():
         log(f"❌ Ошибка открытия Qwen: {e}")
         return False
 
-# ============================================================
-# ОТПРАВКА СООБЩЕНИЯ
-# ============================================================
-
 def send_message(text):
     try:
         log(f"✏️ Отправляю: {text[:50]}...")
+        
         for attempt in range(10):
             dom = get_dom()
             if not dom:
                 time.sleep(1)
                 continue
+            
             textareas = dom.get('textareas', [])
             target = None
+            
             for ta in textareas:
                 if 'message-input-textarea' in ta.get('className', ''):
                     target = ta
                     break
+            
             if target:
                 css = target.get('cssSelector')
                 if css:
@@ -319,51 +301,46 @@ def send_message(text):
                         el.value = `{text}`;
                         el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
                         return true;
                     }}
                     return false;
                     """
-                    result = js(js_code)
-                    if result:
-                        log("✅ Текст введен")
-                        time.sleep(0.5)
-                        press_key('Enter')
-                        log("✅ Сообщение отправлено")
-                        return True
+                    js(js_code)
+                    time.sleep(0.5)
+                    press_key('Enter')
+                    log("✅ Сообщение отправлено")
+                    return True
+            
             time.sleep(2)
+        
         log("❌ Не найдено поле ввода")
         return False
     except Exception as e:
         log(f"❌ Ошибка отправки: {e}")
         return False
 
-# ============================================================
-# ОЖИДАНИЕ ОТВЕТА
-# ============================================================
-
 def wait_for_response(query, timeout=90):
     log("⏳ Жду ответ...")
     start_time = time.time()
     last_text = ""
     last_count = 0
+    
     while time.time() - start_time < timeout:
         time.sleep(3)
         messages = get_messages()
+        
         if messages and len(messages) > last_count:
             new_messages = messages[last_count:]
             for msg in new_messages:
-                if msg.get('isAssistant') and not msg.get('isUser'):
+                if msg.get('isAssistant'):
                     answer = msg.get('text', '')
-                    if (answer and 
-                        answer != query and 
-                        answer != last_text and
-                        len(answer) > 10 and
-                        not any(word in answer for word in ['QR', 'scan', 'download'])):
+                    if answer and answer != query and answer != last_text and len(answer) > 10:
                         log(f"✅ Ответ получен! Длина: {len(answer)}")
                         return answer
             last_count = len(messages)
+        
         log("🔄 Проверяю...")
+    
     log("⏰ Таймаут")
     return None
 
@@ -427,23 +404,26 @@ async def read(update, context):
     if not messages:
         await update.message.reply_text("📭 Нет сообщений")
         return
+    
     response = "💬 **Сообщения:**\n\n"
     for i, m in enumerate(messages[-5:], 1):
         author = "👤 Вы" if m.get('isUser') else "🤖 Qwen"
         text = m.get('text', '')[:300]
         response += f"{author}:\n{text}\n\n"
+    
     await update.message.reply_text(response)
 
 async def clear(update, context):
     log("🧹 Команда /clear")
+    
     try:
         if not open_qwen():
             await update.message.reply_text("❌ Не удалось открыть Qwen")
             return
+        
         dom = get_dom()
         if dom:
-            buttons = dom.get('buttons', [])
-            for btn in buttons:
+            for btn in dom.get('buttons', []):
                 if 'Новый чат' in btn.get('text', '') or 'New Chat' in btn.get('text', ''):
                     css = btn.get('cssSelector')
                     if css:
@@ -454,49 +434,62 @@ async def clear(update, context):
                         js(js_code)
                         await update.message.reply_text("✅ Чат очищен")
                         return
+        
         goto_url("https://chat.qwen.ai/")
         wait_for_load(timeout=30)
         await update.message.reply_text("✅ Страница перезагружена")
+        
     except Exception as e:
         log(f"❌ Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def status(update, context):
     log("📊 Команда /status")
+    
     dom = get_dom()
     if not dom:
         await update.message.reply_text("❌ Не удалось получить DOM")
         return
+    
     response = f"📊 **Статус Qwen Chat**\n\n"
     response += f"🔘 Кнопок: {len(dom.get('buttons', []))}\n"
     response += f"📝 Текстовых полей: {len(dom.get('textareas', []))}\n"
     response += f"📥 Инпутов: {len(dom.get('inputs', []))}\n"
+    
     messages = get_messages()
     response += f"💬 Сообщений: {len(messages)}"
+    
     await update.message.reply_text(response)
 
 async def debug_dom(update, context):
     try:
         await update.message.reply_text("🔍 Сканирую DOM...")
+        
         dom = get_dom()
         if not dom:
             await update.message.reply_text("❌ Не удалось получить DOM")
             return
+        
         response = "📋 **ВСЕ ЭЛЕМЕНТЫ DOM:**\n\n"
+        
         response += f"📝 **Textarea ({len(dom.get('textareas', []))}):**\n"
         for i, ta in enumerate(dom.get('textareas', []), 1):
             response += f"{i}. class={ta.get('className')[:40]}, placeholder={ta.get('placeholder')}, css={ta.get('cssSelector')}, visible={ta.get('visible')}\n"
         response += "\n"
+        
         response += f"🔘 **Buttons ({len(dom.get('buttons', []))}):**\n"
         for i, btn in enumerate(dom.get('buttons', [])[:10], 1):
             response += f"{i}. text={btn.get('text')[:30]}, css={btn.get('cssSelector')}, visible={btn.get('visible')}\n"
         if len(dom.get('buttons', [])) > 10:
             response += f"... и еще {len(dom.get('buttons', [])) - 10}\n"
         response += "\n"
+        
         response += f"📥 **Inputs ({len(dom.get('inputs', []))}):**\n"
         for i, inp in enumerate(dom.get('inputs', []), 1):
             response += f"{i}. type={inp.get('type')}, placeholder={inp.get('placeholder')}, css={inp.get('cssSelector')}, visible={inp.get('visible')}\n"
+        
         await update.message.reply_text(response)
+            
     except Exception as e:
         log(f"❌ Ошибка debug_dom: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -504,26 +497,33 @@ async def debug_dom(update, context):
 async def get_logs(update, context):
     try:
         await update.message.reply_text("📥 Собираю логи...")
+        
         log_file = os.path.join(LOGS_DIR, 'bot.log')
+        
         if not os.path.exists(log_file):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
+        
         with open(log_file, 'r', encoding='utf-8') as f:
             logs = f.read()
+        
         if len(logs) > 4000:
             filename = f"logs_{int(time.time())}.txt"
             file_path = os.path.join(LOGS_DIR, filename)
+            
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write("=" * 80 + "\n")
                 f.write(f"ЛОГ ОТ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write("=" * 80 + "\n\n")
                 f.write(logs)
+            
             with open(file_path, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
                     filename=filename,
                     caption="📄 Полный лог-файл"
                 )
+            
             try:
                 os.remove(file_path)
             except:
@@ -533,6 +533,7 @@ async def get_logs(update, context):
                 f"📋 **ЛОГ-ФАЙЛ:**\n\n```\n{logs}\n```",
                 parse_mode='Markdown'
             )
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -542,7 +543,9 @@ async def get_logs(update, context):
 
 def main():
     log("🚀 Запуск бота...")
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("qwen", qwen))
     app.add_handler(CommandHandler("read", read))
@@ -550,6 +553,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("debug", debug_dom))
     app.add_handler(CommandHandler("log", get_logs))
+    
     log("✅ Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
