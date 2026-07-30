@@ -1,5 +1,3 @@
-
-# bot.py
 import os
 import sys
 import stat
@@ -200,7 +198,6 @@ def push_to_github(content, filename, host="x.com"):
         "Content-Type": "application/json"
     }
 
-    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -237,7 +234,6 @@ def push_to_github(content, filename, host="x.com"):
 def parse_dom():
     """Парсит DOM страницы и возвращает JSON со всеми интерактивными элементами"""
     try:
-        # JavaScript для сбора всех элементов
         js_code = """
         function getElementInfo(el) {
             const info = {
@@ -265,7 +261,6 @@ def parse_dom():
                 dataAttributes: {}
             };
             
-            // XPath
             try {
                 const xpath = document.evaluate(
                     './/' + info.tag + 
@@ -285,7 +280,6 @@ def parse_dom():
                 }
             } catch(e) {}
             
-            // CSS Selector
             try {
                 if (info.id) {
                     info.cssSelector = '#' + info.id;
@@ -298,19 +292,16 @@ def parse_dom():
                 }
             } catch(e) {}
             
-            // Все атрибуты
             for (const attr of el.attributes) {
                 const name = attr.name;
                 const value = attr.value;
                 info.attributes[name] = value;
                 
-                // Собираем data-* атрибуты отдельно
                 if (name.startsWith('data-')) {
                     info.dataAttributes[name] = value;
                 }
             }
             
-            // ARIA атрибуты
             const ariaAttrs = ['aria-label', 'aria-describedby', 'aria-labelledby', 
                               'aria-hidden', 'aria-disabled', 'aria-required', 
                               'aria-checked', 'aria-selected', 'aria-expanded'];
@@ -320,7 +311,6 @@ def parse_dom():
                 }
             }
             
-            // Специальные атрибуты для тестирования
             const testAttrs = ['data-testid', 'data-test', 'data-cy', 'data-qa', 
                               'data-test-id', 'testid', 'test-id'];
             for (const attr of testAttrs) {
@@ -332,7 +322,6 @@ def parse_dom():
             return info;
         }
         
-        // Собираем элементы
         const elements = {
             buttons: [],
             inputs: [],
@@ -346,7 +335,6 @@ def parse_dom():
             others: []
         };
         
-        // Все интерактивные элементы
         const selectors = [
             'button',
             'input:not([type="hidden"])',
@@ -364,7 +352,6 @@ def parse_dom():
         const allElements = document.querySelectorAll(selectors.join(','));
         const extraSet = new Set(allElements);
         
-        // Дополнительные элементы с onclick или data-* атрибутами
         const extraElements = document.querySelectorAll('[onclick], [data-testid], [data-test], [data-cy], [data-qa]');
         for (const el of extraElements) {
             if (!extraSet.has(el)) {
@@ -401,7 +388,6 @@ def parse_dom():
             }
         }
         
-        // Информация о странице
         const pageInfo = {
             url: window.location.href,
             title: document.title,
@@ -418,12 +404,485 @@ def parse_dom():
         return None, str(e)
 
 # ============================================================
+# ПАРСИНГ СООБЩЕНИЙ QWEN
+# ============================================================
+
+def parse_qwen_messages():
+    """Специальный парсер для сообщений Qwen Chat"""
+    try:
+        js_code = """
+        function getMessages() {
+            const messages = [];
+            
+            // Пробуем найти сообщения разными способами
+            const selectors = [
+                '[data-testid="message"]',
+                '[role="log"] [data-testid="message"]',
+                '.message-item',
+                '.chat-message',
+                'article[data-testid="message"]',
+                'div[class*="message"]',
+                'div[class*="Message"]'
+            ];
+            
+            let messageElements = [];
+            for (const selector of selectors) {
+                const elements = document.querySelectorAll(selector);
+                if (elements.length > 0) {
+                    messageElements = elements;
+                    break;
+                }
+            }
+            
+            if (messageElements.length === 0) {
+                // Ищем все элементы с текстом > 30 символов
+                const allElements = document.querySelectorAll('div, span, p, article');
+                for (const el of allElements) {
+                    const text = el.textContent?.trim() || '';
+                    if (text.length > 30 && 
+                        !text.includes('How can I help you') &&
+                        !text.includes('Search Chats') &&
+                        !text.includes('Toggle sidebar')) {
+                        messageElements.push(el);
+                    }
+                }
+            }
+            
+            let userMessages = [];
+            let assistantMessages = [];
+            
+            for (const el of messageElements) {
+                const text = el.textContent?.trim() || '';
+                if (!text || text.length < 10) continue;
+                
+                // Проверяем, кто автор
+                const isUser = el.closest('[data-testid="message-user"]') || 
+                              el.closest('.user-message') ||
+                              el.closest('[class*="user"]') ||
+                              el.closest('[data-author="user"]');
+                
+                const isAssistant = el.closest('[data-testid="message-assistant"]') || 
+                                   el.closest('.assistant-message') ||
+                                   el.closest('[class*="assistant"]') ||
+                                   el.closest('[data-author="assistant"]');
+                
+                // Проверка по стилю
+                const styles = window.getComputedStyle(el);
+                const bgColor = styles.backgroundColor || '';
+                const isDarkBg = bgColor.includes('rgb(30') || bgColor.includes('rgb(40') || 
+                               bgColor.includes('#1a') || bgColor.includes('#2d');
+                
+                const message = {
+                    text: text,
+                    isUser: !!isUser || (isDarkBg && !isAssistant),
+                    isAssistant: !!isAssistant || (!isDarkBg && !isUser),
+                    timestamp: Date.now()
+                };
+                
+                if (message.isUser) {
+                    userMessages.push(message);
+                } else if (message.isAssistant) {
+                    assistantMessages.push(message);
+                } else {
+                    // Если не определили, смотрим по контексту
+                    if (text.includes('Qwen') || text.includes('I am') || text.includes('I\'m')) {
+                        message.isAssistant = true;
+                        assistantMessages.push(message);
+                    } else {
+                        message.isUser = true;
+                        userMessages.push(message);
+                    }
+                }
+            }
+            
+            // Собираем все сообщения в хронологическом порядке
+            const allMessages = [];
+            let uIdx = 0, aIdx = 0;
+            
+            // Простой подход: чередуем пользователь-ассистент
+            while (uIdx < userMessages.length || aIdx < assistantMessages.length) {
+                if (uIdx < userMessages.length) {
+                    allMessages.push({...userMessages[uIdx], role: 'user'});
+                    uIdx++;
+                }
+                if (aIdx < assistantMessages.length) {
+                    allMessages.push({...assistantMessages[aIdx], role: 'assistant'});
+                    aIdx++;
+                }
+            }
+            
+            // Берем последние 20 сообщений
+            const recentMessages = allMessages.slice(-20);
+            
+            return {
+                messages: recentMessages,
+                total: allMessages.length,
+                userCount: userMessages.length,
+                assistantCount: assistantMessages.length,
+                lastMessage: allMessages.length > 0 ? allMessages[allMessages.length - 1] : null
+            };
+        }
+        
+        return JSON.stringify(getMessages());
+        """
+        
+        result = js(js_code)
+        if result:
+            return json.loads(result)
+        return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга сообщений Qwen: {e}")
+        return None
+
+# ============================================================
+# QWEN CHAT КОМАНДЫ
+# ============================================================
+
+async def qwen_send(update, context):
+    """Отправить сообщение в Qwen Chat и получить ответ"""
+    try:
+        if not context.args:
+            await update.message.reply_text(
+                "❌ Напиши сообщение для Qwen\n"
+                "Пример: /qwen Привет! Как дела?"
+            )
+            return
+        
+        query = ' '.join(context.args).strip()
+        status_msg = await update.message.reply_text(f"💬 Отправляю запрос в Qwen: {query[:50]}...")
+        
+        # Проверяем, открыт ли Qwen Chat
+        try:
+            dom_data, _ = parse_dom()
+            if dom_data:
+                dom_json = json.loads(dom_data)
+                current_url = dom_json.get('page', {}).get('url', '')
+                if 'chat.qwen.ai' not in current_url:
+                    # Закрываем старые вкладки
+                    tabs = list_tabs()
+                    for tab in tabs:
+                        if tab != current_tab():
+                            try:
+                                close_tab(tab)
+                            except:
+                                pass
+                    
+                    new_tab()
+                    await asyncio.sleep(1)
+                    goto_url("https://chat.qwen.ai/")
+                    wait_for_load(timeout=30)
+                    await status_msg.edit_text("✅ Qwen Chat загружен, отправляю запрос...")
+                    await asyncio.sleep(2)
+            else:
+                new_tab()
+                await asyncio.sleep(1)
+                goto_url("https://chat.qwen.ai/")
+                wait_for_load(timeout=30)
+                await status_msg.edit_text("✅ Qwen Chat загружен, отправляю запрос...")
+                await asyncio.sleep(2)
+                
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка загрузки Qwen: {str(e)[:200]}")
+            return
+        
+        # Находим поле ввода
+        try:
+            textarea_found = False
+            for attempt in range(10):
+                dom_data, _ = parse_dom()
+                if not dom_data:
+                    await asyncio.sleep(1)
+                    continue
+                
+                dom_json = json.loads(dom_data)
+                textareas = dom_json.get('elements', {}).get('textareas', [])
+                
+                target_textarea = None
+                for ta in textareas:
+                    if 'message-input-textarea' in ta.get('className', ''):
+                        target_textarea = ta
+                        break
+                
+                if target_textarea:
+                    textarea_found = True
+                    xpath = target_textarea.get('xpath')
+                    if xpath:
+                        fill_input(xpath, query)
+                        await asyncio.sleep(1)
+                        press_key('Enter')
+                        await status_msg.edit_text("✉️ Сообщение отправлено, жду ответа...")
+                        break
+                
+                await asyncio.sleep(2)
+            
+            if not textarea_found:
+                await status_msg.edit_text("❌ Не найдено поле ввода Qwen")
+                return
+                
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка отправки: {str(e)[:200]}")
+            return
+        
+        # Ждем ответа
+        await status_msg.edit_text("⏳ Qwen думает...")
+        
+        timeout = 120  # 2 минуты
+        start_time = time.time()
+        last_message_count = 0
+        last_text = ""
+        
+        while time.time() - start_time < timeout:
+            await asyncio.sleep(3)
+            
+            messages_data = parse_qwen_messages()
+            if not messages_data:
+                continue
+            
+            messages = messages_data.get('messages', [])
+            
+            # Ищем новые сообщения от ассистента
+            if len(messages) > last_message_count:
+                new_messages = messages[last_message_count:]
+                for msg in new_messages:
+                    if msg.get('role') == 'assistant' or msg.get('isAssistant'):
+                        answer = msg.get('text', '')
+                        
+                        # Проверяем, что это не дубликат и не наш запрос
+                        if answer and answer != query and answer != last_text:
+                            last_text = answer
+                            
+                            # Отправляем ответ
+                            if len(answer) <= 2000:
+                                await status_msg.edit_text(
+                                    f"🤖 **Qwen ответил:**\n\n{answer}",
+                                    parse_mode='Markdown'
+                                )
+                            else:
+                                # Длинный ответ - отправляем частями
+                                await status_msg.edit_text(
+                                    f"🤖 **Qwen ответил:**\n\n{answer[:2000]}\n\n...(продолжение в файле)",
+                                    parse_mode='Markdown'
+                                )
+                                
+                                filename = f"qwen_response_{int(time.time())}.txt"
+                                file_path = os.path.join(LOGS_DIR, filename)
+                                with open(file_path, 'w', encoding='utf-8') as f:
+                                    f.write(answer)
+                                
+                                with open(file_path, 'rb') as f:
+                                    await update.message.reply_document(
+                                        document=f,
+                                        filename=filename,
+                                        caption="📄 Полный ответ Qwen"
+                                    )
+                                
+                                try:
+                                    os.remove(file_path)
+                                except:
+                                    pass
+                            
+                            return
+                
+                last_message_count = len(messages)
+            
+            # Проверяем, не появилась ли кнопка Stop (значит еще думает)
+            dom_data, _ = parse_dom()
+            if dom_data:
+                dom_json = json.loads(dom_data)
+                buttons = dom_json.get('elements', {}).get('buttons', [])
+                stop_button = any('stop' in btn.get('text', '').lower() or 
+                                 'stop' in btn.get('id', '').lower() 
+                                 for btn in buttons)
+                if stop_button:
+                    # Еще думает
+                    pass
+        
+        await status_msg.edit_text("⏰ Превышено время ожидания ответа от Qwen (2 минуты)")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /qwen_send: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def qwen_read(update, context):
+    """Прочитать последние сообщения из Qwen Chat"""
+    try:
+        status_msg = await update.message.reply_text("📖 Читаю сообщения...")
+        
+        messages_data = parse_qwen_messages()
+        
+        if not messages_data or not messages_data.get('messages'):
+            await status_msg.edit_text("📭 Нет сообщений в чате")
+            return
+        
+        messages = messages_data['messages']
+        
+        response = "💬 **Последние сообщения Qwen Chat:**\n\n"
+        
+        for i, msg in enumerate(messages[-10:], 1):
+            if msg.get('role') == 'user' or msg.get('isUser'):
+                author = "👤 **Вы**"
+            else:
+                author = "🤖 **Qwen**"
+            
+            text = msg.get('text', '')[:300]
+            if len(msg.get('text', '')) > 300:
+                text += "..."
+            
+            response += f"{author}:\n{text}\n\n"
+        
+        response += f"\n📊 Всего сообщений: {messages_data.get('total', 0)}"
+        response += f"\n👤 Ваших: {messages_data.get('userCount', 0)}"
+        response += f"\n🤖 Qwen: {messages_data.get('assistantCount', 0)}"
+        
+        if len(response) > 4000:
+            response = response[:4000] + "\n\n... (обрезано)"
+        
+        await status_msg.edit_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /qwen_read: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def qwen_clear(update, context):
+    """Очистить чат Qwen (начать новый диалог)"""
+    try:
+        status_msg = await update.message.reply_text("🧹 Очищаю чат...")
+        
+        # Проверяем, открыт ли Qwen
+        try:
+            dom_data, _ = parse_dom()
+            if dom_data:
+                dom_json = json.loads(dom_data)
+                if 'chat.qwen.ai' not in dom_json.get('page', {}).get('url', ''):
+                    goto_url("https://chat.qwen.ai/")
+                    wait_for_load(timeout=30)
+            else:
+                goto_url("https://chat.qwen.ai/")
+                wait_for_load(timeout=30)
+            
+            await asyncio.sleep(2)
+            
+            # Ищем кнопку "New Chat" (пробуем разные варианты)
+            dom_data, _ = parse_dom()
+            if dom_data:
+                dom_json = json.loads(dom_data)
+                
+                # Ищем в кнопках
+                buttons = dom_json.get('elements', {}).get('buttons', [])
+                divs = dom_json.get('elements', {}).get('divs', [])
+                
+                for btn in buttons:
+                    if 'New Chat' in btn.get('text', '') or 'new chat' in btn.get('text', '').lower():
+                        if btn.get('xpath'):
+                            # Используем JS для клика
+                            js_code = f"""
+                            const el = document.evaluate(
+                                `{btn['xpath']}`,
+                                document,
+                                null,
+                                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                                null
+                            ).singleNodeValue;
+                            if (el) el.click();
+                            """
+                            js(js_code)
+                            await status_msg.edit_text("✅ Чат очищен, можно начинать новый диалог")
+                            await asyncio.sleep(1)
+                            return
+                
+                for div in divs:
+                    if 'New Chat' in div.get('text', '') or 'new chat' in div.get('text', '').lower():
+                        if div.get('xpath'):
+                            js_code = f"""
+                            const el = document.evaluate(
+                                `{div['xpath']}`,
+                                document,
+                                null,
+                                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                                null
+                            ).singleNodeValue;
+                            if (el) el.click();
+                            """
+                            js(js_code)
+                            await status_msg.edit_text("✅ Чат очищен, можно начинать новый диалог")
+                            await asyncio.sleep(1)
+                            return
+            
+            # Если не нашли кнопку, пробуем через DOM
+            await status_msg.edit_text("❌ Не найдена кнопка New Chat, пробую перезагрузить...")
+            goto_url("https://chat.qwen.ai/")
+            wait_for_load(timeout=30)
+            await status_msg.edit_text("✅ Страница перезагружена, чат очищен")
+            
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /qwen_clear: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def qwen_status(update, context):
+    """Проверить статус Qwen Chat"""
+    try:
+        dom_data, _ = parse_dom()
+        if not dom_data:
+            await update.message.reply_text("❌ Не удалось получить DOM")
+            return
+        
+        dom_json = json.loads(dom_data)
+        page = dom_json.get('page', {})
+        elements = dom_json.get('elements', {})
+        
+        response = f"**📊 Qwen Chat Status**\n\n"
+        response += f"🌐 URL: {page.get('url', 'unknown')}\n"
+        response += f"📝 Title: {page.get('title', 'unknown')}\n\n"
+        
+        buttons = len(elements.get('buttons', []))
+        inputs = len(elements.get('inputs', []))
+        textareas = len(elements.get('textareas', []))
+        
+        response += f"🔘 Кнопок: {buttons}\n"
+        response += f"📝 Инпутов: {inputs}\n"
+        response += f"📄 Текстовых полей: {textareas}\n\n"
+        
+        # Проверяем наличие поля ввода
+        textarea_present = False
+        for ta in elements.get('textareas', []):
+            if 'message-input-textarea' in ta.get('className', ''):
+                textarea_present = True
+                break
+        
+        if textarea_present:
+            response += "✅ Поле ввода найдено"
+        else:
+            response += "❌ Поле ввода не найдено"
+        
+        # Получаем сообщения
+        messages_data = parse_qwen_messages()
+        if messages_data:
+            response += f"\n\n💬 Сообщений в чате: {messages_data.get('total', 0)}"
+            response += f"\n👤 Ваших: {messages_data.get('userCount', 0)}"
+            response += f"\n🤖 Qwen: {messages_data.get('assistantCount', 0)}"
+        
+        await update.message.reply_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /qwen_status: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
 # КОМАНДЫ
 # ============================================================
 
 async def start(update, context):
     await update.message.reply_text(
-        "🌐 Браузер:\n"
+        "🌐 **Браузер-бот с Qwen интеграцией**\n\n"
+        "**Qwen Chat команды:**\n"
+        "/qwen <текст> — отправить запрос в Qwen\n"
+        "/qwen_read — прочитать последние сообщения\n"
+        "/qwen_clear — очистить чат\n"
+        "/qwen_status — статус Qwen Chat\n\n"
+        "**Основные команды:**\n"
         "/dom <url> — парсинг DOM\n"
         "/trends — глобальные тренды X\n"
         "/analyze — анализ вовлеченности\n"
@@ -431,7 +890,8 @@ async def start(update, context):
         "/tab_new — открыть вкладку\n"
         "/tab_close <номер> — закрыть вкладку\n"
         "/tab_switch <номер> — переключить вкладку\n"
-        "/log — скачать логи"
+        "/log — скачать логи",
+        parse_mode='Markdown'
     )
 
 async def log(update, context):
@@ -448,7 +908,6 @@ async def log(update, context):
 async def dom(update, context):
     """Парсит DOM указанной страницы"""
     try:
-        # Проверяем аргументы
         if not context.args:
             await update.message.reply_text(
                 "❌ Укажите URL\n"
@@ -459,13 +918,11 @@ async def dom(update, context):
         
         url = context.args[0].strip()
         
-        # Добавляем https:// если нет протокола
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
         
         status_msg = await update.message.reply_text(f"🌐 Открываю {url}...")
         
-        # Открываем страницу
         try:
             new_tab()
             goto_url(url)
@@ -475,7 +932,6 @@ async def dom(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
         
-        # Парсим DOM
         result, error = parse_dom()
         
         if error:
@@ -486,14 +942,12 @@ async def dom(update, context):
             await status_msg.edit_text("❌ Не удалось получить данные DOM")
             return
         
-        # Парсим JSON для проверки
         try:
             dom_data = json.loads(result)
         except:
             await status_msg.edit_text("❌ Ошибка парсинга JSON")
             return
         
-        # Сохраняем JSON в файл
         timestamp = int(time.time())
         domain = url.replace('https://', '').replace('http://', '').split('/')[0]
         filename = f"dom_{domain}_{timestamp}.json"
@@ -502,7 +956,6 @@ async def dom(update, context):
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(dom_data, f, ensure_ascii=False, indent=2)
         
-        # Отправляем JSON как документ
         with open(file_path, 'rb') as f:
             await status_msg.edit_text("📄 Отправляю JSON...")
             await update.message.reply_document(
@@ -511,7 +964,6 @@ async def dom(update, context):
                 caption=f"📊 DOM страницы\nURL: {dom_data.get('page', {}).get('url', 'unknown')}\nЭлементов: {sum(len(v) for v in dom_data.get('elements', {}).values())}"
             )
         
-        # Отправляем статистику
         elements = dom_data.get('elements', {})
         stats = "📊 **Статистика DOM:**\n\n"
         total = 0
@@ -524,7 +976,6 @@ async def dom(update, context):
         
         await update.message.reply_text(stats, parse_mode='Markdown')
         
-        # Удаляем временный файл
         try:
             os.remove(file_path)
         except:
@@ -535,13 +986,11 @@ async def dom(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def kalshi(update, context):
-    """Парсит последние 5 постов Kalshi (скрытая команда)"""
+    """Парсит последние 5 постов Kalshi"""
     try:
         status_msg = await update.message.reply_text("🔍 Открываю Kalshi...")
         
-        # Открываем страницу Kalshi
         try:
-            # Закрываем все старые вкладки кроме текущей
             tabs = list_tabs()
             for tab in tabs:
                 if tab != current_tab():
@@ -550,19 +999,12 @@ async def kalshi(update, context):
                     except:
                         pass
             
-            # Создаем новую вкладку
             new_tab()
-            
-            # Небольшая пауза перед переходом
             await asyncio.sleep(1)
-            
             goto_url("https://x.com/Kalshi")
             wait_for_load(timeout=30)
-            
-            # Ждем и скроллим для подгрузки постов
             await asyncio.sleep(3)
             
-            # Много скроллов для подгрузки
             for _ in range(8):
                 scroll(0, 600)
                 await asyncio.sleep(1.5)
@@ -573,24 +1015,19 @@ async def kalshi(update, context):
             await status_msg.edit_text(f"❌ Ошибка загрузки: {str(e)[:200]}")
             return
         
-        # JavaScript для парсинга постов
         js_code = """
         const posts = [];
         const articles = document.querySelectorAll('article[data-testid="tweet"]');
-        
-        console.log('Найдено постов:', articles.length);
         
         for (const article of articles) {
             try {
                 const textEl = article.querySelector('[data-testid="tweetText"]');
                 const text = textEl ? textEl.textContent.trim() : '';
                 
-                // Берем только имя без @ и времени
                 const nameEl = article.querySelector('[data-testid="User-Name"]');
                 let name = 'Kalshi';
                 if (nameEl) {
                     const fullName = nameEl.textContent.trim();
-                    // Берем только то, что до @
                     const nameParts = fullName.split('@');
                     name = nameParts[0].trim();
                 }
@@ -633,10 +1070,8 @@ async def kalshi(update, context):
             await status_msg.edit_text("📭 Постов не найдено. Попробуйте позже.")
             return
         
-        # Берем первые 5 постов
         posts = posts[:5]
         
-        # Формируем ответ
         response = f"📊 **Kalshi — последние 5 постов**\n\n"
         
         for i, post in enumerate(posts, 1):
@@ -654,13 +1089,11 @@ async def kalshi(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def trends(update, context):
-    """Анализ глобальных трендов X: хэштеги, упоминания, ключевые слова"""
+    """Анализ глобальных трендов X"""
     try:
         status_msg = await update.message.reply_text("🔍 Открываю глобальные тренды X...")
         
-        # Открываем страницу с трендами
         try:
-            # Закрываем старые вкладки
             tabs = list_tabs()
             for tab in tabs:
                 if tab != current_tab():
@@ -674,7 +1107,6 @@ async def trends(update, context):
             goto_url("https://x.com/explore/tabs/trending")
             wait_for_load(timeout=30)
             
-            # Скроллим для подгрузки
             await asyncio.sleep(3)
             for _ in range(5):
                 scroll(0, 600)
@@ -694,29 +1126,23 @@ async def trends(update, context):
             trends: []
         };
         
-        // Собираем все текстовые элементы на странице
         document.querySelectorAll('span, div[role="article"], article').forEach(el => {
             const text = el.textContent?.trim();
             if (!text || text.length < 2) return;
             
-            // Пропускаем служебные слова
             if (/(\\d+[.,]?\\d*[KMB]?|просмотров|постов|тенденция|Follow|Following|Replying)/i.test(text)) return;
             
-            // Проверяем что это похоже на тренд или хэштег
             if (text.startsWith('#') || 
                 (text.length < 40 && /^[A-ZА-Я]/.test(text) && !text.includes(' '))) {
                 data.trends.push(text);
                 
-                // Извлекаем хэштеги из текста
                 const hashtags = text.match(/#\\w+/g);
                 if (hashtags) data.hashtags.push(...hashtags);
                 
-                // Извлекаем упоминания
                 const mentions = text.match(/@\\w+/g);
                 if (mentions) data.mentions.push(...mentions);
             }
             
-            // Ключевые слова (капитализированные слова)
             const words = text.split(/\\s+/).filter(w => w.length > 3 && /^[A-ZА-Я]/.test(w) && !/^\\d+$/.test(w));
             if (words) data.keywords.push(...words);
         });
@@ -735,12 +1161,10 @@ async def trends(update, context):
             await status_msg.edit_text("❌ Ошибка парсинга JSON")
             return
         
-        # Если ничего не нашли
         if not data.get('trends') and not data.get('hashtags'):
             await status_msg.edit_text("📭 Трендов не найдено. Попробуйте позже.")
             return
         
-        # Подсчет частоты
         trend_counts = Counter(data['trends']).most_common(15)
         hashtag_counts = Counter(data['hashtags']).most_common(10)
         mention_counts = Counter(data['mentions']).most_common(5)
@@ -782,7 +1206,6 @@ async def analyze(update, context):
     try:
         status_msg = await update.message.reply_text("📊 Открываю глобальные тренды...")
         
-        # Открываем страницу с трендами
         try:
             tabs = list_tabs()
             for tab in tabs:
@@ -820,7 +1243,6 @@ async def analyze(update, context):
             }
         });
         
-        // Убираем дубликаты
         const uniqueTrends = [...new Set(trends)];
         return JSON.stringify(uniqueTrends.slice(0, 20));
         """
@@ -840,7 +1262,6 @@ async def analyze(update, context):
             await status_msg.edit_text("📭 Трендов не найдено")
             return
         
-        # Аналитика по трендам
         total_trends = len(trends)
         hashtag_trends = [t for t in trends if t.startswith('#')]
         text_trends = [t for t in trends if not t.startswith('#')]
@@ -887,7 +1308,6 @@ async def tabs(update, context):
         response += "/tab_close <номер> — закрыть вкладку\n"
         response += "/tab_switch <номер> — переключиться на вкладку"
         
-        # Обрезаем если слишком длинный
         if len(response) > 4000:
             response = response[:4000] + "\n\n... (обрезано)"
         
@@ -964,19 +1384,26 @@ async def tab_switch(update, context):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Qwen команды
+    app.add_handler(CommandHandler("qwen", qwen_send))
+    app.add_handler(CommandHandler("qwen_send", qwen_send))
+    app.add_handler(CommandHandler("qwen_read", qwen_read))
+    app.add_handler(CommandHandler("qwen_clear", qwen_clear))
+    app.add_handler(CommandHandler("qwen_status", qwen_status))
+    
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dom", dom))
-    app.add_handler(CommandHandler("kalshi", kalshi))          # скрытая
-    app.add_handler(CommandHandler("trends", trends))          # глобальные тренды
-    app.add_handler(CommandHandler("analyze", analyze))        # анализ трендов
+    app.add_handler(CommandHandler("kalshi", kalshi))
+    app.add_handler(CommandHandler("trends", trends))
+    app.add_handler(CommandHandler("analyze", analyze))
     app.add_handler(CommandHandler("tabs", tabs))
     app.add_handler(CommandHandler("tab_new", tab_new))
     app.add_handler(CommandHandler("tab_close", tab_close))
     app.add_handler(CommandHandler("tab_switch", tab_switch))
     app.add_handler(CommandHandler("log", log))
 
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Бот запущен с поддержкой Qwen Chat!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
