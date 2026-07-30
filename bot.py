@@ -404,7 +404,7 @@ def parse_dom():
         return None, str(e)
 
 # ============================================================
-# ПАРСИНГ СООБЩЕНИЙ QWEN
+# ПАРСИНГ СООБЩЕНИЙ QWEN (ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 def parse_qwen_messages():
@@ -413,8 +413,6 @@ def parse_qwen_messages():
         js_code = """
         function getMessages() {
             const messages = [];
-            
-            // Пробуем найти сообщения разными способами
             const selectors = [
                 '[data-testid="message"]',
                 '[role="log"] [data-testid="message"]',
@@ -435,7 +433,6 @@ def parse_qwen_messages():
             }
             
             if (messageElements.length === 0) {
-                // Ищем все элементы с текстом > 30 символов
                 const allElements = document.querySelectorAll('div, span, p, article');
                 for (const el of allElements) {
                     const text = el.textContent?.trim() || '';
@@ -455,7 +452,6 @@ def parse_qwen_messages():
                 const text = el.textContent?.trim() || '';
                 if (!text || text.length < 10) continue;
                 
-                // Проверяем, кто автор
                 const isUser = el.closest('[data-testid="message-user"]') || 
                               el.closest('.user-message') ||
                               el.closest('[class*="user"]') ||
@@ -466,7 +462,6 @@ def parse_qwen_messages():
                                    el.closest('[class*="assistant"]') ||
                                    el.closest('[data-author="assistant"]');
                 
-                // Проверка по стилю
                 const styles = window.getComputedStyle(el);
                 const bgColor = styles.backgroundColor || '';
                 const isDarkBg = bgColor.includes('rgb(30') || bgColor.includes('rgb(40') || 
@@ -484,8 +479,8 @@ def parse_qwen_messages():
                 } else if (message.isAssistant) {
                     assistantMessages.push(message);
                 } else {
-                    // Если не определили, смотрим по контексту
-                    if (text.includes('Qwen') || text.includes('I am') || text.includes('I\'m')) {
+                    // ✅ ИСПРАВЛЕНО: используем двойные кавычки
+                    if (text.includes('Qwen') || text.includes('I am') || text.includes("I'm")) {
                         message.isAssistant = true;
                         assistantMessages.push(message);
                     } else {
@@ -495,11 +490,9 @@ def parse_qwen_messages():
                 }
             }
             
-            // Собираем все сообщения в хронологическом порядке
             const allMessages = [];
             let uIdx = 0, aIdx = 0;
             
-            // Простой подход: чередуем пользователь-ассистент
             while (uIdx < userMessages.length || aIdx < assistantMessages.length) {
                 if (uIdx < userMessages.length) {
                     allMessages.push({...userMessages[uIdx], role: 'user'});
@@ -511,7 +504,6 @@ def parse_qwen_messages():
                 }
             }
             
-            // Берем последние 20 сообщений
             const recentMessages = allMessages.slice(-20);
             
             return {
@@ -606,7 +598,7 @@ async def qwen_send(update, context):
                 if target_textarea:
                     textarea_found = True
                     
-                    # ✅ ИСПРАВЛЕНО: Используем CSS-селектор вместо XPath
+                    # Используем CSS-селектор
                     css_selector = target_textarea.get('cssSelector')
                     if css_selector:
                         # Вводим текст через JavaScript напрямую
@@ -763,12 +755,11 @@ async def qwen_clear(update, context):
             
             await asyncio.sleep(2)
             
-            # Ищем кнопку "New Chat" через CSS-селекторы
+            # Ищем кнопку "New Chat"
             dom_data, _ = parse_dom()
             if dom_data:
                 dom_json = json.loads(dom_data)
                 
-                # Ищем в кнопках
                 buttons = dom_json.get('elements', {}).get('buttons', [])
                 divs = dom_json.get('elements', {}).get('divs', [])
                 
@@ -798,7 +789,7 @@ async def qwen_clear(update, context):
                             await asyncio.sleep(1)
                             return
             
-            # Если не нашли кнопку, пробуем перезагрузить
+            # Если не нашли кнопку
             await status_msg.edit_text("❌ Не найдена кнопка New Chat, пробую перезагрузить...")
             goto_url("https://chat.qwen.ai/")
             wait_for_load(timeout=30)
