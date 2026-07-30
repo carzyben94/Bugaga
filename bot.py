@@ -113,11 +113,11 @@ set_cookies()
 log("✅ Куки установлены")
 
 # ============================================================
-# ПАРСИНГ DOM
+# ПАРСИНГ DOM (ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 def get_dom():
-    """Получить DOM элементы страницы"""
+    """Получить DOM элементы страницы с CSS селекторами"""
     try:
         js_code = """
         const result = {
@@ -127,29 +127,59 @@ def get_dom():
         };
         
         document.querySelectorAll('textarea').forEach(el => {
+            let cssSelector = '';
+            if (el.id) {
+                cssSelector = '#' + el.id;
+            } else if (el.className) {
+                cssSelector = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
+            } else {
+                cssSelector = el.tagName.toLowerCase();
+            }
+            
             result.textareas.push({
                 id: el.id || '',
                 className: el.className || '',
                 placeholder: el.placeholder || '',
+                cssSelector: cssSelector,
                 visible: el.offsetParent !== null
             });
         });
         
         document.querySelectorAll('button, [role="button"]').forEach(el => {
+            let cssSelector = '';
+            if (el.id) {
+                cssSelector = '#' + el.id;
+            } else if (el.className) {
+                cssSelector = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
+            } else {
+                cssSelector = el.tagName.toLowerCase();
+            }
+            
             result.buttons.push({
                 id: el.id || '',
                 className: el.className || '',
                 text: (el.textContent?.trim() || '').substring(0, 50),
+                cssSelector: cssSelector,
                 visible: el.offsetParent !== null
             });
         });
         
         document.querySelectorAll('input').forEach(el => {
+            let cssSelector = '';
+            if (el.id) {
+                cssSelector = '#' + el.id;
+            } else if (el.className) {
+                cssSelector = el.tagName.toLowerCase() + '.' + el.className.split(' ').filter(c => c).join('.');
+            } else {
+                cssSelector = el.tagName.toLowerCase();
+            }
+            
             result.inputs.push({
                 id: el.id || '',
                 className: el.className || '',
                 type: el.type || '',
                 placeholder: el.placeholder || '',
+                cssSelector: cssSelector,
                 visible: el.offsetParent !== null
             });
         });
@@ -163,7 +193,7 @@ def get_dom():
         return None
 
 # ============================================================
-# ПАРСИНГ СООБЩЕНИЙ (ИСПРАВЛЕННЫЙ)
+# ПАРСИНГ СООБЩЕНИЙ
 # ============================================================
 
 def get_messages():
@@ -287,7 +317,7 @@ def open_qwen():
         return False
 
 # ============================================================
-# ОТПРАВКА СООБЩЕНИЯ
+# ОТПРАВКА СООБЩЕНИЯ (ИСПРАВЛЕННАЯ)
 # ============================================================
 
 def send_message(text):
@@ -298,20 +328,26 @@ def send_message(text):
         for attempt in range(10):
             dom = get_dom()
             if not dom:
+                log(f"⚠️ Попытка {attempt+1}: DOM не получен")
                 time.sleep(1)
                 continue
             
             textareas = dom.get('textareas', [])
-            target = None
+            log(f"📝 Найдено textarea: {len(textareas)}")
             
+            target = None
             for ta in textareas:
+                log(f"🔍 Проверяю: class={ta.get('className')}, placeholder={ta.get('placeholder')}")
                 if 'message-input-textarea' in ta.get('className', ''):
                     target = ta
+                    log(f"✅ Найдено поле ввода!")
                     break
             
             if target:
                 css = target.get('cssSelector')
+                log(f"🎯 CSS селектор: {css}")
                 if css:
+                    # Вводим текст
                     js_code = f"""
                     const el = document.querySelector(`{css}`);
                     if (el) {{
@@ -321,13 +357,19 @@ def send_message(text):
                         el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+                        return true;
                     }}
+                    return false;
                     """
-                    js(js_code)
-                    time.sleep(0.5)
-                    press_key('Enter')
-                    log("✅ Сообщение отправлено")
-                    return True
+                    result = js(js_code)
+                    if result:
+                        log("✅ Текст введен")
+                        time.sleep(0.5)
+                        press_key('Enter')
+                        log("✅ Сообщение отправлено")
+                        return True
+                    else:
+                        log("❌ Не удалось найти элемент по CSS")
             
             time.sleep(2)
         
@@ -456,7 +498,7 @@ async def clear(update, context):
         if dom:
             buttons = dom.get('buttons', [])
             for btn in buttons:
-                if 'New Chat' in btn.get('text', ''):
+                if 'Новый чат' in btn.get('text', '') or 'New Chat' in btn.get('text', ''):
                     css = btn.get('cssSelector')
                     if css:
                         js_code = f"""
@@ -499,74 +541,49 @@ async def debug_dom(update, context):
     try:
         await update.message.reply_text("🔍 Сканирую DOM...")
         
-        js_code = """
-        const result = {
-            textareas: [],
-            buttons: [],
-            inputs: []
-        };
-        
-        document.querySelectorAll('textarea').forEach(el => {
-            result.textareas.push({
-                id: el.id || '',
-                className: el.className || '',
-                placeholder: el.placeholder || '',
-                visible: el.offsetParent !== null
-            });
-        });
-        
-        document.querySelectorAll('button, [role="button"]').forEach(el => {
-            result.buttons.push({
-                id: el.id || '',
-                className: el.className || '',
-                text: (el.textContent?.trim() || '').substring(0, 50),
-                visible: el.offsetParent !== null
-            });
-        });
-        
-        document.querySelectorAll('input').forEach(el => {
-            result.inputs.push({
-                id: el.id || '',
-                className: el.className || '',
-                type: el.type || '',
-                placeholder: el.placeholder || '',
-                visible: el.offsetParent !== null
-            });
-        });
-        
-        return JSON.stringify(result);
-        """
-        
-        result = js(js_code)
-        data = json.loads(result) if result else None
-        
-        if not data:
+        dom = get_dom()
+        if not dom:
             await update.message.reply_text("❌ Не удалось получить DOM")
             return
         
         response = "📋 **ВСЕ ЭЛЕМЕНТЫ DOM:**\n\n"
         
-        response += f"📝 **Textarea ({len(data.get('textareas', []))}):**\n"
-        for i, ta in enumerate(data.get('textareas', [])[:5], 1):
-            response += f"{i}. id={ta.get('id')}, class={ta.get('className')[:30]}, placeholder={ta.get('placeholder')}, visible={ta.get('visible')}\n"
-        if len(data.get('textareas', [])) > 5:
-            response += f"... и еще {len(data.get('textareas', [])) - 5}\n"
+        # Textareas
+        response += f"📝 **Textarea ({len(dom.get('textareas', []))}):**\n"
+        for i, ta in enumerate(dom.get('textareas', []), 1):
+            response += f"{i}. class={ta.get('className')[:40]}, placeholder={ta.get('placeholder')}, css={ta.get('cssSelector')}, visible={ta.get('visible')}\n"
         response += "\n"
         
-        response += f"🔘 **Buttons ({len(data.get('buttons', []))}):**\n"
-        for i, btn in enumerate(data.get('buttons', [])[:5], 1):
-            response += f"{i}. id={btn.get('id')}, class={btn.get('className')[:30]}, text={btn.get('text')[:30]}, visible={btn.get('visible')}\n"
-        if len(data.get('buttons', [])) > 5:
-            response += f"... и еще {len(data.get('buttons', [])) - 5}\n"
+        # Buttons (первые 10)
+        response += f"🔘 **Buttons ({len(dom.get('buttons', []))}):**\n"
+        for i, btn in enumerate(dom.get('buttons', [])[:10], 1):
+            response += f"{i}. text={btn.get('text')[:30]}, css={btn.get('cssSelector')}, visible={btn.get('visible')}\n"
+        if len(dom.get('buttons', [])) > 10:
+            response += f"... и еще {len(dom.get('buttons', [])) - 10}\n"
         response += "\n"
         
-        response += f"📥 **Inputs ({len(data.get('inputs', []))}):**\n"
-        for i, inp in enumerate(data.get('inputs', [])[:5], 1):
-            response += f"{i}. id={inp.get('id')}, type={inp.get('type')}, placeholder={inp.get('placeholder')}, visible={inp.get('visible')}\n"
-        if len(data.get('inputs', [])) > 5:
-            response += f"... и еще {len(data.get('inputs', [])) - 5}\n"
+        # Inputs
+        response += f"📥 **Inputs ({len(dom.get('inputs', []))}):**\n"
+        for i, inp in enumerate(dom.get('inputs', []), 1):
+            response += f"{i}. type={inp.get('type')}, placeholder={inp.get('placeholder')}, css={inp.get('cssSelector')}, visible={inp.get('visible')}\n"
         
-        await update.message.reply_text(response)
+        if len(response) > 4000:
+            filename = f"debug_{int(time.time())}.txt"
+            file_path = os.path.join(LOGS_DIR, filename)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(response)
+            with open(file_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=filename,
+                    caption="📄 Полный DOM"
+                )
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        else:
+            await update.message.reply_text(response)
             
     except Exception as e:
         log(f"❌ Ошибка debug_dom: {e}")
