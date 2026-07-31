@@ -1,4 +1,4 @@
-# bot.py - упрощенная версия без создания нового чата
+# bot.py - с правильной реализацией клика через CDP
 import os
 import json
 import asyncio
@@ -44,15 +44,11 @@ except ImportError:
 # ============================================================
 
 ELEMENTS = {
-    # Поле ввода текста
     'textarea': {
         'coords': [328, 167, 245, 56],
-        'selector': '.message-input-textarea'
     },
-    # Кнопка отправки (появляется после ввода текста)
     'send_button': {
         'coords': [720, 179, 32, 32],
-        'selector': '.omni-button-content-btn'
     }
 }
 
@@ -126,29 +122,57 @@ class BrowserHarness:
         await asyncio.sleep(timeout)
     
     async def click_at_coords(self, x, y):
-        """Кликнуть по координатам"""
-        js = f"""
-        (function() {{
-            var element = document.elementFromPoint({x}, {y});
-            if (!element) return false;
-            
-            element.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-            element.focus();
-            element.click();
-            
-            var clickEvent = new MouseEvent('click', {{
-                view: window,
-                bubbles: true,
-                cancelable: true,
-                clientX: {x},
-                clientY: {y}
-            }});
-            element.dispatchEvent(clickEvent);
-            
-            return true;
-        }})()
         """
-        return await self.evaluate(js)
+        Правильный клик через CDP с последовательностью:
+        1. mouseMoved - перемещение мыши к элементу (необходимо для React)
+        2. mousePressed - нажатие кнопки
+        3. mouseReleased - отпускание кнопки
+        """
+        logger.info(f"🖱️ Клик по координатам ({x}, {y})")
+        
+        # Шаг 1: Перемещение мыши к элементу
+        # React event delegation требует события mouseMoved [citation:12]
+        move_result = await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y
+        })
+        
+        if "error" in move_result:
+            logger.warning(f"Ошибка mouseMoved: {move_result.get('error')}")
+        
+        await asyncio.sleep(0.05)
+        
+        # Шаг 2: Нажатие кнопки
+        press_result = await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        
+        if "error" in press_result:
+            logger.error(f"Ошибка mousePressed: {press_result.get('error')}")
+            return False
+        
+        await asyncio.sleep(0.05)
+        
+        # Шаг 3: Отпускание кнопки
+        release_result = await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        
+        if "error" in release_result:
+            logger.error(f"Ошибка mouseReleased: {release_result.get('error')}")
+            return False
+        
+        logger.info(f"✅ Клик выполнен успешно")
+        return True
     
     async def set_text_at_coords(self, x, y, text):
         """Установить текст в элемент по координатам"""
@@ -157,15 +181,11 @@ class BrowserHarness:
             var element = document.elementFromPoint({x}, {y});
             if (!element) return false;
             
-            // Кликаем и фокусируемся
             element.focus();
             element.click();
-            
-            // Очищаем и вводим текст
             element.value = '';
             element.value = '{text.replace("'", "\\'")}';
             
-            // Триггерим события
             element.dispatchEvent(new Event('input', {{ bubbles: true }}));
             element.dispatchEvent(new Event('change', {{ bubbles: true }}));
             element.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
@@ -241,9 +261,8 @@ class BrowserHarness:
         return await self.evaluate(js)
     
     async def ask_qwen(self, question):
-        """Простой запрос к Qwen: клик по полю → ввод текста → отправка"""
+        """Запрос к Qwen"""
         try:
-            # Переход на сайт
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
@@ -266,7 +285,7 @@ class BrowserHarness:
             
             await self.wait_for_load(1)
             
-            # ШАГ 3: Ждем появления кнопки отправки
+            # ШАГ 3: Ожидание появления кнопки отправки
             send_btn_visible = await self.wait_for_send_button(timeout=10)
             
             if send_btn_visible:
@@ -276,7 +295,7 @@ class BrowserHarness:
                 logger.info(f"📌 Клик по кнопке отправки ({sx}, {sy})...")
                 await self.click_at_coords(sx, sy)
             else:
-                # ШАГ 4b: Если кнопка не появилась - Enter
+                # ШАГ 4b: Enter если кнопка не появилась
                 logger.info("⏳ Кнопка не появилась, пробую Enter...")
                 enter_js = """
                 (function() {
@@ -321,23 +340,17 @@ browser = BrowserHarness(CDP_URL)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"🤖 **Qwen Bot**\n\n"
+        f"🤖 Qwen Bot\n\n"
         f"Просто отправьте сообщение!\n"
-        f"Бот:\n"
-        f"1️⃣ Кликнет по полю ввода\n"
-        f"2️⃣ Введет текст\n"
-        f"3️⃣ Нажмет отправку\n"
-        f"4️⃣ Вернет ответ\n\n"
-        f"📌 /debug — состояние",
-        parse_mode='Markdown'
+        f"Бот использует правильную последовательность CDP:\n"
+        f"mouseMoved → mousePressed → mouseReleased\n\n"
+        f"📌 /debug — состояние"
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отладка без Markdown спецсимволов"""
     try:
         title = await browser.evaluate("document.title")
         
-        # Проверяем элементы
         status = {}
         for name, element in ELEMENTS.items():
             coords = element['coords']
@@ -348,7 +361,6 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response = await browser.get_last_response()
         
-        # Отправляем без Markdown чтобы избежать ошибок
         msg = f"🔍 Отладка\n\n"
         msg += f"Заголовок: {title}\n\n"
         msg += "Элементы:\n"
@@ -379,21 +391,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Нет ответа")
             return
         
-        # Обрезаем длинный ответ
         if len(response) > 4000:
             response = response[:4000] + "..."
         
-        # Отправляем без Markdown чтобы избежать ошибок
-        await status_msg.edit_text(
-            f"💬 Qwen:\n\n{response}"
-        )
+        await status_msg.edit_text(f"💬 Qwen:\n\n{response}")
         
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# ЗАПУСК
-# ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -403,9 +407,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Qwen Bot запущен!")
-    logger.info(f"📡 CDP: {CDP_URL}")
-    logger.info(f"🍪 Куки: {len(COOKIES)} шт.")
-    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
