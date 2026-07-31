@@ -1,4 +1,4 @@
-# bot.py - с пошаговой верификацией
+# bot.py - ФИНАЛЬНАЯ ВЕРСИЯ С ТОЧНЫМ СЕЛЕКТОРОМ
 import os
 import json
 import asyncio
@@ -40,11 +40,17 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# СЕЛЕКТОРЫ
+# ТОЧНЫЕ СЕЛЕКТОРЫ ИЗ СКРИНШОТОВ
 # ============================================================
 
+# Поле ввода
 TEXTAREA_SELECTOR = "div.message-input-wrapper > div.message-input-container:nth-of-type(2) > div > div.message-input-container-area > textarea.message-input-textarea"
+
+# Кнопка отправки
 SEND_BUTTON_SELECTOR = ".message-input-right-button-send"
+
+# ОТВЕТ QWEN - ТОЧНЫЙ СЕЛЕКТОР!
+RESPONSE_SELECTOR = "div.custom-qwen-markdown > div.md-text-select > div.md-text-select__content > div.qwen-markdown.qwen-markdown-loose > div.qwen-markdown-paragraph"
 
 # ============================================================
 # BROWSER HARNESS
@@ -139,95 +145,131 @@ class BrowserHarness:
         })
         return True
     
-    async def verify_text_set(self, selector, expected_text):
-        """Проверить, установился ли текст"""
+    async def click_element(self, selector):
+        """Найти и кликнуть по элементу"""
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return {{found: false, error: 'Элемент не найден'}};
+            if (el.offsetParent === null) return {{found: false, hidden: true}};
+            if (el.disabled) return {{found: true, disabled: true}};
+            var rect = el.getBoundingClientRect();
+            return {{
+                found: true,
+                x: Math.round(rect.left + rect.width / 2),
+                y: Math.round(rect.top + rect.height / 2)
+            }};
+        }})()
+        """
+        result = await self.evaluate(js)
+        
+        if result and result.get('found') and not result.get('disabled'):
+            x, y = result['x'], result['y']
+            return await self.click_at_coords(x, y)
+        
+        return False
+    
+    async def set_text(self, selector, text):
+        """Установить текст в поле"""
         js = f"""
         (function() {{
             var el = document.querySelector('{selector}');
             if (!el) return {{success: false, error: 'Элемент не найден'}};
-            return {{
-                success: true,
-                value: el.value,
-                matches: el.value === '{expected_text.replace("'", "\\'")}'
-            }};
+            
+            el.focus();
+            el.click();
+            el.value = '';
+            el.value = '{text.replace("'", "\\'")}';
+            
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+            
+            return {{success: true, value: el.value}};
         }})()
         """
         return await self.evaluate(js)
     
-    async def verify_send_button_clicked(self):
-        """Проверить, нажалась ли кнопка отправки (поле очистилось)"""
+    async def get_text_value(self, selector):
+        """Получить значение текстового поля"""
         js = f"""
         (function() {{
-            var el = document.querySelector('{TEXTAREA_SELECTOR}');
-            if (!el) return {{success: false, error: 'Поле не найдено'}};
-            // Если поле пустое - значит сообщение отправилось
-            return {{
-                success: true,
-                is_empty: el.value === '' || el.value === null,
-                value: el.value
-            }};
+            var el = document.querySelector('{selector}');
+            return el ? el.value : null;
         }})()
         """
         return await self.evaluate(js)
     
+    async def verify_text_set(self, selector, expected_text):
+        """Проверить, установился ли текст"""
+        actual = await self.get_text_value(selector)
+        return {
+            'success': True,
+            'value': actual,
+            'matches': actual == expected_text
+        }
+    
+    async def verify_send(self):
+        """Проверить, отправилось ли сообщение (поле пустое)"""
+        value = await self.get_text_value(TEXTAREA_SELECTOR)
+        return {
+            'success': True,
+            'is_empty': value == '' or value is None,
+            'value': value
+        }
+    
     async def get_qwen_response(self):
-        """Получить ответ"""
-        js = """
-        (function() {
-            var selectors = [
-                '.qwen-markdown-text',
-                '.message-content',
-                '#chat-message-container',
-                '[class*="message"]'
-            ];
+        """Получить ответ Qwen по точному селектору"""
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{RESPONSE_SELECTOR}');
+            if (!el) return null;
             
-            var allTexts = [];
-            for (var s of selectors) {
-                var els = document.querySelectorAll(s);
-                for (var i = 0; i < els.length; i++) {
-                    var text = (els[i].textContent || '').trim();
-                    if (text && text.length > 10) {
-                        allTexts.push(text);
-                    }
-                }
-            }
+            var text = (el.textContent || '').trim();
+            if (!text || text.length < 3) return null;
             
-            // Фильтруем системные
+            // Проверяем что это не системное сообщение
             var systemPatterns = [
                 'AutoChoose', 'Get Started', 'Please enter',
                 'Что бы вы хотели', 'Log in', 'Sign up',
                 'Скачать приложение', 'Войти', 'Завершено размышление',
                 'Thinking completed', 'Выберите', 'Ваш выбор',
-                'Используя Qwen Studio', 'Пользовательские условия',
-                'Политика конфиденциальности', 'Сообщить'
+                'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
+                'Проекты', 'Все чаты', 'Используя Qwen Studio',
+                'Пользовательские условия', 'Политика конфиденциальности'
             ];
             
-            var filtered = [];
-            for (var i = 0; i < allTexts.length; i++) {
-                var text = allTexts[i];
-                var isSystem = false;
-                for (var p of systemPatterns) {
-                    if (text.includes(p)) {
-                        isSystem = true;
-                        break;
-                    }
-                }
-                if (!isSystem) {
-                    filtered.push(text);
-                }
-            }
+            for (var p of systemPatterns) {{
+                if (text.includes(p)) {{
+                    return null;
+                }}
+            }}
             
-            if (filtered.length > 0) {
-                filtered.sort(function(a, b) { return b.length - a.length; });
-                return filtered[0];
-            }
-            return null;
-        })()
+            return text;
+        }})()
         """
         return await self.evaluate(js)
     
+    async def send_enter(self):
+        """Отправить Enter через CDP"""
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        await asyncio.sleep(0.05)
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        return True
+    
     async def ask_qwen(self, question):
-        """Запрос к Qwen с пошаговой верификацией"""
+        """Запрос к Qwen"""
         self.step_log = []
         
         try:
@@ -247,102 +289,40 @@ class BrowserHarness:
             # ШАГ 2: Ввод текста
             logger.info(f"📌 ШАГ 2: Ввод текста: {question[:30]}...")
             
-            # Клик по полю
-            js_click = f"""
-            (function() {{
-                var el = document.querySelector('{TEXTAREA_SELECTOR}');
-                if (!el) return false;
-                el.focus();
-                el.click();
-                return true;
-            }})()
-            """
-            await self.evaluate(js_click)
-            await self.wait_for_load(0.3)
-            
-            # Установка текста
-            js = f"""
-            (function() {{
-                var el = document.querySelector('{TEXTAREA_SELECTOR}');
-                if (!el) return {{success: false, error: 'Элемент не найден'}};
-                el.value = '{question.replace("'", "\\'")}';
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-                return {{success: true, value: el.value}};
-            }})()
-            """
-            result = await self.evaluate(js)
+            result = await self.set_text(TEXTAREA_SELECTOR, question)
             logger.info(f"📝 Результат ввода: {result}")
             
             if not result or not result.get('success'):
                 return None, "Не удалось ввести текст", self.step_log
             
-            # ВЕРИФИКАЦИЯ: проверяем что текст установился
+            # Проверяем что текст установился
             verify = await self.verify_text_set(TEXTAREA_SELECTOR, question)
-            logger.info(f"🔍 Верификация ввода: {verify}")
-            
-            if not verify.get('success'):
-                return None, "Ошибка проверки ввода", self.step_log
             
             if not verify.get('matches'):
-                self.step_log.append(f"❌ ШАГ 2: Текст не установился! Ожидалось: '{question}', Получено: '{verify.get('value')}'")
-                return None, f"Текст не установился. Ожидалось: '{question}', Получено: '{verify.get('value')}'", self.step_log
+                self.step_log.append(f"❌ ШАГ 2: Текст не установился. Ожидалось: '{question}', Получено: '{verify.get('value')}'")
+                return None, f"Текст не установился", self.step_log
             
             self.step_log.append(f"✅ ШАГ 2: Текст установлен: '{verify.get('value')}'")
             await self.wait_for_load(0.5)
             
-            # ШАГ 3: Нажатие кнопки отправки
-            logger.info("📌 ШАГ 3: Нажатие кнопки отправки...")
+            # ШАГ 3: Отправка
+            logger.info("📌 ШАГ 3: Отправка...")
             
-            # Находим кнопку
-            js_btn = f"""
-            (function() {{
-                var el = document.querySelector('{SEND_BUTTON_SELECTOR}');
-                if (!el) return {{found: false}};
-                if (el.offsetParent === null) return {{found: false, hidden: true}};
-                if (el.disabled) return {{found: true, disabled: true}};
-                var rect = el.getBoundingClientRect();
-                return {{
-                    found: true,
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height / 2),
-                    visible: true
-                }};
-            }})()
-            """
-            btn_info = await self.evaluate(js_btn)
-            logger.info(f"🔘 Информация о кнопке: {btn_info}")
+            # Пробуем нажать кнопку
+            clicked = await self.click_element(SEND_BUTTON_SELECTOR)
             
-            if not btn_info or not btn_info.get('found'):
-                self.step_log.append("❌ ШАГ 3: Кнопка отправки не найдена")
-                return None, "Кнопка отправки не найдена", self.step_log
+            if not clicked:
+                logger.info("⌨️ Кнопка не нажалась, пробую Enter...")
+                await self.send_enter()
             
-            if btn_info.get('hidden'):
-                self.step_log.append("❌ ШАГ 3: Кнопка отправки скрыта")
-                return None, "Кнопка отправки скрыта (возможно, нет текста)", self.step_log
-            
-            if btn_info.get('disabled'):
-                self.step_log.append("❌ ШАГ 3: Кнопка отправки отключена")
-                return None, "Кнопка отправки отключена", self.step_log
-            
-            # Клик по кнопке
-            x, y = btn_info['x'], btn_info['y']
-            await self.click_at_coords(x, y)
             await self.wait_for_load(1)
             
-            # ВЕРИФИКАЦИЯ: проверяем что сообщение отправилось (поле очистилось)
-            verify_send = await self.verify_send_button_clicked()
-            logger.info(f"🔍 Верификация отправки: {verify_send}")
-            
-            if not verify_send.get('success'):
-                self.step_log.append("❌ ШАГ 3: Ошибка проверки отправки")
-                return None, "Ошибка проверки отправки", self.step_log
+            # Проверяем что сообщение отправилось (поле очистилось)
+            verify_send = await self.verify_send()
             
             if not verify_send.get('is_empty'):
-                self.step_log.append(f"❌ ШАГ 3: Сообщение не отправилось! Поле не очистилось: '{verify_send.get('value')}'")
-                return None, f"Сообщение не отправилось! Поле не очистилось: '{verify_send.get('value')}'", self.step_log
+                self.step_log.append(f"❌ ШАГ 3: Сообщение не отправилось! Поле: '{verify_send.get('value')}'")
+                return None, f"Сообщение не отправилось", self.step_log
             
             self.step_log.append("✅ ШАГ 3: Сообщение отправлено (поле очистилось)")
             
@@ -351,19 +331,16 @@ class BrowserHarness:
             self.step_log.append("⏳ ШАГ 4: Ожидание ответа...")
             
             max_attempts = 60
-            old_response = None
             
             for attempt in range(max_attempts):
                 await asyncio.sleep(1)
                 
                 response = await self.get_qwen_response()
                 
-                if response and response != old_response and len(response) > 15:
+                if response and len(response) > 5:
                     logger.info(f"✅ Получен ответ: {response[:50]}...")
                     self.step_log.append(f"✅ ШАГ 4: Ответ получен ({len(response)} символов)")
                     return response, None, self.step_log
-                
-                old_response = response
                 
                 if attempt % 10 == 0:
                     logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
@@ -389,12 +366,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 **Qwen Bot**\n\n"
         f"{cookies_status}\n\n"
         f"📌 /debug — состояние\n"
-        f"📌 /steps — показать последние шаги",
+        f"📌 /steps — показать шаги",
         parse_mode='Markdown'
     )
 
 async def steps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать последние шаги выполнения"""
     if not browser.step_log:
         await update.message.reply_text("Нет сохраненных шагов")
         return
@@ -409,13 +385,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         
-        textarea_value = await browser.evaluate(f"""
-        (function() {{
-            var el = document.querySelector('{TEXTAREA_SELECTOR}');
-            return el ? el.value : null;
-        }})()
-        """)
-        
+        textarea_value = await browser.get_text_value(TEXTAREA_SELECTOR)
         response = await browser.get_qwen_response()
         
         msg = f"🔍 **Отладка**\n\n"
@@ -438,8 +408,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response, error, steps = await browser.ask_qwen(question)
         
         if error:
-            # Показываем шаги при ошибке
-            steps_msg = "\n\n".join(steps[-5:]) if steps else ""
+            steps_msg = "\n".join(steps[-5:]) if steps else ""
             await status_msg.edit_text(f"❌ {error}\n\n{steps_msg}")
             return
         
