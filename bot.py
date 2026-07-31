@@ -1,10 +1,11 @@
-# bot.py - исправленная фильтрация ответов
+# bot.py - финальная простая версия
 import os
 import json
 import asyncio
 import logging
 import httpx
 import warnings
+import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -125,7 +126,6 @@ class BrowserHarness:
     
     async def click_at_coords(self, x, y):
         """Клик через CDP"""
-        # mouseMoved
         await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mouseMoved",
             "x": x,
@@ -133,7 +133,6 @@ class BrowserHarness:
         })
         await asyncio.sleep(0.05)
         
-        # mousePressed
         await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mousePressed",
             "x": x,
@@ -143,7 +142,6 @@ class BrowserHarness:
         })
         await asyncio.sleep(0.05)
         
-        # mouseReleased
         await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mouseReleased",
             "x": x,
@@ -196,74 +194,100 @@ class BrowserHarness:
         """
         return await self.evaluate(js)
     
-    async def get_last_response(self):
-        """Получить последний ответ с фильтрацией системных сообщений"""
+    async def get_qwen_response(self):
+        """
+        Получить ответ Qwen со страницы.
+        Ищем последнее сообщение после "Завершено размышление"
+        """
         js = """
         (function() {
-            // Ищем все сообщения на странице
+            // Ищем все блоки с сообщениями
             var selectors = [
                 '.message-content',
                 '.chat-message',
-                '[class*="message"]:not(:empty)'
+                '[class*="message"]'
             ];
             
-            var allMessages = [];
-            var systemPatterns = [
-                'AutoChoose',
-                'Get Started',
-                'style to create',
-                'Please enter a prompt',
-                'Что бы вы хотели изучить',
-                'Thinking completed',  // <- Добавили!
-                'Skip',               // <- Добавили!
-                'Thinking',
-                'completed'
-            ];
-            
+            var allTexts = [];
             for (var s of selectors) {
                 var els = document.querySelectorAll(s);
                 for (var i = 0; i < els.length; i++) {
                     var text = (els[i].textContent || '').trim();
-                    
-                    // Пропускаем пустые
-                    if (!text || text.length < 5) continue;
-                    
-                    // Пропускаем системные сообщения
-                    var isSystem = false;
-                    for (var p of systemPatterns) {
-                        if (text.includes(p)) {
-                            isSystem = true;
-                            break;
-                        }
+                    if (text && text.length > 2) {
+                        allTexts.push(text);
                     }
-                    if (isSystem) continue;
-                    
-                    // Сохраняем валидные сообщения
-                    allMessages.push({
-                        text: text,
-                        length: text.length,
-                        time: Date.now()
-                    });
                 }
             }
             
-            if (allMessages.length > 0) {
-                // Сортируем по времени (последние сверху)
-                allMessages.sort(function(a, b) { 
-                    return b.time - a.time; 
-                });
-                
-                // Возвращаем самое длинное сообщение (скорее всего ответ)
-                // или последнее по времени
-                var best = allMessages[0];
-                for (var i = 0; i < allMessages.length; i++) {
-                    if (allMessages[i].length > best.length) {
-                        best = allMessages[i];
+            // Если ничего не нашли, берем текст body
+            if (allTexts.length === 0) {
+                var bodyText = document.body.textContent || '';
+                var lines = bodyText.split('\\n');
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (line && line.length > 5) {
+                        allTexts.push(line);
                     }
                 }
-                return best.text;
             }
-            return null;
+            
+            // Фильтруем системные сообщения
+            var systemPatterns = [
+                'AutoChoose', 'Get Started', 'style to create',
+                'Please enter a prompt', 'Что бы вы хотели изучить',
+                'Log in', 'Sign up', 'Qwen3.7-Plus', 'Новый чат',
+                'Сообщество', 'Coder', 'Проекты', 'Все чаты'
+            ];
+            
+            var filtered = [];
+            for (var i = 0; i < allTexts.length; i++) {
+                var text = allTexts[i];
+                var isSystem = false;
+                for (var p of systemPatterns) {
+                    if (text.includes(p)) {
+                        isSystem = true;
+                        break;
+                    }
+                }
+                if (!isSystem) {
+                    filtered.push(text);
+                }
+            }
+            
+            // Ищем ответ - обычно после "Завершено размышление" или самое длинное
+            var response = null;
+            var maxLen = 0;
+            
+            for (var i = 0; i < filtered.length; i++) {
+                var text = filtered[i];
+                
+                // Если есть "Завершено размышление" - берем следующий блок
+                if (text.includes('Завершено размышление') && i + 1 < filtered.length) {
+                    var nextText = filtered[i + 1];
+                    if (nextText.length > 10) {
+                        response = nextText;
+                        break;
+                    }
+                }
+                
+                // Или выбираем самый длинный текст
+                if (text.length > maxLen && text.length > 20) {
+                    maxLen = text.length;
+                    response = text;
+                }
+            }
+            
+            // Если нашли ответ, но он начинается с "Привет" и короткий - ищем дальше
+            if (response && response.length < 30 && response.includes('Привет')) {
+                for (var i = 0; i < filtered.length; i++) {
+                    if (filtered[i].length > 30 && !filtered[i].includes('Завершено')) {
+                        response = filtered[i];
+                        break;
+                    }
+                }
+            }
+            
+            return response;
         })()
         """
         return await self.evaluate(js)
@@ -285,7 +309,7 @@ class BrowserHarness:
             await self.wait_for_load(0.5)
             
             # ШАГ 2: Ввод текста
-            logger.info(f"📌 Ввод текста...")
+            logger.info(f"📌 Ввод текста: {question[:30]}...")
             text_set = await self.set_text_at_coords(tx, ty, question)
             
             if not text_set:
@@ -303,7 +327,7 @@ class BrowserHarness:
                 logger.info(f"📌 Клик по кнопке отправки...")
                 await self.click_at_coords(sx, sy)
             else:
-                # ШАГ 4b: Enter если кнопка не появилась
+                # ШАГ 4b: Enter
                 logger.info("⏳ Кнопка не появилась, пробую Enter...")
                 enter_js = """
                 (function() {
@@ -321,26 +345,20 @@ class BrowserHarness:
             # ШАГ 5: Ожидание ответа
             logger.info("⏳ Ожидание ответа...")
             max_attempts = 120
-            last_response = None
             
             for attempt in range(max_attempts):
                 await asyncio.sleep(1)
                 
-                response = await self.get_last_response()
+                response = await self.get_qwen_response()
                 
                 if response:
-                    # Проверяем что это не системное сообщение
+                    # Проверяем что это реальный ответ
                     if len(response) > 10 and not response.startswith('Привет'):
                         logger.info(f"✅ Получен ответ: {response[:50]}...")
                         return response, None
-                    last_response = response
                 
                 if attempt % 10 == 0:
                     logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
-            
-            # Если нашли что-то, но не уверены
-            if last_response and len(last_response) > 10:
-                return last_response, None
             
             return None, "Таймаут ожидания ответа"
                 
@@ -358,7 +376,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
         f"Просто отправьте сообщение!\n"
-        f"Бот фильтрует системные сообщения.\n\n"
+        f"Бот ищет ответ после 'Завершено размышление'.\n\n"
         f"📌 /debug — состояние"
     )
 
@@ -373,7 +391,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             exists = await browser.evaluate(js)
             status[name] = exists
         
-        response = await browser.get_last_response()
+        response = await browser.get_qwen_response()
         
         msg = f"🔍 Отладка\n\n"
         msg += f"Заголовок: {title}\n\n"
@@ -382,7 +400,9 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"  {name}: {'есть' if exists else 'нет'}\n"
         
         if response:
-            msg += f"\n📝 Ответ: {response[:200]}..."
+            msg += f"\n📝 Ответ Qwen:\n{response[:200]}..."
+        else:
+            msg += "\n📝 Ответ не найден"
         
         await update.message.reply_text(msg)
         
