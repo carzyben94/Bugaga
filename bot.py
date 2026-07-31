@@ -1,4 +1,4 @@
-# bot.py - ФИНАЛЬНАЯ ВЕРСИЯ с точными координатами
+# bot.py - с правильным поиском кнопки отправки
 import os
 import json
 import asyncio
@@ -40,12 +40,10 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# ТОЧНЫЕ КООРДИНАТЫ ИЗ СКРИНШОТОВ
+# КООРДИНАТЫ
 # ============================================================
 
-# Поле ввода (из JSON)
 TEXTAREA_COORDS = [328, 167, 245, 56]
-# Кнопка отправки (из скриншота 175606.jpg)
 SEND_BUTTON_COORDS = [352, 286, 35, 30]
 
 def get_center_coords(coords):
@@ -146,35 +144,87 @@ class BrowserHarness:
         })
         return True
     
-    async def wait_for_send_button(self, timeout=15):
-        """Ожидать появления кнопки отправки"""
-        logger.info("⏳ Ожидаю появления кнопки отправки...")
-        sx, sy = get_center_coords(SEND_BUTTON_COORDS)
+    async def click_send_button(self):
+        """Найти и нажать кнопку отправки"""
+        logger.info("🔍 Ищу кнопку отправки...")
         
-        for attempt in range(timeout):
-            js = f"""
-            (function() {{
-                var el = document.elementFromPoint({sx}, {sy});
-                if (!el) return false;
-                if (el.offsetParent === null) return false;
-                if (el.disabled) return false;
-                // Проверяем что это кнопка отправки
-                var parent = el.closest('.message-input-right-button-send');
-                if (parent) return true;
-                // Или проверяем по классу
-                if (el.className && el.className.includes('send')) return true;
-                return false;
-            }})()
-            """
-            exists = await self.evaluate(js)
-            if exists:
-                logger.info(f"✅ Кнопка появилась через {attempt + 1}с")
-                return True
+        # Пробуем найти через селектор
+        js = """
+        (function() {
+            // Ищем кнопку отправки
+            var selectors = [
+                '.message-input-right-button-send',
+                '.message-input-right-button-send button',
+                '.message-input-right-button-send [role="button"]',
+                'button.send-button',
+                '.chat-prompt-send-button'
+            ];
             
-            await asyncio.sleep(1)
+            for (var s of selectors) {
+                var el = document.querySelector(s);
+                if (el && el.offsetParent !== null && !el.disabled) {
+                    var rect = el.getBoundingClientRect();
+                    return {
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2),
+                        found: true
+                    };
+                }
+            }
+            
+            // Если не нашли, ищем по всем кнопкам
+            var allBtns = document.querySelectorAll('button, [role="button"]');
+            for (var i = 0; i < allBtns.length; i++) {
+                var el = allBtns[i];
+                if (el.offsetParent === null || el.disabled) continue;
+                
+                var text = (el.textContent || '').trim();
+                var aria = el.getAttribute('aria-label') || '';
+                var cls = el.className || '';
+                
+                // Ищем кнопку с иконкой или в блоке отправки
+                if (cls.includes('send') || 
+                    cls.includes('Send') ||
+                    text.includes('Отправить') ||
+                    aria.includes('send') ||
+                    el.closest('.message-input-right-button-send')) {
+                    var rect = el.getBoundingClientRect();
+                    return {
+                        x: Math.round(rect.left + rect.width / 2),
+                        y: Math.round(rect.top + rect.height / 2),
+                        found: true
+                    };
+                }
+            }
+            
+            return {found: false};
+        })()
+        """
         
-        logger.warning("⏰ Кнопка не появилась за %s секунд", timeout)
-        return False
+        result = await self.evaluate(js)
+        logger.info(f"🔍 Результат поиска: {result}")
+        
+        if result and result.get('found'):
+            x, y = result['x'], result['y']
+            logger.info(f"🖱️ Клик по кнопке ({x}, {y})")
+            return await self.click_at_coords(x, y)
+        
+        # Если не нашли, пробуем Enter
+        logger.info("⌨️ Кнопка не найдена, пробую Enter...")
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        await asyncio.sleep(0.05)
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        return True
     
     async def ask_qwen(self, question):
         """Запрос к Qwen"""
@@ -209,11 +259,9 @@ class BrowserHarness:
             logger.info(f"📌 Ввод текста: {question[:30]}...")
             tx, ty = get_center_coords(TEXTAREA_COORDS)
             
-            # Клик по полю
             await self.click_at_coords(tx, ty)
             await self.wait_for_load(0.3)
             
-            # Ввод текста
             js = f"""
             (function() {{
                 var el = document.elementFromPoint({tx}, {ty});
@@ -241,31 +289,11 @@ class BrowserHarness:
             if not result or not result.get('success'):
                 return None, "Не удалось ввести текст"
             
-            # Ждем появления кнопки отправки
-            send_btn_visible = await self.wait_for_send_button(timeout=15)
+            await self.wait_for_load(1)
             
-            if send_btn_visible:
-                logger.info("📤 Нажимаю кнопку отправки...")
-                sx, sy = get_center_coords(SEND_BUTTON_COORDS)
-                await self.click_at_coords(sx, sy)
-                # Дополнительный клик для надежности
-                await self.wait_for_load(0.3)
-                await self.click_at_coords(sx, sy)
-            else:
-                logger.info("⌨️ Кнопка не появилась, пробую Enter...")
-                await self._send_cdp("Input.dispatchKeyEvent", {
-                    "type": "keyDown",
-                    "key": "Enter",
-                    "code": "Enter",
-                    "windowsVirtualKeyCode": 13,
-                })
-                await asyncio.sleep(0.05)
-                await self._send_cdp("Input.dispatchKeyEvent", {
-                    "type": "keyUp",
-                    "key": "Enter",
-                    "code": "Enter",
-                    "windowsVirtualKeyCode": 13,
-                })
+            # Нажимаем кнопку отправки
+            logger.info("📤 Нажимаю кнопку отправки...")
+            await self.click_send_button()
             
             await self.wait_for_load(2)
             
@@ -324,8 +352,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"🤖 **Qwen Bot**\n\n"
-        f"{cookies_status}\n"
-        f"📍 Кнопка отправки: {SEND_BUTTON_COORDS}\n\n"
+        f"{cookies_status}\n\n"
         f"📌 /debug — состояние",
         parse_mode='Markdown'
     )
@@ -334,7 +361,6 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         
-        # Проверяем поле ввода
         textarea_value = await browser.evaluate("""
         (function() {
             var el = document.querySelector('.message-input-textarea, textarea');
@@ -342,19 +368,17 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })()
         """)
         
-        # Проверяем кнопку отправки
-        sx, sy = get_center_coords(SEND_BUTTON_COORDS)
-        send_btn = await browser.evaluate(f"""
-        (function() {{
-            var el = document.elementFromPoint({sx}, {sy});
+        # Проверяем кнопку отправки через селектор
+        send_btn = await browser.evaluate("""
+        (function() {
+            var el = document.querySelector('.message-input-right-button-send');
             if (!el) return null;
-            return {{
+            return {
                 visible: el.offsetParent !== null,
                 disabled: el.disabled || false,
-                tag: el.tagName,
                 class: el.className || ''
-            }};
-        }})()
+            };
+        })()
         """)
         
         messages = await browser.evaluate("""
@@ -374,9 +398,12 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"🔍 **Отладка**\n\n"
         msg += f"Заголовок: {title}\n"
         msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
-        msg += f"🔘 Кнопка отправки: {'✅ видна' if send_btn and send_btn.get('visible') else '❌ не видна'}\n"
+        msg += f"🔘 Кнопка .message-input-right-button-send: "
         if send_btn:
+            msg += f"{'✅ видна' if send_btn.get('visible') else '❌ не видна'}\n"
             msg += f"   класс: {send_btn.get('class', '')}\n"
+        else:
+            msg += "❌ не найдена\n"
         msg += f"💬 Сообщений: {len(messages)}\n"
         msg += f"🍪 Кук: {len(COOKIES)}\n\n"
         
@@ -422,7 +449,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Qwen Bot запущен!")
-    logger.info(f"📍 Кнопка отправки: {SEND_BUTTON_COORDS}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
