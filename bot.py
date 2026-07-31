@@ -1,4 +1,4 @@
-# bot.py - с верификацией отправки
+# bot.py - с детальной диагностикой
 import os
 import json
 import asyncio
@@ -21,7 +21,7 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -66,7 +66,7 @@ class BrowserHarness:
     def __init__(self, cdp_url="http://localhost:9222"):
         self.cdp_url = cdp_url
         self.ws_url = None
-        self.last_sent_message = None  # Для отслеживания
+        self.debug_info = {}
     
     def _get_ws_url(self):
         try:
@@ -113,247 +113,171 @@ class BrowserHarness:
         result = await self._send_cdp("Page.navigate", {"url": url})
         return result.get("result", {})
     
-    async def evaluate(self, expression):
+    async def evaluate(self, expression, log_result=False):
         result = await self._send_cdp("Runtime.evaluate", {
             "expression": expression,
             "returnByValue": True
         })
-        return result.get("result", {}).get("result", {}).get("value")
+        value = result.get("result", {}).get("result", {}).get("value")
+        if log_result:
+            logger.debug(f"JS result: {str(value)[:100]}...")
+        return value
     
-    async def wait_for_load(self, timeout=5):
+    async def wait_for_load(self, timeout=3):
         logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
     
     async def click_at_coords(self, x, y):
         """Клик через CDP"""
-        await self._send_cdp("Input.dispatchMouseEvent", {
+        logger.info(f"🖱️ Клик по ({x}, {y})")
+        
+        # 1. mouseMoved
+        result = await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mouseMoved",
             "x": x,
             "y": y
         })
+        logger.debug(f"mouseMoved: {result}")
         await asyncio.sleep(0.05)
         
-        await self._send_cdp("Input.dispatchMouseEvent", {
+        # 2. mousePressed
+        result = await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mousePressed",
             "x": x,
             "y": y,
             "button": "left",
             "clickCount": 1
         })
+        logger.debug(f"mousePressed: {result}")
         await asyncio.sleep(0.05)
         
-        await self._send_cdp("Input.dispatchMouseEvent", {
+        # 3. mouseReleased
+        result = await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mouseReleased",
             "x": x,
             "y": y,
             "button": "left",
             "clickCount": 1
         })
+        logger.debug(f"mouseReleased: {result}")
+        
         return True
     
-    async def set_text_at_coords(self, x, y, text):
-        """Установить текст"""
+    async def get_element_at_coords(self, x, y):
+        """Получить информацию об элементе по координатам"""
         js = f"""
         (function() {{
-            var element = document.elementFromPoint({x}, {y});
-            if (!element) return false;
-            
-            element.focus();
-            element.click();
-            element.value = '';
-            element.value = '{text.replace("'", "\\'")}';
-            
-            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            element.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-            element.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-            
-            return true;
+            var el = document.elementFromPoint({x}, {y});
+            if (!el) return null;
+            return {{
+                tag: el.tagName,
+                id: el.id,
+                class: el.className,
+                text: (el.textContent || '').trim().slice(0, 50),
+                value: el.value || '',
+                placeholder: el.placeholder || '',
+                disabled: el.disabled || false,
+                visible: el.offsetParent !== null
+            }};
         }})()
         """
         return await self.evaluate(js)
     
-    async def wait_for_send_button(self, timeout=10):
-        """Ожидать появления кнопки отправки"""
-        coords = ELEMENTS['send_button']['coords']
-        x, y = get_center_coords(coords)
+    async def diagnose_page(self, question):
+        """Диагностика страницы перед отправкой"""
+        logger.info("🔍 ДИАГНОСТИКА СТРАНИЦЫ")
         
+        # 1. Проверяем поле ввода
+        ta_coords = ELEMENTS['textarea']['coords']
+        tx, ty = get_center_coords(ta_coords)
+        ta_info = await self.get_element_at_coords(tx, ty)
+        logger.info(f"📝 Поле ввода: {ta_info}")
+        
+        # 2. Пробуем установить текст
         js = f"""
         (function() {{
-            var start = Date.now();
-            while (Date.now() - start < {timeout * 1000}) {{
-                var element = document.elementFromPoint({x}, {y});
-                if (element && element.offsetParent !== null) {{
-                    return true;
-                }}
-                var end = Date.now() + 500;
-                while (Date.now() < end) {{}}
-            }}
-            return false;
+            var el = document.elementFromPoint({tx}, {ty});
+            if (!el) return {{error: 'no element'}};
+            
+            el.focus();
+            el.click();
+            el.value = '{question.replace("'", "\\'")}';
+            
+            // Проверяем что установилось
+            return {{
+                value: el.value,
+                tag: el.tagName,
+                id: el.id,
+                class: el.className
+            }};
         }})()
         """
-        return await self.evaluate(js)
-    
-    async def get_messages_on_page(self):
-        """Получить все сообщения на странице"""
-        js = """
-        (function() {
-            var selectors = [
-                '.message-content',
-                '.chat-message',
-                '[class*="message"]'
-            ];
-            
-            var messages = [];
-            for (var s of selectors) {
-                var els = document.querySelectorAll(s);
-                for (var i = 0; i < els.length; i++) {
-                    var text = (els[i].textContent || '').trim();
-                    if (text && text.length > 2) {
-                        messages.push(text);
-                    }
-                }
-            }
-            
-            // Если ничего не нашли, берем текст body и разбиваем
-            if (messages.length === 0) {
-                var bodyText = document.body.textContent || '';
-                var lines = bodyText.split('\\n');
-                for (var i = 0; i < lines.length; i++) {
-                    var line = lines[i].trim();
-                    if (line && line.length > 5) {
-                        messages.push(line);
-                    }
-                }
-            }
-            
-            return messages;
-        })()
-        """
-        return await self.evaluate(js)
-    
-    async def verify_message_sent(self, message_text):
-        """Проверить, отправилось ли сообщение"""
-        messages = await self.get_messages_on_page()
+        result = await self.evaluate(js)
+        logger.info(f"✏️ Установка текста: {result}")
         
-        # Проверяем, есть ли наш текст в сообщениях
-        for msg in messages:
-            if message_text.lower() in msg.lower() and len(msg) > 5:
-                logger.info(f"✅ Сообщение найдено на странице: {msg[:30]}...")
-                return True
+        # 3. Проверяем значение после установки
+        value_check = await self.evaluate(f"""
+        (function() {{
+            var el = document.elementFromPoint({tx}, {ty});
+            return el ? el.value : null;
+        }})()
+        """)
+        logger.info(f"📝 Значение после установки: '{value_check}'")
         
-        logger.warning(f"❌ Сообщение '{message_text[:30]}...' не найдено на странице")
-        return False
-    
-    async def get_qwen_response(self):
-        """Получить ответ Qwen"""
-        js = """
+        # 4. Проверяем кнопку отправки
+        btn_coords = ELEMENTS['send_button']['coords']
+        bx, by = get_center_coords(btn_coords)
+        btn_info = await self.get_element_at_coords(bx, by)
+        logger.info(f"🔘 Кнопка отправки: {btn_info}")
+        
+        # 5. Проверяем есть ли кнопка отправки где-то еще
+        all_buttons = await self.evaluate("""
         (function() {
-            var selectors = [
-                '.message-content',
-                '.chat-message',
-                '[class*="message"]'
-            ];
-            
-            var allTexts = [];
-            for (var s of selectors) {
-                var els = document.querySelectorAll(s);
-                for (var i = 0; i < els.length; i++) {
-                    var text = (els[i].textContent || '').trim();
-                    if (text && text.length > 2) {
-                        allTexts.push(text);
-                    }
+            var btns = [];
+            var els = document.querySelectorAll('button, [role="button"]');
+            for (var i = 0; i < els.length; i++) {
+                var text = (els[i].textContent || '').trim();
+                var aria = els[i].getAttribute('aria-label') || '';
+                if (text || aria) {
+                    btns.push({text: text || aria, tag: els[i].tagName});
                 }
             }
-            
-            if (allTexts.length === 0) {
-                var bodyText = document.body.textContent || '';
-                var lines = bodyText.split('\\n');
-                for (var i = 0; i < lines.length; i++) {
-                    var line = lines[i].trim();
-                    if (line && line.length > 5) {
-                        allTexts.push(line);
-                    }
-                }
-            }
-            
-            // Фильтруем системные сообщения
-            var systemPatterns = [
-                'AutoChoose', 'Get Started', 'style to create',
-                'Please enter a prompt', 'Что бы вы хотели изучить',
-                'Log in', 'Sign up', 'Qwen3.7-Plus', 'Новый чат',
-                'Сообщество', 'Coder', 'Проекты', 'Все чаты',
-                'Завершено размышление', 'Thinking completed'
-            ];
-            
-            var filtered = [];
-            for (var i = 0; i < allTexts.length; i++) {
-                var text = allTexts[i];
-                var isSystem = false;
-                for (var p of systemPatterns) {
-                    if (text.includes(p)) {
-                        isSystem = true;
-                        break;
-                    }
-                }
-                if (!isSystem && text.length > 10) {
-                    filtered.push(text);
-                }
-            }
-            
-            // Берем самое длинное сообщение (это обычно ответ)
-            if (filtered.length > 0) {
-                var response = filtered[0];
-                for (var i = 1; i < filtered.length; i++) {
-                    if (filtered[i].length > response.length) {
-                        response = filtered[i];
-                    }
-                }
-                return response;
-            }
-            
-            return null;
+            return btns;
         })()
-        """
-        return await self.evaluate(js)
+        """)
+        logger.info(f"🔘 Все кнопки: {all_buttons}")
+        
+        return {
+            'textarea': ta_info,
+            'text_set': result,
+            'value_check': value_check,
+            'send_button': btn_info,
+            'all_buttons': all_buttons
+        }
     
     async def ask_qwen(self, question):
-        """Запрос к Qwen с верификацией"""
+        """Запрос к Qwen с полной диагностикой"""
         try:
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
             
-            # Координаты поля ввода
-            textarea_coords = ELEMENTS['textarea']['coords']
-            tx, ty = get_center_coords(textarea_coords)
+            # ДИАГНОСТИКА
+            diag = await self.diagnose_page(question)
             
-            # ШАГ 1: Клик по полю ввода
-            logger.info(f"📌 Клик по полю ввода...")
-            await self.click_at_coords(tx, ty)
-            await self.wait_for_load(0.5)
+            # Проверяем, установился ли текст
+            if diag['value_check'] != question:
+                logger.error(f"❌ Текст не установился! Ожидалось: '{question}', Получено: '{diag['value_check']}'")
+                return None, f"Текст не установился. Ожидалось: '{question}', Получено: '{diag['value_check']}'"
             
-            # ШАГ 2: Ввод текста
-            logger.info(f"📌 Ввод текста: {question[:30]}...")
-            text_set = await self.set_text_at_coords(tx, ty, question)
-            
-            if not text_set:
-                return None, "Не удалось ввести текст"
-            
-            await self.wait_for_load(1)
-            
-            # ШАГ 3: Ожидание появления кнопки отправки
-            send_btn_visible = await self.wait_for_send_button(timeout=10)
-            
-            if send_btn_visible:
-                # ШАГ 4: Клик по кнопке отправки
-                coords = ELEMENTS['send_button']['coords']
-                sx, sy = get_center_coords(coords)
-                logger.info(f"📌 Клик по кнопке отправки...")
-                await self.click_at_coords(sx, sy)
+            # Проверяем кнопку отправки
+            if diag['send_button'] and diag['send_button'].get('visible'):
+                logger.info("✅ Кнопка отправки видна, пробуем нажать...")
+                btn_coords = ELEMENTS['send_button']['coords']
+                bx, by = get_center_coords(btn_coords)
+                await self.click_at_coords(bx, by)
             else:
-                # ШАГ 4b: Enter
-                logger.info("⏳ Кнопка не появилась, пробую Enter...")
+                logger.info("⏳ Кнопка не видна, пробуем Enter...")
                 enter_js = """
                 (function() {
                     var el = document.querySelector('.message-input-textarea, textarea');
@@ -367,50 +291,41 @@ class BrowserHarness:
             
             await self.wait_for_load(2)
             
-            # ШАГ 5: ВЕРИФИКАЦИЯ - проверяем, что сообщение отправилось
-            logger.info("🔍 Проверяем, что сообщение отправилось...")
-            message_sent = await self.verify_message_sent(question)
+            # Проверяем, появилось ли сообщение
+            messages = await self.evaluate("""
+            (function() {
+                var texts = [];
+                var els = document.querySelectorAll('.message-content, .chat-message, [class*="message"]');
+                for (var i = 0; i < els.length; i++) {
+                    var text = (els[i].textContent || '').trim();
+                    if (text && text.length > 5) {
+                        texts.push(text);
+                    }
+                }
+                return texts;
+            })()
+            """)
+            logger.info(f"💬 Сообщения на странице: {messages}")
             
-            if not message_sent:
-                # Пробуем еще раз Enter
-                logger.info("⏳ Сообщение не найдено, пробую Enter еще раз...")
-                enter_js = """
-                (function() {
-                    var el = document.querySelector('.message-input-textarea, textarea');
-                    if (!el) return false;
-                    el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-                    el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-                    return true;
-                })()
-                """
-                await self.evaluate(enter_js)
-                await self.wait_for_load(2)
-                
-                # Проверяем еще раз
-                message_sent = await self.verify_message_sent(question)
-                
-                if not message_sent:
-                    return None, "Не удалось отправить сообщение (текст не появился на странице)"
+            if not messages or len(messages) == 0:
+                logger.error("❌ Сообщения не появились на странице!")
+                return None, "Сообщение не появилось на странице (отправка не сработала)"
             
-            # ШАГ 6: Ожидание ответа
-            logger.info("⏳ Ожидание ответа...")
-            max_attempts = 120
+            # Ищем ответ (самое длинное сообщение)
+            response = None
+            max_len = 0
+            for msg in messages:
+                if len(msg) > max_len and len(msg) > 10:
+                    # Пропускаем системные сообщения
+                    if not any(x in msg for x in ['AutoChoose', 'Get Started', 'Please enter', 'Что бы вы хотели']):
+                        max_len = len(msg)
+                        response = msg
             
-            for attempt in range(max_attempts):
-                await asyncio.sleep(1)
-                
-                response = await self.get_qwen_response()
-                
-                if response:
-                    # Проверяем что это не наш вопрос
-                    if response != question and len(response) > 10:
-                        logger.info(f"✅ Получен ответ: {response[:50]}...")
-                        return response, None
-                
-                if attempt % 10 == 0:
-                    logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
+            if response:
+                logger.info(f"✅ Получен ответ: {response[:50]}...")
+                return response, None
             
-            return None, "Таймаут ожидания ответа"
+            return None, "Не удалось найти ответ на странице"
                 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -425,8 +340,8 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"С верификацией отправки!\n"
-        f"Проверяет, что сообщение действительно отправилось.\n\n"
+        f"С детальной диагностикой!\n"
+        f"Показывает каждый шаг в логах.\n\n"
         f"📌 /debug — состояние"
     )
 
@@ -434,30 +349,47 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         
+        # Проверяем элементы
         status = {}
         for name, element in ELEMENTS.items():
-            selector = element['selector']
-            js = f"!!document.querySelector('{selector}')"
-            exists = await browser.evaluate(js)
-            status[name] = exists
+            coords = element['coords']
+            x, y = get_center_coords(coords)
+            info = await browser.get_element_at_coords(x, y)
+            status[name] = info
         
-        messages = await browser.get_messages_on_page()
-        response = await browser.get_qwen_response()
+        messages = await browser.evaluate("""
+        (function() {
+            var texts = [];
+            var els = document.querySelectorAll('.message-content, .chat-message, [class*="message"]');
+            for (var i = 0; i < els.length; i++) {
+                var text = (els[i].textContent || '').trim();
+                if (text && text.length > 5) {
+                    texts.push(text);
+                }
+            }
+            return texts;
+        })()
+        """)
         
         msg = f"🔍 Отладка\n\n"
         msg += f"Заголовок: {title}\n\n"
         msg += "Элементы:\n"
-        for name, exists in status.items():
-            msg += f"  {name}: {'есть' if exists else 'нет'}\n"
+        for name, info in status.items():
+            if info:
+                visible = info.get('visible', False)
+                msg += f"  {name}: {'✅' if visible else '❌'}"
+                if info.get('value'):
+                    msg += f" value: {info['value'][:20]}"
+                if info.get('text'):
+                    msg += f" text: {info['text'][:20]}"
+                msg += "\n"
+            else:
+                msg += f"  {name}: ❌ не найден\n"
         
-        msg += f"\n📝 Сообщений на странице: {len(messages)}\n"
+        msg += f"\n💬 Сообщений: {len(messages)}\n"
         if messages:
-            msg += f"Последние 3:\n"
             for m in messages[-3:]:
                 msg += f"  - {m[:50]}...\n"
-        
-        if response:
-            msg += f"\n📝 Ответ Qwen:\n{response[:200]}..."
         
         await update.message.reply_text(msg)
         
