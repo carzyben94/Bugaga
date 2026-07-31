@@ -106,7 +106,7 @@ class BrowserHarness:
         """Выполнить JavaScript"""
         result = await self._send_cdp("Runtime.evaluate", {
             "expression": expression,
-            "returnByValue": true
+            "returnByValue": True  # ← ИСПРАВЛЕНО
         })
         return result.get("result", {}).get("result", {}).get("value")
     
@@ -135,7 +135,12 @@ def get_deep_dom_parser_js():
                     
                     // Проверяем Shadow DOM
                     if (node.shadowRoot) {
-                        traverse(node.shadowRoot);
+                        node.shadowRoot.childNodes.forEach(child => {
+                            if (child.nodeType === Node.ELEMENT_NODE) {
+                                elements.push(child);
+                                traverse(child);
+                            }
+                        });
                     }
                     
                     // Проверяем iframe
@@ -151,13 +156,6 @@ def get_deep_dom_parser_js():
                     // Обходим дочерние элементы
                     for (const child of node.children) {
                         traverse(child);
-                    }
-                    
-                    // Обходим shadow DOM у кастомных элементов
-                    if (node.tagName.includes('-')) {
-                        if (node.shadowRoot) {
-                            traverse(node.shadowRoot);
-                        }
                     }
                 }
             }
@@ -207,7 +205,7 @@ def get_deep_dom_parser_js():
         }
         
         function buildXPath(el) {
-            if (el.id) return `//*[@id="${el.id}"]`;
+            if (el.id) return '//*[@id="' + el.id + '"]';
             
             const parts = [];
             let current = el;
@@ -222,8 +220,8 @@ def get_deep_dom_parser_js():
                 }
                 
                 const tagPart = current.tagName.toLowerCase();
-                const indexPart = index > 1 ? `[${index}]` : '';
-                parts.unshift(`${tagPart}${indexPart}`);
+                const indexPart = index > 1 ? '[' + index + ']' : '';
+                parts.unshift(tagPart + indexPart);
                 
                 current = current.parentElement;
             }
@@ -232,7 +230,7 @@ def get_deep_dom_parser_js():
         }
         
         function buildCSSSelector(el) {
-            if (el.id) return `#${CSS.escape(el.id)}`;
+            if (el.id) return '#' + CSS.escape(el.id);
             
             const parts = [];
             let current = el;
@@ -242,28 +240,31 @@ def get_deep_dom_parser_js():
                 let selector = current.tagName.toLowerCase();
                 
                 if (current.id) {
-                    parts.unshift(`#${CSS.escape(current.id)}`);
+                    parts.unshift('#' + CSS.escape(current.id));
                     break;
                 }
                 
                 if (current.className && typeof current.className === 'string') {
-                    const classes = current.className.trim().split(/\\s+/).filter(c => c);
+                    const classes = current.className.trim().split(/\\s+/).filter(function(c) { return c; });
                     if (classes.length > 0) {
-                        selector += '.' + classes.map(c => CSS.escape(c)).join('.');
+                        selector += '.' + classes.map(function(c) { return CSS.escape(c); }).join('.');
                     }
                 }
                 
-                // Проверяем уникальность
-                const sameTagSiblings = Array.from(current.parentElement?.children || [])
-                    .filter(s => s.tagName === current.tagName);
-                
-                if (sameTagSiblings.length > 1) {
-                    const index = sameTagSiblings.indexOf(current) + 1;
-                    selector += `:nth-of-type(${index})`;
+                const parent = current.parentElement;
+                if (parent) {
+                    const sameTagSiblings = Array.from(parent.children).filter(function(s) {
+                        return s.tagName === current.tagName;
+                    });
+                    
+                    if (sameTagSiblings.length > 1) {
+                        const index = sameTagSiblings.indexOf(current) + 1;
+                        selector += ':nth-of-type(' + index + ')';
+                    }
                 }
                 
                 parts.unshift(selector);
-                current = current.parentElement;
+                current = parent;
                 depth++;
             }
             
@@ -317,13 +318,11 @@ def get_deep_dom_parser_js():
         
         function getElementData(el) {
             const tag = el.tagName.toLowerCase();
-            const role = el.getAttribute('role');
-            const type = el.getAttribute('type');
             
             return {
                 tag: tag,
-                role: role,
-                type: type,
+                role: el.getAttribute('role') || null,
+                type: el.getAttribute('type') || null,
                 
                 // Идентификаторы
                 id: el.id || null,
@@ -349,9 +348,9 @@ def get_deep_dom_parser_js():
                 checked: el.checked || false,
                 selected: el.selected || false,
                 
-                // Видимость
+                // Видимость и позиция
                 visible: !!(el.offsetParent || el.getClientRects().length > 0),
-                rect: (() => {
+                rect: (function() {
                     const r = el.getBoundingClientRect();
                     return {
                         x: Math.round(r.x),
@@ -383,7 +382,7 @@ def get_deep_dom_parser_js():
                 },
                 
                 // Data атрибуты
-                dataAttributes: (() => {
+                dataAttributes: (function() {
                     const data = {};
                     for (const attr of el.attributes) {
                         if (attr.name.startsWith('data-')) {
@@ -395,15 +394,6 @@ def get_deep_dom_parser_js():
                 
                 // React
                 reactProps: extractReactProps(el),
-                reactFiber: (() => {
-                    const fiber = extractReactFiber(el);
-                    if (!fiber) return null;
-                    return {
-                        tag: fiber.tag,
-                        key: fiber.key,
-                        memoizedState: fiber.memoizedState ? typeof fiber.memoizedState : null,
-                    };
-                })(),
                 
                 // Стили
                 computedStyles: getComputedStyles(el),
@@ -414,34 +404,38 @@ def get_deep_dom_parser_js():
                 // Shadow DOM
                 shadowRoot: el.shadowRoot ? {
                     mode: el.shadowRoot.mode,
-                    childCount: el.shadowRoot.children.length,
-                    innerHTML: el.shadowRoot.innerHTML.slice(0, 500)
+                    childCount: el.shadowRoot.children.length
                 } : null,
                 
-                // Дочерние элементы (только прямые, без рекурсии)
+                // Дочерние элементы
                 childElementCount: el.children.length,
-                childTags: Array.from(el.children).slice(0, 20).map(c => c.tagName.toLowerCase()),
+                childTags: Array.from(el.children).slice(0, 20).map(function(c) { return c.tagName.toLowerCase(); }),
                 
                 // Родитель
                 parentTag: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
                 
                 // Форма
                 form: el.form ? {
-                    id: el.form.id,
-                    name: el.form.getAttribute('name'),
-                    action: el.form.action,
-                    method: el.form.method,
+                    id: el.form.id || null,
+                    name: el.form.getAttribute('name') || null,
+                    action: el.form.action || null,
+                    method: el.form.method || null,
                 } : null,
             };
         }
         
         // Собираем ВСЕ элементы
         const allElements = getAllElements(document.documentElement);
-        const elementsData = allElements.map(el => getElementData(el));
+        const elementsData = [];
+        
+        for (let i = 0; i < allElements.length; i++) {
+            elementsData.push(getElementData(allElements[i]));
+        }
         
         // Группируем по тегам
         const grouped = {};
-        for (const el of elementsData) {
+        for (let i = 0; i < elementsData.length; i++) {
+            const el = elementsData[i];
             const tag = el.tag;
             if (!grouped[tag]) grouped[tag] = [];
             grouped[tag].push(el);
@@ -453,8 +447,8 @@ def get_deep_dom_parser_js():
             domain: window.location.hostname,
             pathname: window.location.pathname,
             title: document.title,
-            description: document.querySelector('meta[name="description"]')?.content || null,
-            keywords: document.querySelector('meta[name="keywords"]')?.content || null,
+            description: (document.querySelector('meta[name="description"]') || {}).content || null,
+            keywords: (document.querySelector('meta[name="keywords"]') || {}).content || null,
             charset: document.characterSet,
             lang: document.documentElement.lang || null,
             timestamp: Date.now(),
@@ -462,11 +456,11 @@ def get_deep_dom_parser_js():
                 width: window.innerWidth,
                 height: window.innerHeight,
             },
-            scripts: Array.from(document.scripts).map(s => s.src).filter(Boolean),
-            stylesheets: Array.from(document.styleSheets).map(s => s.href).filter(Boolean),
-            meta: (() => {
+            scripts: Array.from(document.scripts).map(function(s) { return s.src; }).filter(Boolean),
+            stylesheets: Array.from(document.styleSheets).map(function(s) { return s.href || ''; }).filter(function(h) { return h; }),
+            meta: (function() {
                 const meta = {};
-                document.querySelectorAll('meta').forEach(m => {
+                document.querySelectorAll('meta').forEach(function(m) {
                     const name = m.getAttribute('name') || m.getAttribute('property');
                     const content = m.getAttribute('content');
                     if (name && content) meta[name] = content;
@@ -479,15 +473,19 @@ def get_deep_dom_parser_js():
         const stats = {
             totalElements: elementsData.length,
             uniqueTags: Object.keys(grouped).length,
-            byTag: Object.fromEntries(
-                Object.entries(grouped).map(([tag, els]) => [tag, els.length])
-            ),
-            withReact: elementsData.filter(el => el.reactProps).length,
-            withShadowDOM: elementsData.filter(el => el.shadowRoot).length,
-            visible: elementsData.filter(el => el.visible).length,
-            interactive: elementsData.filter(el => 
-                ['input', 'button', 'select', 'textarea', 'a'].includes(el.tag)
-            ).length,
+            byTag: (function() {
+                const counts = {};
+                for (const tag of Object.keys(grouped)) {
+                    counts[tag] = grouped[tag].length;
+                }
+                return counts;
+            })(),
+            withReact: elementsData.filter(function(el) { return el.reactProps; }).length,
+            withShadowDOM: elementsData.filter(function(el) { return el.shadowRoot; }).length,
+            visible: elementsData.filter(function(el) { return el.visible; }).length,
+            interactive: elementsData.filter(function(el) { 
+                return ['input', 'button', 'select', 'textarea', 'a'].includes(el.tag);
+            }).length,
         };
         
         return JSON.stringify({
