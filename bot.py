@@ -1,4 +1,4 @@
-# bot.py - финальная версия с правильной логикой
+# bot.py - упрощенная версия без создания нового чата
 import os
 import json
 import asyncio
@@ -40,35 +40,23 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# КООРДИНАТЫ ИЗ JSON И СКРИНШОТА
+# КООРДИНАТЫ ИЗ JSON
 # ============================================================
 
-# Координаты элементов из JSON
 ELEMENTS = {
-    # Кнопка нового чата (верхний левый угол)
-    'new_chat': {
-        'coords': [24, 72, 20, 20],
-        'selector': '[aria-label="Новый чат"]'
-    },
-    # Поле ввода текста (внизу)
+    # Поле ввода текста
     'textarea': {
-        'coords': [328, 167, 245, 56],  # из JSON
+        'coords': [328, 167, 245, 56],
         'selector': '.message-input-textarea'
     },
-    # Кнопка отправки - появляется только после ввода текста!
+    # Кнопка отправки (появляется после ввода текста)
     'send_button': {
-        'coords': [720, 179, 32, 32],  # из JSON
+        'coords': [720, 179, 32, 32],
         'selector': '.omni-button-content-btn'
-    },
-    # Кнопка "Виктор" (слева от поля ввода на скриншоте)
-    'victor_button': {
-        'coords': [294, 185, 20, 20],  # примерные координаты
-        'selector': '[aria-label="Выбрать режим"]'
     }
 }
 
 def get_center_coords(coords):
-    """Получить центр элемента"""
     x, y, w, h = coords
     return (x + w // 2, y + h // 2)
 
@@ -137,17 +125,16 @@ class BrowserHarness:
         logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
     
-    async def click_at_coords(self, x, y, description=""):
+    async def click_at_coords(self, x, y):
         """Кликнуть по координатам"""
         js = f"""
         (function() {{
             var element = document.elementFromPoint({x}, {y});
-            if (!element) {{
-                console.log('Элемент не найден');
-                return false;
-            }}
+            if (!element) return false;
             
             element.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+            element.focus();
+            element.click();
             
             var clickEvent = new MouseEvent('click', {{
                 view: window,
@@ -161,44 +148,24 @@ class BrowserHarness:
             return true;
         }})()
         """
-        result = await self.evaluate(js)
-        if result:
-            logger.info(f"✅ Клик по ({x}, {y}) {description}")
-        else:
-            logger.warning(f"❌ Не удалось кликнуть по ({x}, {y})")
-        return result
+        return await self.evaluate(js)
     
-    async def click_element_by_coords(self, element_name):
-        """Кликнуть по элементу по координатам"""
-        if element_name not in ELEMENTS:
-            return False
-        
-        element = ELEMENTS[element_name]
-        coords = element['coords']
-        x, y = get_center_coords(coords)
-        
-        return await self.click_at_coords(x, y, f"({element_name})")
-    
-    async def set_text_at_coords(self, element_name, text):
-        """Установить текст в элемент"""
-        if element_name not in ELEMENTS:
-            return False
-        
-        element = ELEMENTS[element_name]
-        coords = element['coords']
-        x, y = get_center_coords(coords)
-        
+    async def set_text_at_coords(self, x, y, text):
+        """Установить текст в элемент по координатам"""
         js = f"""
         (function() {{
             var element = document.elementFromPoint({x}, {y});
             if (!element) return false;
             
+            // Кликаем и фокусируемся
             element.focus();
             element.click();
+            
+            // Очищаем и вводим текст
             element.value = '';
             element.value = '{text.replace("'", "\\'")}';
             
-            // Важно: триггерим события, чтобы кнопка появилась
+            // Триггерим события
             element.dispatchEvent(new Event('input', {{ bubbles: true }}));
             element.dispatchEvent(new Event('change', {{ bubbles: true }}));
             element.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
@@ -207,16 +174,12 @@ class BrowserHarness:
             return true;
         }})()
         """
-        result = await self.evaluate(js)
-        if result:
-            logger.info(f"✅ Текст установлен в {element_name}")
-        return result
+        return await self.evaluate(js)
     
     async def wait_for_send_button(self, timeout=10):
-        """Ожидать появления кнопки отправки (после ввода текста)"""
+        """Ожидать появления кнопки отправки"""
         logger.info("⏳ Ожидаю появления кнопки отправки...")
         
-        # Проверяем через координаты
         coords = ELEMENTS['send_button']['coords']
         x, y = get_center_coords(coords)
         
@@ -225,12 +188,8 @@ class BrowserHarness:
             var start = Date.now();
             while (Date.now() - start < {timeout * 1000}) {{
                 var element = document.elementFromPoint({x}, {y});
-                if (element) {{
-                    var text = (element.textContent || '').trim();
-                    // Проверяем, что это не пустой элемент
-                    if (element.offsetParent !== null) {{
-                        return true;
-                    }}
+                if (element && element.offsetParent !== null) {{
+                    return true;
                 }}
                 var end = Date.now() + 500;
                 while (Date.now() < end) {{}}
@@ -240,49 +199,8 @@ class BrowserHarness:
         """
         return await self.evaluate(js)
     
-    async def send_message_to_qwen(self, text):
-        """Отправить сообщение в Qwen"""
-        
-        # ШАГ 1: Новый чат
-        logger.info("📌 ШАГ 1: Создаем новый чат...")
-        await self.click_element_by_coords('new_chat')
-        await self.wait_for_load(2)
-        
-        # ШАГ 2: Вводим текст (это вызовет появление кнопки отправки)
-        logger.info(f"📌 ШАГ 2: Вводим текст...")
-        text_set = await self.set_text_at_coords('textarea', text)
-        
-        if not text_set:
-            return False, "Не удалось ввести текст"
-        
-        # Ждем появления кнопки отправки
-        await self.wait_for_load(1)
-        
-        # ШАГ 3: Ожидаем появления кнопки отправки
-        logger.info("📌 ШАГ 3: Ожидаем появления кнопки отправки...")
-        send_btn_visible = await self.wait_for_send_button(timeout=10)
-        
-        if send_btn_visible:
-            logger.info("✅ Кнопка отправки появилась!")
-            await self.click_element_by_coords('send_button')
-        else:
-            logger.info("⏳ Кнопка не появилась, пробуем Enter...")
-            enter_js = """
-            (function() {
-                var el = document.querySelector('.message-input-textarea, textarea');
-                if (!el) return false;
-                el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-                el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-                return true;
-            })()
-            """
-            await self.evaluate(enter_js)
-        
-        await self.wait_for_load(1)
-        return True, "Сообщение отправлено"
-    
     async def get_last_response(self):
-        """Получить последний ответ от Qwen"""
+        """Получить последний ответ"""
         js = """
         (function() {
             var selectors = [
@@ -323,19 +241,57 @@ class BrowserHarness:
         return await self.evaluate(js)
     
     async def ask_qwen(self, question):
-        """Полный цикл работы"""
+        """Простой запрос к Qwen: клик по полю → ввод текста → отправка"""
         try:
             # Переход на сайт
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
             
-            # Отправка сообщения
-            success, msg = await self.send_message_to_qwen(question)
-            if not success:
-                return None, msg
+            # Координаты поля ввода
+            textarea_coords = ELEMENTS['textarea']['coords']
+            tx, ty = get_center_coords(textarea_coords)
             
-            # Ожидание ответа
+            # ШАГ 1: Клик по полю ввода
+            logger.info(f"📌 Клик по полю ввода ({tx}, {ty})...")
+            await self.click_at_coords(tx, ty)
+            await self.wait_for_load(0.5)
+            
+            # ШАГ 2: Ввод текста
+            logger.info(f"📌 Ввод текста...")
+            text_set = await self.set_text_at_coords(tx, ty, question)
+            
+            if not text_set:
+                return None, "Не удалось ввести текст"
+            
+            await self.wait_for_load(1)
+            
+            # ШАГ 3: Ждем появления кнопки отправки
+            send_btn_visible = await self.wait_for_send_button(timeout=10)
+            
+            if send_btn_visible:
+                # ШАГ 4: Клик по кнопке отправки
+                coords = ELEMENTS['send_button']['coords']
+                sx, sy = get_center_coords(coords)
+                logger.info(f"📌 Клик по кнопке отправки ({sx}, {sy})...")
+                await self.click_at_coords(sx, sy)
+            else:
+                # ШАГ 4b: Если кнопка не появилась - Enter
+                logger.info("⏳ Кнопка не появилась, пробую Enter...")
+                enter_js = """
+                (function() {
+                    var el = document.querySelector('.message-input-textarea, textarea');
+                    if (!el) return false;
+                    el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+                    return true;
+                })()
+                """
+                await self.evaluate(enter_js)
+            
+            await self.wait_for_load(1)
+            
+            # ШАГ 5: Ожидание ответа
             logger.info("⏳ Ожидание ответа...")
             max_attempts = 120
             
@@ -366,29 +322,18 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 **Qwen Bot**\n\n"
-        f"Как работает:\n"
-        f"1️⃣ Переход на сайт\n"
-        f"2️⃣ Новый чат\n"
-        f"3️⃣ Ввод текста (появляется кнопка отправки)\n"
-        f"4️⃣ Отправка\n"
-        f"5️⃣ Получение ответа\n\n"
-        f"📌 /debug — состояние\n"
-        f"📌 /coords — координаты",
+        f"Просто отправьте сообщение!\n"
+        f"Бот:\n"
+        f"1️⃣ Кликнет по полю ввода\n"
+        f"2️⃣ Введет текст\n"
+        f"3️⃣ Нажмет отправку\n"
+        f"4️⃣ Вернет ответ\n\n"
+        f"📌 /debug — состояние",
         parse_mode='Markdown'
     )
 
-async def coords_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "📍 **Координаты элементов:**\n\n"
-    for name, element in ELEMENTS.items():
-        coords = element['coords']
-        x, y, w, h = coords
-        center_x, center_y = x + w//2, y + h//2
-        msg += f"**{name}:** ({center_x}, {center_y})\n"
-        msg += f"  Позиция: ({x}, {y}) Размер: {w}x{h}\n\n"
-    
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отладка без Markdown спецсимволов"""
     try:
         title = await browser.evaluate("document.title")
         
@@ -403,27 +348,27 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response = await browser.get_last_response()
         
-        msg = "🔍 **Отладка**\n\n"
-        msg += f"📄 {title}\n\n"
-        msg += "**Элементы:**\n"
+        # Отправляем без Markdown чтобы избежать ошибок
+        msg = f"🔍 Отладка\n\n"
+        msg += f"Заголовок: {title}\n\n"
+        msg += "Элементы:\n"
         for name, exists in status.items():
-            msg += f"  {name}: {'✅' if exists else '❌'}\n"
+            msg += f"  {name}: {'есть' if exists else 'нет'}\n"
         
         if response:
-            msg += f"\n📝 Ответ: {response[:150]}..."
+            msg += f"\nОтвет: {response[:200]}..."
         
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        await update.message.reply_text(msg)
+        
     except Exception as e:
-        await update.message.reply_text(f"❌ {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     
-    status_msg = await update.message.reply_text("🚀 Запускаю...")
+    status_msg = await update.message.reply_text("🚀 Отправляю запрос...")
     
     try:
-        await status_msg.edit_text("🌐 Переход на сайт...")
-        
         response, error = await browser.ask_qwen(question)
         
         if error:
@@ -434,26 +379,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Нет ответа")
             return
         
+        # Обрезаем длинный ответ
         if len(response) > 4000:
             response = response[:4000] + "..."
         
+        # Отправляем без Markdown чтобы избежать ошибок
         await status_msg.edit_text(
-            f"💬 **Qwen:**\n\n{response}",
-            parse_mode='Markdown'
+            f"💬 Qwen:\n\n{response}"
         )
         
     except Exception as e:
-        await status_msg.edit_text(f"❌ {str(e)[:200]}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", debug_command))
-    app.add_handler(CommandHandler("coords", coords_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Qwen Bot запущен!")
+    logger.info(f"📡 CDP: {CDP_URL}")
+    logger.info(f"🍪 Куки: {len(COOKIES)} шт.")
+    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
