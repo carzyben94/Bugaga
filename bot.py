@@ -1,4 +1,4 @@
-# bot.py - финальная версия с правильной кнопкой
+# bot.py - финальная версия с ожиданием кнопки
 import os
 import json
 import asyncio
@@ -40,11 +40,12 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# КООРДИНАТЫ ИЗ СКРИНШОТА
+# КООРДИНАТЫ
 # ============================================================
 
-# Координаты кнопки отправки из скриншота
-SEND_BUTTON_COORDS = [339, 291, 21, 21]  # x, y, width, height
+# Координаты из скриншотов
+TEXTAREA_COORDS = [328, 167, 245, 56]  # из JSON
+SEND_BUTTON_COORDS = [339, 291, 21, 21]  # из скриншота
 
 def get_center_coords(coords):
     x, y, w, h = coords
@@ -144,36 +145,49 @@ class BrowserHarness:
         })
         return True
     
-    async def click_send_button(self):
-        """Нажать кнопку отправки по координатам из скриншота"""
-        x, y = get_center_coords(SEND_BUTTON_COORDS)
-        logger.info(f"📤 Нажатие кнопки отправки по координатам ({x}, {y})")
-        return await self.click_at_coords(x, y)
-    
-    async def send_enter(self):
-        """Отправить Enter"""
-        logger.info("⌨️ Отправка Enter...")
-        await self._send_cdp("Input.dispatchKeyEvent", {
-            "type": "keyDown",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-        })
-        await asyncio.sleep(0.05)
-        await self._send_cdp("Input.dispatchKeyEvent", {
-            "type": "keyUp",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-        })
-        return True
+    async def wait_for_send_button(self, timeout=10):
+        """Ожидать появления кнопки отправки"""
+        logger.info("⏳ Ожидаю появления кнопки отправки...")
+        sx, sy = get_center_coords(SEND_BUTTON_COORDS)
+        
+        for attempt in range(timeout):
+            # Проверяем элемент по координатам
+            js = f"""
+            (function() {{
+                var el = document.elementFromPoint({sx}, {sy});
+                if (!el) return false;
+                // Проверяем что элемент видимый
+                if (el.offsetParent === null) return false;
+                // Проверяем что это не disabled
+                if (el.disabled) return false;
+                return true;
+            }})()
+            """
+            exists = await self.evaluate(js)
+            if exists:
+                logger.info(f"✅ Кнопка появилась через {attempt + 1}с")
+                return True
+            
+            await asyncio.sleep(1)
+        
+        logger.warning("⏰ Кнопка не появилась за %s секунд", timeout)
+        return False
     
     async def ask_qwen(self, question):
         """Запрос к Qwen"""
         try:
+            # Переход на сайт
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
+            
+            # Установка кук
+            if COOKIES:
+                await self.set_cookies(COOKIES)
+                await self.wait_for_load(2)
+                # Обновляем страницу после установки кук
+                await self.navigate("https://chat.qwen.ai/")
+                await self.wait_for_load(5)
             
             # Запоминаем сообщения до отправки
             old_messages = await self.evaluate("""
@@ -191,11 +205,21 @@ class BrowserHarness:
             """)
             logger.info(f"📝 Сообщений до: {len(old_messages)}")
             
-            # Находим и вводим текст
+            # Вводим текст
             logger.info(f"📌 Ввод текста: {question[:30]}...")
+            tx, ty = get_center_coords(TEXTAREA_COORDS)
+            
+            # Сначала кликаем по полю
+            await self.click_at_coords(tx, ty)
+            await self.wait_for_load(0.3)
+            
+            # Вводим текст через JS
             js = f"""
             (function() {{
-                var el = document.querySelector('.message-input-textarea, textarea');
+                var el = document.elementFromPoint({tx}, {ty});
+                if (!el) {{
+                    el = document.querySelector('.message-input-textarea, textarea');
+                }}
                 if (!el) return {{success: false, error: 'Поле не найдено'}};
                 
                 el.focus();
@@ -203,10 +227,31 @@ class BrowserHarness:
                 el.value = '';
                 el.value = '{question.replace("'", "\\'")}';
                 
+                // Триггерим все события чтобы React обновился
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+                
+                // Дополнительно пробуем React onChange
+                var fiberKey = null;
+                for (var key in el) {{
+                    if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
+                        fiberKey = key;
+                        break;
+                    }}
+                }}
+                
+                if (fiberKey) {{
+                    var fiber = el[fiberKey];
+                    while (fiber) {{
+                        if (fiber.memoizedProps && fiber.memoizedProps.onChange) {{
+                            fiber.memoizedProps.onChange({{ target: el, type: 'change', bubbles: true }});
+                            break;
+                        }}
+                        fiber = fiber.return;
+                    }}
+                }}
                 
                 return {{success: true, value: el.value}};
             }})()
@@ -217,15 +262,30 @@ class BrowserHarness:
             if not result or not result.get('success'):
                 return None, "Не удалось ввести текст"
             
-            await self.wait_for_load(1)
+            # Ждем появления кнопки отправки
+            send_btn_visible = await self.wait_for_send_button(timeout=10)
             
-            # Пробуем нажать кнопку отправки по координатам
-            logger.info("📤 Нажимаю кнопку отправки...")
-            clicked = await self.click_send_button()
-            
-            if not clicked:
-                logger.warning("⚠️ Кнопка не нажалась, пробую Enter...")
-                await self.send_enter()
+            if send_btn_visible:
+                # Нажимаем кнопку отправки
+                logger.info("📤 Нажимаю кнопку отправки...")
+                sx, sy = get_center_coords(SEND_BUTTON_COORDS)
+                await self.click_at_coords(sx, sy)
+            else:
+                # Пробуем Enter
+                logger.info("⌨️ Кнопка не появилась, пробую Enter...")
+                await self._send_cdp("Input.dispatchKeyEvent", {
+                    "type": "keyDown",
+                    "key": "Enter",
+                    "code": "Enter",
+                    "windowsVirtualKeyCode": 13,
+                })
+                await asyncio.sleep(0.05)
+                await self._send_cdp("Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "key": "Enter",
+                    "code": "Enter",
+                    "windowsVirtualKeyCode": 13,
+                })
             
             await self.wait_for_load(2)
             
@@ -249,7 +309,8 @@ class BrowserHarness:
                                 !text.includes('Что бы вы хотели') &&
                                 !text.includes('Log in') &&
                                 !text.includes('Sign up') &&
-                                !text.includes('Первое изображение')) {
+                                !text.includes('Скачать приложение') &&
+                                !text.includes('Войти')) {
                                 texts.push(text);
                             }
                         }
@@ -258,7 +319,6 @@ class BrowserHarness:
                 })()
                 """)
                 
-                # Ищем новые сообщения
                 for msg in messages:
                     if msg not in old_messages and len(msg) > 10:
                         logger.info(f"✅ Получен ответ: {msg[:50]}...")
@@ -280,11 +340,11 @@ browser = BrowserHarness(CDP_URL)
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: НЕ ЗАГРУЖЕНЫ!"
+    
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"Использую координаты кнопки из скриншота!\n"
-        f"Кнопка отправки: ({SEND_BUTTON_COORDS[0]}, {SEND_BUTTON_COORDS[1]})\n\n"
-        f"Просто отправьте сообщение.\n\n"
+        f"{cookies_status}\n\n"
         f"📌 /debug — состояние"
     )
 
@@ -298,6 +358,20 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             var el = document.querySelector('.message-input-textarea, textarea');
             return el ? el.value : null;
         })()
+        """)
+        
+        # Проверяем кнопку отправки
+        sx, sy = get_center_coords(SEND_BUTTON_COORDS)
+        send_btn = await browser.evaluate(f"""
+        (function() {{
+            var el = document.elementFromPoint({sx}, {sy});
+            if (!el) return null;
+            return {{
+                visible: el.offsetParent !== null,
+                disabled: el.disabled || false,
+                text: (el.textContent || '').trim().slice(0, 30)
+            }};
+        }})()
         """)
         
         messages = await browser.evaluate("""
@@ -316,8 +390,12 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         msg = f"🔍 Отладка\n\n"
         msg += f"Заголовок: {title}\n"
-        msg += f"Текст в поле: {textarea_value or 'пусто'}\n"
-        msg += f"Сообщений: {len(messages)}\n\n"
+        msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
+        msg += f"🔘 Кнопка отправки: {'✅ видна' if send_btn and send_btn.get('visible') else '❌ не видна'}\n"
+        if send_btn:
+            msg += f"   disabled: {send_btn.get('disabled', False)}\n"
+        msg += f"💬 Сообщений: {len(messages)}\n"
+        msg += f"🍪 Кук: {len(COOKIES)}\n\n"
         
         if messages:
             msg += "Последние сообщения:\n"
