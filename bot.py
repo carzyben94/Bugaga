@@ -1,4 +1,4 @@
-# bot.py - ФИНАЛЬНАЯ ВЕРСИЯ С ТОЧНЫМ СЕЛЕКТОРОМ
+# bot.py - ФИНАЛЬНАЯ ВЕРСИЯ
 import os
 import json
 import asyncio
@@ -40,7 +40,7 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# ТОЧНЫЕ СЕЛЕКТОРЫ ИЗ СКРИНШОТОВ
+# ТОЧНЫЕ СЕЛЕКТОРЫ
 # ============================================================
 
 # Поле ввода
@@ -49,8 +49,8 @@ TEXTAREA_SELECTOR = "div.message-input-wrapper > div.message-input-container:nth
 # Кнопка отправки
 SEND_BUTTON_SELECTOR = ".message-input-right-button-send"
 
-# ОТВЕТ QWEN - ТОЧНЫЙ СЕЛЕКТОР!
-RESPONSE_SELECTOR = "div.custom-qwen-markdown > div.md-text-select > div.md-text-select__content > div.qwen-markdown.qwen-markdown-loose > div.qwen-markdown-paragraph"
+# Сообщение ассистента (контейнер)
+ASSISTANT_MESSAGE_SELECTOR = "div.chat-container.chat-container-bottom > div.qwen-chat-message.qwen-chat-message-assistant:nth-of-type(2) > div.chat-response-message > div.chat-response-message-right > div.chat-response-message-right-touch"
 
 # ============================================================
 # BROWSER HARNESS
@@ -119,7 +119,6 @@ class BrowserHarness:
         await asyncio.sleep(timeout)
     
     async def click_at_coords(self, x, y):
-        """Клик через CDP"""
         await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mouseMoved",
             "x": x,
@@ -146,11 +145,10 @@ class BrowserHarness:
         return True
     
     async def click_element(self, selector):
-        """Найти и кликнуть по элементу"""
         js = f"""
         (function() {{
             var el = document.querySelector('{selector}');
-            if (!el) return {{found: false, error: 'Элемент не найден'}};
+            if (!el) return {{found: false}};
             if (el.offsetParent === null) return {{found: false, hidden: true}};
             if (el.disabled) return {{found: true, disabled: true}};
             var rect = el.getBoundingClientRect();
@@ -166,33 +164,27 @@ class BrowserHarness:
         if result and result.get('found') and not result.get('disabled'):
             x, y = result['x'], result['y']
             return await self.click_at_coords(x, y)
-        
         return False
     
     async def set_text(self, selector, text):
-        """Установить текст в поле"""
         js = f"""
         (function() {{
             var el = document.querySelector('{selector}');
             if (!el) return {{success: false, error: 'Элемент не найден'}};
-            
             el.focus();
             el.click();
             el.value = '';
             el.value = '{text.replace("'", "\\'")}';
-            
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
             el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-            
             return {{success: true, value: el.value}};
         }})()
         """
         return await self.evaluate(js)
     
     async def get_text_value(self, selector):
-        """Получить значение текстового поля"""
         js = f"""
         (function() {{
             var el = document.querySelector('{selector}');
@@ -201,29 +193,11 @@ class BrowserHarness:
         """
         return await self.evaluate(js)
     
-    async def verify_text_set(self, selector, expected_text):
-        """Проверить, установился ли текст"""
-        actual = await self.get_text_value(selector)
-        return {
-            'success': True,
-            'value': actual,
-            'matches': actual == expected_text
-        }
-    
-    async def verify_send(self):
-        """Проверить, отправилось ли сообщение (поле пустое)"""
-        value = await self.get_text_value(TEXTAREA_SELECTOR)
-        return {
-            'success': True,
-            'is_empty': value == '' or value is None,
-            'value': value
-        }
-    
     async def get_qwen_response(self):
         """Получить ответ Qwen по точному селектору"""
         js = f"""
         (function() {{
-            var el = document.querySelector('{RESPONSE_SELECTOR}');
+            var el = document.querySelector('{ASSISTANT_MESSAGE_SELECTOR}');
             if (!el) return null;
             
             var text = (el.textContent || '').trim();
@@ -236,8 +210,7 @@ class BrowserHarness:
                 'Скачать приложение', 'Войти', 'Завершено размышление',
                 'Thinking completed', 'Выберите', 'Ваш выбор',
                 'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
-                'Проекты', 'Все чаты', 'Используя Qwen Studio',
-                'Пользовательские условия', 'Политика конфиденциальности'
+                'Проекты', 'Все чаты'
             ];
             
             for (var p of systemPatterns) {{
@@ -252,7 +225,6 @@ class BrowserHarness:
         return await self.evaluate(js)
     
     async def send_enter(self):
-        """Отправить Enter через CDP"""
         await self._send_cdp("Input.dispatchKeyEvent", {
             "type": "keyDown",
             "key": "Enter",
@@ -269,11 +241,9 @@ class BrowserHarness:
         return True
     
     async def ask_qwen(self, question):
-        """Запрос к Qwen"""
         self.step_log = []
         
         try:
-            # ШАГ 1: Переход на сайт
             logger.info("📌 ШАГ 1: Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
@@ -286,29 +256,21 @@ class BrowserHarness:
                 await self.wait_for_load(5)
                 self.step_log.append(f"✅ ШАГ 1.1: Установлено {len(COOKIES)} кук")
             
-            # ШАГ 2: Ввод текста
             logger.info(f"📌 ШАГ 2: Ввод текста: {question[:30]}...")
-            
             result = await self.set_text(TEXTAREA_SELECTOR, question)
-            logger.info(f"📝 Результат ввода: {result}")
             
             if not result or not result.get('success'):
                 return None, "Не удалось ввести текст", self.step_log
             
-            # Проверяем что текст установился
-            verify = await self.verify_text_set(TEXTAREA_SELECTOR, question)
-            
-            if not verify.get('matches'):
-                self.step_log.append(f"❌ ШАГ 2: Текст не установился. Ожидалось: '{question}', Получено: '{verify.get('value')}'")
+            verify = await self.get_text_value(TEXTAREA_SELECTOR)
+            if verify != question:
+                self.step_log.append(f"❌ ШАГ 2: Текст не установился. Ожидалось: '{question}', Получено: '{verify}'")
                 return None, f"Текст не установился", self.step_log
             
-            self.step_log.append(f"✅ ШАГ 2: Текст установлен: '{verify.get('value')}'")
+            self.step_log.append(f"✅ ШАГ 2: Текст установлен")
             await self.wait_for_load(0.5)
             
-            # ШАГ 3: Отправка
             logger.info("📌 ШАГ 3: Отправка...")
-            
-            # Пробуем нажать кнопку
             clicked = await self.click_element(SEND_BUTTON_SELECTOR)
             
             if not clicked:
@@ -317,16 +279,14 @@ class BrowserHarness:
             
             await self.wait_for_load(1)
             
-            # Проверяем что сообщение отправилось (поле очистилось)
-            verify_send = await self.verify_send()
-            
-            if not verify_send.get('is_empty'):
-                self.step_log.append(f"❌ ШАГ 3: Сообщение не отправилось! Поле: '{verify_send.get('value')}'")
+            # Проверяем что поле очистилось
+            field_value = await self.get_text_value(TEXTAREA_SELECTOR)
+            if field_value and field_value != '':
+                self.step_log.append(f"❌ ШАГ 3: Сообщение не отправилось! Поле: '{field_value}'")
                 return None, f"Сообщение не отправилось", self.step_log
             
-            self.step_log.append("✅ ШАГ 3: Сообщение отправлено (поле очистилось)")
+            self.step_log.append("✅ ШАГ 3: Сообщение отправлено")
             
-            # ШАГ 4: Ожидание ответа
             logger.info("📌 ШАГ 4: Ожидание ответа...")
             self.step_log.append("⏳ ШАГ 4: Ожидание ответа...")
             
@@ -339,13 +299,13 @@ class BrowserHarness:
                 
                 if response and len(response) > 5:
                     logger.info(f"✅ Получен ответ: {response[:50]}...")
-                    self.step_log.append(f"✅ ШАГ 4: Ответ получен ({len(response)} символов)")
+                    self.step_log.append(f"✅ ШАГ 4: Ответ получен")
                     return response, None, self.step_log
                 
                 if attempt % 10 == 0:
                     logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
             
-            self.step_log.append("❌ ШАГ 4: Таймаут ожидания ответа")
+            self.step_log.append("❌ ШАГ 4: Таймаут")
             return None, "Таймаут ожидания ответа", self.step_log
                 
         except Exception as e:
@@ -384,7 +344,6 @@ async def steps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
-        
         textarea_value = await browser.get_text_value(TEXTAREA_SELECTOR)
         response = await browser.get_qwen_response()
         
