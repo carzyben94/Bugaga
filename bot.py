@@ -1,4 +1,4 @@
-# bot.py - с проверкой существования элемента
+# bot.py - с проверкой появления нового сообщения
 import os
 import json
 import asyncio
@@ -45,17 +45,6 @@ except ImportError:
 
 TEXTAREA_SELECTOR = "div.message-input-wrapper > div.message-input-container:nth-of-type(2) > div > div.message-input-container-area > textarea.message-input-textarea"
 SEND_BUTTON_SELECTOR = ".message-input-right-button-send"
-
-# Все возможные селекторы для ответа
-RESPONSE_SELECTORS = [
-    "div.chat-container.chat-container-bottom > div.qwen-chat-message.qwen-chat-message-assistant:nth-of-type(2) > div.chat-response-message > div.chat-response-message-right > div.chat-response-message-right-touch",
-    "div.custom-qwen-markdown > div.md-text-select > div.md-text-select__content > div.qwen-markdown.qwen-markdown-loose > div.qwen-markdown-paragraph",
-    ".qwen-chat-message-assistant",
-    ".chat-response-message-right-touch",
-    ".qwen-markdown-text",
-    "#chat-message-container",
-    ".message-content"
-]
 
 # ============================================================
 # BROWSER HARNESS
@@ -198,95 +187,85 @@ class BrowserHarness:
         """
         return await self.evaluate(js)
     
-    async def check_element_exists(self, selector):
-        """Проверить существует ли элемент на странице"""
-        js = f"""
-        (function() {{
-            var el = document.querySelector('{selector}');
-            if (!el) return {{exists: false}};
-            return {{
-                exists: true,
-                text: (el.textContent || '').trim().slice(0, 100),
-                visible: el.offsetParent !== null,
-                tag: el.tagName,
-                class: el.className || ''
-            }};
-        }})()
-        """
-        return await self.evaluate(js)
-    
-    async def get_all_messages(self):
-        """Получить все сообщения на странице"""
+    async def get_all_elements_with_text(self):
+        """Получить все элементы с текстом"""
         js = """
         (function() {
             var results = [];
-            var selectors = [
-                '.qwen-chat-message',
-                '.chat-response-message',
-                '.message-content',
-                '#chat-message-container',
-                '.qwen-markdown-text'
-            ];
+            var allElements = document.querySelectorAll('div, span, p, h1, h2, h3, h4, h5, h6, li, td, th, label, button, a');
             
-            for (var s of selectors) {
-                var els = document.querySelectorAll(s);
-                for (var i = 0; i < els.length; i++) {
-                    var el = els[i];
-                    var text = (el.textContent || '').trim();
-                    if (text && text.length > 3) {
-                        var isAssistant = el.classList && el.classList.contains('qwen-chat-message-assistant');
-                        results.push({
-                            text: text.slice(0, 200),
-                            length: text.length,
-                            isAssistant: isAssistant,
-                            tag: el.tagName,
-                            class: el.className || '',
-                            id: el.id || ''
-                        });
+            for (var i = 0; i < allElements.length; i++) {
+                var el = allElements[i];
+                if (el.offsetParent === null) continue;
+                
+                var text = (el.textContent || '').trim();
+                if (!text || text.length < 3) continue;
+                
+                // Пропускаем скрытые
+                var style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                
+                // Пропускаем системные
+                var systemPatterns = [
+                    'AutoChoose', 'Get Started', 'Please enter',
+                    'Что бы вы хотели', 'Log in', 'Sign up',
+                    'Скачать приложение', 'Войти', 'Завершено размышление',
+                    'Thinking completed', 'Выберите', 'Ваш выбор',
+                    'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
+                    'Проекты', 'Все чаты', 'Используя Qwen Studio',
+                    'Пользовательские условия', 'Политика конфиденциальности'
+                ];
+                
+                var isSystem = false;
+                for (var p of systemPatterns) {
+                    if (text.includes(p)) {
+                        isSystem = true;
+                        break;
                     }
                 }
+                if (isSystem) continue;
+                
+                // Строим короткий селектор
+                var selector = '';
+                if (el.id) {
+                    selector = '#' + el.id;
+                } else if (el.className && typeof el.className === 'string') {
+                    var classes = el.className.split(' ').filter(c => c && c.length > 0);
+                    if (classes.length > 0) {
+                        selector = '.' + classes.join('.');
+                    }
+                }
+                if (!selector) {
+                    selector = el.tagName.toLowerCase();
+                }
+                
+                results.push({
+                    text: text.slice(0, 150),
+                    length: text.length,
+                    selector: selector,
+                    tag: el.tagName,
+                    class: el.className || '',
+                    id: el.id || ''
+                });
             }
+            
+            // Сортируем по длине
+            results.sort(function(a, b) { return b.length - a.length; });
             return results;
         })()
         """
         return await self.evaluate(js)
     
     async def get_qwen_response(self):
-        """Попробовать все селекторы для поиска ответа"""
-        for selector in RESPONSE_SELECTORS:
-            try:
-                js = f"""
-                (function() {{
-                    var el = document.querySelector('{selector}');
-                    if (!el) return null;
-                    var text = (el.textContent || '').trim();
-                    if (!text || text.length < 5) return null;
-                    
-                    var systemPatterns = [
-                        'AutoChoose', 'Get Started', 'Please enter',
-                        'Что бы вы хотели', 'Log in', 'Sign up',
-                        'Скачать приложение', 'Войти', 'Завершено размышление',
-                        'Thinking completed', 'Выберите', 'Ваш выбор',
-                        'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
-                        'Проекты', 'Все чаты', 'Используя Qwen Studio',
-                        'Пользовательские условия', 'Политика конфиденциальности'
-                    ];
-                    
-                    for (var p of systemPatterns) {{
-                        if (text.includes(p)) {{
-                            return null;
-                        }}
-                    }}
-                    
-                    return text;
-                }})()
-                """
-                result = await self.evaluate(js)
-                if result and len(result) > 5:
-                    logger.info(f"✅ Найден ответ по селектору: {selector}")
-                    return result
-            except Exception as e:
-                logger.warning(f"Ошибка при поиске по {selector}: {e}")
+        """Найти ответ Qwen среди всех элементов"""
+        all_elements = await self.get_all_elements_with_text()
+        
+        # Ищем самый длинный текст (обычно это ответ)
+        for el in all_elements:
+            if el['length'] > 20:
+                # Проверяем что это не вопрос пользователя
+                if 'message-input' not in el['selector'] and 'textarea' not in el['selector']:
+                    return el['text']
         
         return None
     
@@ -322,6 +301,10 @@ class BrowserHarness:
                 await self.wait_for_load(5)
                 self.step_log.append(f"✅ ШАГ 1.1: Установлено {len(COOKIES)} кук")
             
+            # Запоминаем элементы до отправки
+            before_texts = await self.get_all_elements_with_text()
+            self.step_log.append(f"📝 Текстов до отправки: {len(before_texts)}")
+            
             logger.info(f"📌 ШАГ 2: Ввод текста: {question[:30]}...")
             result = await self.set_text(TEXTAREA_SELECTOR, question)
             
@@ -330,28 +313,34 @@ class BrowserHarness:
             
             verify = await self.get_text_value(TEXTAREA_SELECTOR)
             if verify != question:
-                self.step_log.append(f"❌ ШАГ 2: Текст не установился")
+                self.step_log.append(f"❌ ШАГ 2: Текст не установился. Получено: '{verify}'")
                 return None, f"Текст не установился", self.step_log
             
-            self.step_log.append(f"✅ ШАГ 2: Текст установлен")
+            self.step_log.append(f"✅ ШАГ 2: Текст установлен: '{verify}'")
             await self.wait_for_load(0.5)
             
             logger.info("📌 ШАГ 3: Отправка...")
+            
+            # Пробуем найти и нажать кнопку
             clicked = await self.click_element(SEND_BUTTON_SELECTOR)
             
             if not clicked:
                 logger.info("⌨️ Кнопка не нажалась, пробую Enter...")
                 await self.send_enter()
             
-            await self.wait_for_load(1)
+            await self.wait_for_load(2)
             
+            # Проверяем поле
             field_value = await self.get_text_value(TEXTAREA_SELECTOR)
+            self.step_log.append(f"📝 Поле после отправки: '{field_value}'")
+            
             if field_value and field_value != '':
-                self.step_log.append(f"❌ ШАГ 3: Сообщение не отправилось")
-                return None, f"Сообщение не отправилось", self.step_log
+                self.step_log.append(f"❌ ШАГ 3: Поле не очистилось! Значение: '{field_value}'")
+                return None, f"Поле не очистилось", self.step_log
             
-            self.step_log.append("✅ ШАГ 3: Сообщение отправлено")
+            self.step_log.append("✅ ШАГ 3: Поле очистилось (сообщение отправлено)")
             
+            # Ждем появления нового текста
             logger.info("📌 ШАГ 4: Ожидание ответа...")
             self.step_log.append("⏳ ШАГ 4: Ожидание ответа...")
             
@@ -360,21 +349,31 @@ class BrowserHarness:
             for attempt in range(max_attempts):
                 await asyncio.sleep(1)
                 
-                response = await self.get_qwen_response()
+                # Проверяем новые элементы
+                after_texts = await self.get_all_elements_with_text()
                 
-                if response and len(response) > 5:
-                    logger.info(f"✅ Получен ответ: {response[:50]}...")
-                    self.step_log.append(f"✅ ШАГ 4: Ответ получен")
-                    return response, None, self.step_log
+                # Ищем новые тексты
+                before_set = set([t['text'] for t in before_texts])
+                new_texts = []
+                
+                for t in after_texts:
+                    if t['text'] not in before_set and t['length'] > 10:
+                        new_texts.append(t)
+                
+                if new_texts:
+                    # Сортируем по длине и берем самый длинный
+                    new_texts.sort(key=lambda x: x['length'], reverse=True)
+                    response = new_texts[0]['text']
+                    
+                    # Проверяем что это не наш вопрос
+                    if question not in response and len(response) > 10:
+                        logger.info(f"✅ Найден новый текст: {response[:50]}...")
+                        self.step_log.append(f"✅ ШАГ 4: Ответ найден ({len(response)} символов)")
+                        return response, None, self.step_log
                 
                 if attempt % 10 == 0:
                     logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
-            
-            # Если не нашли ответ, показываем что есть на странице
-            all_messages = await self.get_all_messages()
-            self.step_log.append(f"📝 Найдено сообщений на странице: {len(all_messages)}")
-            for msg in all_messages[:5]:
-                self.step_log.append(f"  - [{msg['isAssistant'] and 'ASSISTANT' or 'USER'}] {msg['text'][:50]}...")
+                    self.step_log.append(f"⏳ Попытка {attempt}: новых текстов {len(new_texts) if new_texts else 0}")
             
             self.step_log.append("❌ ШАГ 4: Таймаут")
             return None, "Таймаут ожидания ответа", self.step_log
@@ -398,29 +397,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{cookies_status}\n\n"
         f"📌 /debug — состояние\n"
         f"📌 /steps — показать шаги\n"
-        f"📌 /check — проверить селекторы ответа",
+        f"📌 /texts — показать все тексты",
         parse_mode='Markdown'
     )
 
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверить все селекторы для ответа"""
+async def texts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать все тексты на странице"""
     try:
-        msg = "🔍 **Проверка селекторов ответа:**\n\n"
+        all_texts = await browser.get_all_elements_with_text()
         
-        for selector in RESPONSE_SELECTORS:
-            result = await browser.check_element_exists(selector)
-            if result and result.get('exists'):
-                msg += f"✅ {selector[:60]}...\n"
-                msg += f"   Текст: {result.get('text', '')[:80]}...\n"
-                msg += f"   Видим: {result.get('visible', False)}\n\n"
-            else:
-                msg += f"❌ {selector[:60]}...\n\n"
+        if not all_texts:
+            await update.message.reply_text("Нет текстов на странице")
+            return
         
-        # Также показываем все сообщения
-        all_messages = await browser.get_all_messages()
-        msg += f"\n📝 **Все сообщения на странице ({len(all_messages)}):**\n"
-        for m in all_messages[:10]:
-            msg += f"  [{m['isAssistant'] and 'A' or 'U'}] {m['text'][:80]}...\n"
+        msg = f"📄 **Все тексты на странице ({len(all_texts)}):**\n\n"
+        for i, t in enumerate(all_texts[:15]):
+            msg += f"{i+1}. [{t['tag']}] {t['text'][:100]}...\n"
+            msg += f"   Селектор: {t['selector']}\n\n"
+        
+        if len(all_texts) > 15:
+            msg += f"... и еще {len(all_texts) - 15} текстов"
         
         await update.message.reply_text(msg[:4000], parse_mode='Markdown')
         
@@ -442,11 +438,18 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         textarea_value = await browser.get_text_value(TEXTAREA_SELECTOR)
-        response = await browser.get_qwen_response()
+        
+        all_texts = await browser.get_all_elements_with_text()
+        response = None
+        for t in all_texts:
+            if t['length'] > 20 and 'message-input' not in t['selector']:
+                response = t['text']
+                break
         
         msg = f"🔍 **Отладка**\n\n"
         msg += f"Заголовок: {title}\n"
         msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
+        msg += f"📄 Всего текстов: {len(all_texts)}\n"
         msg += f"💬 Ответ Qwen: {response[:200] if response else 'нет'}\n"
         msg += f"🍪 Кук: {len(COOKIES)}\n"
         
@@ -486,7 +489,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(CommandHandler("steps", steps_command))
-    app.add_handler(CommandHandler("check", check_command))
+    app.add_handler(CommandHandler("texts", texts_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Qwen Bot запущен!")
