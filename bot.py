@@ -1,4 +1,4 @@
-# bot.py - с поиском правильной кнопки
+# bot.py - финальная версия с правильной кнопкой
 import os
 import json
 import asyncio
@@ -38,6 +38,17 @@ try:
 except ImportError:
     COOKIES = []
     logger.warning("⚠️ cookies.py не найден")
+
+# ============================================================
+# КООРДИНАТЫ ИЗ СКРИНШОТА
+# ============================================================
+
+# Координаты кнопки отправки из скриншота
+SEND_BUTTON_COORDS = [339, 291, 21, 21]  # x, y, width, height
+
+def get_center_coords(coords):
+    x, y, w, h = coords
+    return (x + w // 2, y + h // 2)
 
 # ============================================================
 # BROWSER HARNESS
@@ -106,6 +117,8 @@ class BrowserHarness:
     
     async def click_at_coords(self, x, y):
         """Клик через CDP"""
+        logger.info(f"🖱️ Клик по ({x}, {y})")
+        
         await self._send_cdp("Input.dispatchMouseEvent", {
             "type": "mouseMoved",
             "x": x,
@@ -131,72 +144,29 @@ class BrowserHarness:
         })
         return True
     
-    async def find_and_click_send_button(self):
-        """Найти и нажать кнопку отправки"""
-        logger.info("🔍 Ищу кнопку отправки...")
-        
-        # Получаем все кнопки с их координатами
-        js = """
-        (function() {
-            var result = [];
-            var els = document.querySelectorAll('button, [role="button"]');
-            for (var i = 0; i < els.length; i++) {
-                var el = els[i];
-                if (el.offsetParent === null) continue;
-                if (el.disabled) continue;
-                
-                var rect = el.getBoundingClientRect();
-                var text = (el.textContent || '').trim();
-                var aria = el.getAttribute('aria-label') || '';
-                
-                // Ищем кнопку с волной или синюю
-                var hasWaveform = el.querySelector('svg[type="icon-line-waveform"]') !== null;
-                var bgColor = window.getComputedStyle(el).backgroundColor;
-                var isBlue = bgColor.includes('rgb(8, 45, 255)') || bgColor.includes('#082dff');
-                
-                result.push({
-                    text: text || aria,
-                    hasWaveform: hasWaveform,
-                    isBlue: isBlue,
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height / 2),
-                    width: Math.round(rect.width),
-                    height: Math.round(rect.height),
-                    tag: el.tagName,
-                    class: el.className
-                });
-            }
-            return result;
-        })()
-        """
-        
-        buttons = await self.evaluate(js)
-        logger.info(f"🔘 Найдено кнопок: {len(buttons)}")
-        
-        for btn in buttons:
-            logger.info(f"  - {btn}")
-        
-        # Ищем кнопку с волной или синюю
-        target = None
-        for btn in buttons:
-            if btn.get('hasWaveform') or btn.get('isBlue'):
-                target = btn
-                break
-        
-        # Если не нашли, берем последнюю кнопку в правом нижнем углу
-        if not target and buttons:
-            # Сортируем по x и y (правая нижняя)
-            buttons_sorted = sorted(buttons, key=lambda b: (b['x'] + b['y']), reverse=True)
-            target = buttons_sorted[0]
-            logger.info(f"🎯 Выбрана кнопка по позиции: {target}")
-        
-        if target:
-            x, y = target['x'], target['y']
-            logger.info(f"🖱️ Клик по кнопке ({x}, {y})")
-            await self.click_at_coords(x, y)
-            return True
-        
-        return False
+    async def click_send_button(self):
+        """Нажать кнопку отправки по координатам из скриншота"""
+        x, y = get_center_coords(SEND_BUTTON_COORDS)
+        logger.info(f"📤 Нажатие кнопки отправки по координатам ({x}, {y})")
+        return await self.click_at_coords(x, y)
+    
+    async def send_enter(self):
+        """Отправить Enter"""
+        logger.info("⌨️ Отправка Enter...")
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        await asyncio.sleep(0.05)
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        return True
     
     async def ask_qwen(self, question):
         """Запрос к Qwen"""
@@ -221,7 +191,7 @@ class BrowserHarness:
             """)
             logger.info(f"📝 Сообщений до: {len(old_messages)}")
             
-            # Вводим текст
+            # Находим и вводим текст
             logger.info(f"📌 Ввод текста: {question[:30]}...")
             js = f"""
             (function() {{
@@ -249,26 +219,13 @@ class BrowserHarness:
             
             await self.wait_for_load(1)
             
-            # Нажимаем кнопку отправки
-            logger.info("🔘 Нажимаю кнопку отправки...")
-            clicked = await self.find_and_click_send_button()
+            # Пробуем нажать кнопку отправки по координатам
+            logger.info("📤 Нажимаю кнопку отправки...")
+            clicked = await self.click_send_button()
             
             if not clicked:
-                # Пробуем Enter
-                logger.info("⌨️ Пробую Enter...")
-                await self._send_cdp("Input.dispatchKeyEvent", {
-                    "type": "keyDown",
-                    "key": "Enter",
-                    "code": "Enter",
-                    "windowsVirtualKeyCode": 13,
-                })
-                await asyncio.sleep(0.05)
-                await self._send_cdp("Input.dispatchKeyEvent", {
-                    "type": "keyUp",
-                    "key": "Enter",
-                    "code": "Enter",
-                    "windowsVirtualKeyCode": 13,
-                })
+                logger.warning("⚠️ Кнопка не нажалась, пробую Enter...")
+                await self.send_enter()
             
             await self.wait_for_load(2)
             
@@ -291,7 +248,8 @@ class BrowserHarness:
                                 !text.includes('Please enter') &&
                                 !text.includes('Что бы вы хотели') &&
                                 !text.includes('Log in') &&
-                                !text.includes('Sign up')) {
+                                !text.includes('Sign up') &&
+                                !text.includes('Первое изображение')) {
                                 texts.push(text);
                             }
                         }
@@ -302,7 +260,7 @@ class BrowserHarness:
                 
                 # Ищем новые сообщения
                 for msg in messages:
-                    if msg not in old_messages:
+                    if msg not in old_messages and len(msg) > 10:
                         logger.info(f"✅ Получен ответ: {msg[:50]}...")
                         return msg, None
                 
@@ -324,7 +282,8 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"Автоматически находит кнопку отправки!\n"
+        f"Использую координаты кнопки из скриншота!\n"
+        f"Кнопка отправки: ({SEND_BUTTON_COORDS[0]}, {SEND_BUTTON_COORDS[1]})\n\n"
         f"Просто отправьте сообщение.\n\n"
         f"📌 /debug — состояние"
     )
@@ -333,28 +292,11 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         
-        # Находим все кнопки
-        buttons = await browser.evaluate("""
+        # Проверяем поле ввода
+        textarea_value = await browser.evaluate("""
         (function() {
-            var result = [];
-            var els = document.querySelectorAll('button, [role="button"]');
-            for (var i = 0; i < els.length; i++) {
-                var el = els[i];
-                if (el.offsetParent === null) continue;
-                var rect = el.getBoundingClientRect();
-                var text = (el.textContent || '').trim();
-                var aria = el.getAttribute('aria-label') || '';
-                var hasWaveform = el.querySelector('svg[type="icon-line-waveform"]') !== null;
-                result.push({
-                    text: text || aria,
-                    hasWaveform: hasWaveform,
-                    x: Math.round(rect.left),
-                    y: Math.round(rect.top),
-                    w: Math.round(rect.width),
-                    h: Math.round(rect.height)
-                });
-            }
-            return result;
+            var el = document.querySelector('.message-input-textarea, textarea');
+            return el ? el.value : null;
         })()
         """)
         
@@ -374,17 +316,12 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         msg = f"🔍 Отладка\n\n"
         msg += f"Заголовок: {title}\n"
-        msg += f"Найдено кнопок: {len(buttons)}\n\n"
+        msg += f"Текст в поле: {textarea_value or 'пусто'}\n"
+        msg += f"Сообщений: {len(messages)}\n\n"
         
-        for i, btn in enumerate(buttons[:5]):
-            msg += f"Кнопка {i+1}:\n"
-            msg += f"  текст: {btn.get('text', '')[:30]}\n"
-            msg += f"  волна: {btn.get('hasWaveform', False)}\n"
-            msg += f"  позиция: ({btn.get('x', 0)}, {btn.get('y', 0)})\n\n"
-        
-        msg += f"💬 Сообщений: {len(messages)}\n"
         if messages:
-            for m in messages[-2:]:
+            msg += "Последние сообщения:\n"
+            for m in messages[-3:]:
                 msg += f"  - {m[:80]}...\n"
         
         await update.message.reply_text(msg)
