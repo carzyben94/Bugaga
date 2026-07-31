@@ -1,4 +1,4 @@
-# bot.py - исправленный поиск ответа
+# bot.py - ФИНАЛЬНАЯ ВЕРСИЯ С ТОЧНЫМИ СЕЛЕКТОРАМИ
 import os
 import json
 import asyncio
@@ -40,14 +40,17 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# КООРДИНАТЫ
+# ТОЧНЫЕ СЕЛЕКТОРЫ ИЗ СКРИНШОТОВ
 # ============================================================
 
-TEXTAREA_COORDS = [328, 167, 245, 56]
+# Поле ввода
+TEXTAREA_SELECTOR = "div.message-input-wrapper > div.message-input-container:nth-of-type(2) > div > div.message-input-container-area > textarea.message-input-textarea"
 
-def get_center_coords(coords):
-    x, y, w, h = coords
-    return (x + w // 2, y + h // 2)
+# Кнопка отправки (из предыдущих скриншотов)
+SEND_BUTTON_SELECTOR = ".message-input-right-button-send"
+
+# Ответ Qwen
+RESPONSE_SELECTOR = "div.md-text-select > div.md-text-select__content > div.qwen-markdown.qwen-markdown-loose > div.qwen-markdown-paragraph > span.qwen-markdown-text"
 
 # ============================================================
 # BROWSER HARNESS
@@ -114,6 +117,34 @@ class BrowserHarness:
         logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
     
+    async def click_element(self, selector):
+        """Клик по элементу по селектору"""
+        logger.info(f"🖱️ Клик по {selector}")
+        
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return false;
+            if (el.offsetParent === null) return false;
+            if (el.disabled) return false;
+            
+            var rect = el.getBoundingClientRect();
+            var x = Math.round(rect.left + rect.width / 2);
+            var y = Math.round(rect.top + rect.height / 2);
+            
+            // Эмулируем клик через CDP
+            return {{x: x, y: y, found: true}};
+        }})()
+        """
+        
+        result = await self.evaluate(js)
+        
+        if result and result.get('found'):
+            x, y = result['x'], result['y']
+            return await self.click_at_coords(x, y)
+        
+        return False
+    
     async def click_at_coords(self, x, y):
         """Клик через CDP"""
         await self._send_cdp("Input.dispatchMouseEvent", {
@@ -141,42 +172,106 @@ class BrowserHarness:
         })
         return True
     
-    async def click_send_button(self):
-        """Найти и нажать кнопку отправки"""
-        logger.info("🔍 Ищу кнопку отправки...")
+    async def set_text(self, selector, text):
+        """Установить текст в поле по селектору"""
+        logger.info(f"✏️ Ввод текста в {selector}")
         
-        js = """
-        (function() {
-            var selectors = [
-                '.message-input-right-button-send',
-                '.message-input-right-button-send button',
-                '.chat-prompt-send-button',
-                'button.send-button'
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return {{success: false, error: 'Элемент не найден'}};
+            
+            el.focus();
+            el.click();
+            el.value = '';
+            el.value = '{text.replace("'", "\\'")}';
+            
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+            
+            return {{success: true, value: el.value}};
+        }})()
+        """
+        return await self.evaluate(js)
+    
+    async def get_qwen_response(self):
+        """Получить ответ Qwen по точному селектору"""
+        js = f"""
+        (function() {{
+            // Точный селектор из скриншота
+            var el = document.querySelector('{RESPONSE_SELECTOR}');
+            if (el) {{
+                var text = (el.textContent || '').trim();
+                if (text && text.length > 5) {{
+                    // Проверяем что это не системное сообщение
+                    var systemPatterns = [
+                        'AutoChoose', 'Get Started', 'Please enter',
+                        'Что бы вы хотели', 'Log in', 'Sign up',
+                        'Скачать приложение', 'Войти', 'Завершено размышление',
+                        'Thinking completed', 'Выберите', 'Ваш выбор',
+                        'Используя Qwen Studio', 'Пользовательские условия',
+                        'Политика конфиденциальности', 'Сообщить'
+                    ];
+                    var isSystem = false;
+                    for (var p of systemPatterns) {{
+                        if (text.includes(p)) {{
+                            isSystem = true;
+                            break;
+                        }}
+                    }}
+                    if (!isSystem) {{
+                        return text;
+                    }}
+                }}
+            }}
+            
+            // Если не нашли по точному селектору, ищем по всем возможным
+            var allTexts = [];
+            var containers = document.querySelectorAll('.message-content, .chat-message, #chat-message-container, [class*="message"], .qwen-markdown-text');
+            for (var i = 0; i < containers.length; i++) {{
+                var text = (containers[i].textContent || '').trim();
+                if (text && text.length > 10) {{
+                    allTexts.push(text);
+                }}
+            }}
+            
+            // Фильтруем и берем самое длинное
+            var systemPatterns = [
+                'AutoChoose', 'Get Started', 'Please enter',
+                'Что бы вы хотели', 'Log in', 'Sign up',
+                'Скачать приложение', 'Войти', 'Завершено размышление',
+                'Thinking completed', 'Выберите', 'Ваш выбор'
             ];
             
-            for (var s of selectors) {
-                var el = document.querySelector(s);
-                if (el && el.offsetParent !== null && !el.disabled) {
-                    var rect = el.getBoundingClientRect();
-                    return {
-                        x: Math.round(rect.left + rect.width / 2),
-                        y: Math.round(rect.top + rect.height / 2),
-                        found: true
-                    };
-                }
-            }
-            return {found: false};
-        })()
+            var filtered = [];
+            for (var i = 0; i < allTexts.length; i++) {{
+                var text = allTexts[i];
+                var isSystem = false;
+                for (var p of systemPatterns) {{
+                    if (text.includes(p)) {{
+                        isSystem = true;
+                        break;
+                    }}
+                }}
+                if (!isSystem) {{
+                    filtered.push(text);
+                }}
+            }}
+            
+            if (filtered.length > 0) {{
+                filtered.sort(function(a, b) {{ return b.length - a.length; }});
+                return filtered[0];
+            }}
+            
+            return null;
+        }})()
         """
-        
-        result = await self.evaluate(js)
-        
-        if result and result.get('found'):
-            x, y = result['x'], result['y']
-            logger.info(f"🖱️ Клик по кнопке ({x}, {y})")
-            return await self.click_at_coords(x, y)
-        
-        logger.info("⌨️ Кнопка не найдена, пробую Enter...")
+        return await self.evaluate(js)
+    
+    async def send_enter(self):
+        """Отправить Enter через CDP"""
         await self._send_cdp("Input.dispatchKeyEvent", {
             "type": "keyDown",
             "key": "Enter",
@@ -192,95 +287,6 @@ class BrowserHarness:
         })
         return True
     
-    async def get_qwen_response(self):
-        """Получить ответ Qwen со страницы"""
-        js = """
-        (function() {
-            var allTexts = [];
-            
-            // 1. Ищем по ID из скриншота
-            var container = document.getElementById('chat-message-container');
-            if (container) {
-                var text = (container.textContent || '').trim();
-                if (text && text.length > 5) {
-                    allTexts.push(text);
-                }
-            }
-            
-            // 2. Ищем по классам сообщений
-            var selectors = [
-                '.message-content',
-                '.chat-message',
-                '[class*="message"]',
-                '.qwen-chat-message'
-            ];
-            
-            for (var s of selectors) {
-                var els = document.querySelectorAll(s);
-                for (var i = 0; i < els.length; i++) {
-                    var text = (els[i].textContent || '').trim();
-                    if (text && text.length > 5) {
-                        allTexts.push(text);
-                    }
-                }
-            }
-            
-            // 3. Ищем по блокам с текстом
-            var textBlocks = document.querySelectorAll('div[class*="message"], div[class*="chat"]');
-            for (var i = 0; i < textBlocks.length; i++) {
-                var text = (textBlocks[i].textContent || '').trim();
-                if (text && text.length > 10) {
-                    allTexts.push(text);
-                }
-            }
-            
-            // Фильтруем системные сообщения
-            var systemPatterns = [
-                'AutoChoose', 'Get Started', 'Please enter',
-                'Что бы вы хотели', 'Log in', 'Sign up',
-                'Скачать приложение', 'Войти', 'Завершено размышление',
-                'Thinking completed', 'Выберите', 'Ваш выбор',
-                'Используя Qwen Studio', 'Пользовательские условия',
-                'Политика конфиденциальности', 'Сообщить'
-            ];
-            
-            var filtered = [];
-            for (var i = 0; i < allTexts.length; i++) {
-                var text = allTexts[i];
-                var isSystem = false;
-                for (var p of systemPatterns) {
-                    if (text.includes(p)) {
-                        isSystem = true;
-                        break;
-                    }
-                }
-                if (!isSystem && text.length > 10) {
-                    filtered.push(text);
-                }
-            }
-            
-            // Убираем дубликаты и берем самое длинное
-            var unique = [];
-            var seen = new Set();
-            for (var i = 0; i < filtered.length; i++) {
-                var text = filtered[i];
-                if (!seen.has(text)) {
-                    seen.add(text);
-                    unique.push(text);
-                }
-            }
-            
-            if (unique.length > 0) {
-                // Сортируем по длине (самое длинное = ответ)
-                unique.sort(function(a, b) { return b.length - a.length; });
-                return unique[0];
-            }
-            
-            return null;
-        })()
-        """
-        return await self.evaluate(js)
-    
     async def ask_qwen(self, question):
         """Запрос к Qwen"""
         try:
@@ -294,39 +300,13 @@ class BrowserHarness:
                 await self.navigate("https://chat.qwen.ai/")
                 await self.wait_for_load(5)
             
-            # Запоминаем сообщения до отправки
+            # Запоминаем ответ до отправки
             old_response = await self.get_qwen_response()
             logger.info(f"📝 Ответ до: {old_response[:50] if old_response else 'нет'}")
             
-            # Вводим текст
+            # Вводим текст по точному селектору
             logger.info(f"📌 Ввод текста: {question[:30]}...")
-            tx, ty = get_center_coords(TEXTAREA_COORDS)
-            
-            await self.click_at_coords(tx, ty)
-            await self.wait_for_load(0.3)
-            
-            js = f"""
-            (function() {{
-                var el = document.elementFromPoint({tx}, {ty});
-                if (!el) {{
-                    el = document.querySelector('.message-input-textarea, textarea');
-                }}
-                if (!el) return {{success: false, error: 'Поле не найдено'}};
-                
-                el.focus();
-                el.click();
-                el.value = '';
-                el.value = '{question.replace("'", "\\'")}';
-                
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-                
-                return {{success: true, value: el.value}};
-            }})()
-            """
-            result = await self.evaluate(js)
+            result = await self.set_text(TEXTAREA_SELECTOR, question)
             logger.info(f"📝 Результат ввода: {result}")
             
             if not result or not result.get('success'):
@@ -334,9 +314,13 @@ class BrowserHarness:
             
             await self.wait_for_load(1)
             
-            # Нажимаем кнопку отправки
+            # Пробуем нажать кнопку отправки
             logger.info("📤 Нажимаю кнопку отправки...")
-            await self.click_send_button()
+            clicked = await self.click_element(SEND_BUTTON_SELECTOR)
+            
+            if not clicked:
+                logger.info("⌨️ Кнопка не нажалась, пробую Enter...")
+                await self.send_enter()
             
             await self.wait_for_load(2)
             
@@ -349,7 +333,7 @@ class BrowserHarness:
                 
                 response = await self.get_qwen_response()
                 
-                if response and response != old_response:
+                if response and response != old_response and len(response) > 10:
                     logger.info(f"✅ Получен ответ: {response[:50]}...")
                     return response, None
                 
@@ -382,19 +366,34 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         
-        textarea_value = await browser.evaluate("""
-        (function() {
-            var el = document.querySelector('.message-input-textarea, textarea');
+        # Проверяем поле ввода
+        textarea_value = await browser.evaluate(f"""
+        (function() {{
+            var el = document.querySelector('{TEXTAREA_SELECTOR}');
             return el ? el.value : null;
-        })()
+        }})()
         """)
         
+        # Проверяем кнопку отправки
+        send_btn = await browser.evaluate(f"""
+        (function() {{
+            var el = document.querySelector('{SEND_BUTTON_SELECTOR}');
+            if (!el) return null;
+            return {{
+                visible: el.offsetParent !== null,
+                disabled: el.disabled || false
+            }};
+        }})()
+        """)
+        
+        # Получаем ответ
         response = await browser.get_qwen_response()
         
         msg = f"🔍 **Отладка**\n\n"
         msg += f"Заголовок: {title}\n"
         msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
-        msg += f"💬 Ответ Qwen: {response[:100] if response else 'нет'}\n"
+        msg += f"🔘 Кнопка отправки: {'✅ видна' if send_btn and send_btn.get('visible') else '❌ не видна'}\n"
+        msg += f"💬 Ответ Qwen: {response[:200] if response else 'нет'}\n"
         msg += f"🍪 Кук: {len(COOKIES)}\n"
         
         await update.message.reply_text(msg, parse_mode='Markdown')
