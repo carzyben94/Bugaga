@@ -1,4 +1,4 @@
-# bot.py - полностью на JavaScript
+# bot.py - с поиском правильной кнопки
 import os
 import json
 import asyncio
@@ -104,85 +104,173 @@ class BrowserHarness:
         logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
     
+    async def click_at_coords(self, x, y):
+        """Клик через CDP"""
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        return True
+    
+    async def find_and_click_send_button(self):
+        """Найти и нажать кнопку отправки"""
+        logger.info("🔍 Ищу кнопку отправки...")
+        
+        # Получаем все кнопки с их координатами
+        js = """
+        (function() {
+            var result = [];
+            var els = document.querySelectorAll('button, [role="button"]');
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (el.offsetParent === null) continue;
+                if (el.disabled) continue;
+                
+                var rect = el.getBoundingClientRect();
+                var text = (el.textContent || '').trim();
+                var aria = el.getAttribute('aria-label') || '';
+                
+                // Ищем кнопку с волной или синюю
+                var hasWaveform = el.querySelector('svg[type="icon-line-waveform"]') !== null;
+                var bgColor = window.getComputedStyle(el).backgroundColor;
+                var isBlue = bgColor.includes('rgb(8, 45, 255)') || bgColor.includes('#082dff');
+                
+                result.push({
+                    text: text || aria,
+                    hasWaveform: hasWaveform,
+                    isBlue: isBlue,
+                    x: Math.round(rect.left + rect.width / 2),
+                    y: Math.round(rect.top + rect.height / 2),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                    tag: el.tagName,
+                    class: el.className
+                });
+            }
+            return result;
+        })()
+        """
+        
+        buttons = await self.evaluate(js)
+        logger.info(f"🔘 Найдено кнопок: {len(buttons)}")
+        
+        for btn in buttons:
+            logger.info(f"  - {btn}")
+        
+        # Ищем кнопку с волной или синюю
+        target = None
+        for btn in buttons:
+            if btn.get('hasWaveform') or btn.get('isBlue'):
+                target = btn
+                break
+        
+        # Если не нашли, берем последнюю кнопку в правом нижнем углу
+        if not target and buttons:
+            # Сортируем по x и y (правая нижняя)
+            buttons_sorted = sorted(buttons, key=lambda b: (b['x'] + b['y']), reverse=True)
+            target = buttons_sorted[0]
+            logger.info(f"🎯 Выбрана кнопка по позиции: {target}")
+        
+        if target:
+            x, y = target['x'], target['y']
+            logger.info(f"🖱️ Клик по кнопке ({x}, {y})")
+            await self.click_at_coords(x, y)
+            return True
+        
+        return False
+    
     async def ask_qwen(self, question):
-        """Весь процесс на JavaScript"""
+        """Запрос к Qwen"""
         try:
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
             
-            # Выполняем весь процесс через один JS скрипт
-            logger.info("📝 Выполняю JavaScript...")
+            # Запоминаем сообщения до отправки
+            old_messages = await self.evaluate("""
+            (function() {
+                var texts = [];
+                var els = document.querySelectorAll('.message-content, .chat-message, [class*="message"]');
+                for (var i = 0; i < els.length; i++) {
+                    var text = (els[i].textContent || '').trim();
+                    if (text && text.length > 5) {
+                        texts.push(text);
+                    }
+                }
+                return texts;
+            })()
+            """)
+            logger.info(f"📝 Сообщений до: {len(old_messages)}")
             
+            # Вводим текст
+            logger.info(f"📌 Ввод текста: {question[:30]}...")
             js = f"""
             (function() {{
-                var result = {{ success: false, error: null, response: null }};
+                var el = document.querySelector('.message-input-textarea, textarea');
+                if (!el) return {{success: false, error: 'Поле не найдено'}};
                 
-                try {{
-                    // 1. Находим поле ввода
-                    var textarea = document.querySelector('.message-input-textarea, textarea');
-                    if (!textarea) {{
-                        result.error = 'Поле ввода не найдено';
-                        return result;
-                    }}
-                    
-                    // 2. Кликаем и фокусируемся
-                    textarea.focus();
-                    textarea.click();
-                    
-                    // 3. Очищаем и вводим текст
-                    textarea.value = '';
-                    textarea.value = '{question.replace("'", "\\'")}';
-                    
-                    // 4. Триггерим события
-                    textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    textarea.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-                    textarea.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-                    
-                    // 5. Проверяем что текст установился
-                    if (textarea.value !== '{question.replace("'", "\\'")}') {{
-                        result.error = 'Текст не установился';
-                        return result;
-                    }}
-                    
-                    // 6. Находим кнопку отправки
-                    var sendBtn = document.querySelector('.omni-button-content-btn');
-                    if (!sendBtn) {{
-                        // Пробуем Enter
-                        textarea.dispatchEvent(new KeyboardEvent('keydown', {{
-                            key: 'Enter',
-                            code: 'Enter',
-                            bubbles: true
-                        }}));
-                        textarea.dispatchEvent(new KeyboardEvent('keyup', {{
-                            key: 'Enter',
-                            code: 'Enter',
-                            bubbles: true
-                        }}));
-                    }} else {{
-                        sendBtn.click();
-                        sendBtn.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
-                    }}
-                    
-                    result.success = true;
-                    
-                }} catch(e) {{
-                    result.error = e.message;
-                }}
+                el.focus();
+                el.click();
+                el.value = '';
+                el.value = '{question.replace("'", "\\'")}';
                 
-                return result;
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+                
+                return {{success: true, value: el.value}};
             }})()
             """
+            result = await self.evaluate(js)
+            logger.info(f"📝 Результат ввода: {result}")
             
-            js_result = await self.evaluate(js)
-            logger.info(f"📊 Результат JS: {js_result}")
+            if not result or not result.get('success'):
+                return None, "Не удалось ввести текст"
             
-            if not js_result or not js_result.get('success'):
-                error = js_result.get('error', 'Неизвестная ошибка') if js_result else 'Пустой результат'
-                return None, f"Ошибка JS: {error}"
+            await self.wait_for_load(1)
             
-            await self.wait_for_load(3)
+            # Нажимаем кнопку отправки
+            logger.info("🔘 Нажимаю кнопку отправки...")
+            clicked = await self.find_and_click_send_button()
+            
+            if not clicked:
+                # Пробуем Enter
+                logger.info("⌨️ Пробую Enter...")
+                await self._send_cdp("Input.dispatchKeyEvent", {
+                    "type": "keyDown",
+                    "key": "Enter",
+                    "code": "Enter",
+                    "windowsVirtualKeyCode": 13,
+                })
+                await asyncio.sleep(0.05)
+                await self._send_cdp("Input.dispatchKeyEvent", {
+                    "type": "keyUp",
+                    "key": "Enter",
+                    "code": "Enter",
+                    "windowsVirtualKeyCode": 13,
+                })
+            
+            await self.wait_for_load(2)
             
             # Ждем ответ
             logger.info("⏳ Ожидание ответа...")
@@ -191,15 +279,13 @@ class BrowserHarness:
             for attempt in range(max_attempts):
                 await asyncio.sleep(1)
                 
-                # Проверяем новые сообщения
-                check_js = """
+                messages = await self.evaluate("""
                 (function() {
                     var texts = [];
                     var els = document.querySelectorAll('.message-content, .chat-message, [class*="message"]');
                     for (var i = 0; i < els.length; i++) {
                         var text = (els[i].textContent || '').trim();
                         if (text && text.length > 10) {
-                            // Фильтруем системные
                             if (!text.includes('AutoChoose') && 
                                 !text.includes('Get Started') &&
                                 !text.includes('Please enter') &&
@@ -212,15 +298,13 @@ class BrowserHarness:
                     }
                     return texts;
                 })()
-                """
-                messages = await self.evaluate(check_js)
+                """)
                 
-                if messages and len(messages) > 0:
-                    # Берем самое длинное сообщение
-                    response = max(messages, key=len)
-                    if len(response) > 15:
-                        logger.info(f"✅ Получен ответ: {response[:50]}...")
-                        return response, None
+                # Ищем новые сообщения
+                for msg in messages:
+                    if msg not in old_messages:
+                        logger.info(f"✅ Получен ответ: {msg[:50]}...")
+                        return msg, None
                 
                 if attempt % 10 == 0:
                     logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
@@ -240,7 +324,7 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"Весь процесс через JavaScript!\n"
+        f"Автоматически находит кнопку отправки!\n"
         f"Просто отправьте сообщение.\n\n"
         f"📌 /debug — состояние"
     )
@@ -249,28 +333,28 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         title = await browser.evaluate("document.title")
         
-        # Проверяем поле ввода
-        textarea_info = await browser.evaluate("""
+        # Находим все кнопки
+        buttons = await browser.evaluate("""
         (function() {
-            var el = document.querySelector('.message-input-textarea, textarea');
-            if (!el) return null;
-            return {
-                value: el.value,
-                placeholder: el.placeholder,
-                visible: el.offsetParent !== null
-            };
-        })()
-        """)
-        
-        # Проверяем кнопку
-        btn_info = await browser.evaluate("""
-        (function() {
-            var el = document.querySelector('.omni-button-content-btn');
-            if (!el) return null;
-            return {
-                visible: el.offsetParent !== null,
-                disabled: el.disabled || false
-            };
+            var result = [];
+            var els = document.querySelectorAll('button, [role="button"]');
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                if (el.offsetParent === null) continue;
+                var rect = el.getBoundingClientRect();
+                var text = (el.textContent || '').trim();
+                var aria = el.getAttribute('aria-label') || '';
+                var hasWaveform = el.querySelector('svg[type="icon-line-waveform"]') !== null;
+                result.push({
+                    text: text || aria,
+                    hasWaveform: hasWaveform,
+                    x: Math.round(rect.left),
+                    y: Math.round(rect.top),
+                    w: Math.round(rect.width),
+                    h: Math.round(rect.height)
+                });
+            }
+            return result;
         })()
         """)
         
@@ -289,25 +373,18 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """)
         
         msg = f"🔍 Отладка\n\n"
-        msg += f"Заголовок: {title}\n\n"
+        msg += f"Заголовок: {title}\n"
+        msg += f"Найдено кнопок: {len(buttons)}\n\n"
         
-        msg += "Поле ввода:\n"
-        if textarea_info:
-            msg += f"  value: {textarea_info.get('value', '')[:30]}\n"
-            msg += f"  visible: {textarea_info.get('visible', False)}\n"
-        else:
-            msg += "  ❌ не найдено\n"
+        for i, btn in enumerate(buttons[:5]):
+            msg += f"Кнопка {i+1}:\n"
+            msg += f"  текст: {btn.get('text', '')[:30]}\n"
+            msg += f"  волна: {btn.get('hasWaveform', False)}\n"
+            msg += f"  позиция: ({btn.get('x', 0)}, {btn.get('y', 0)})\n\n"
         
-        msg += "\nКнопка отправки:\n"
-        if btn_info:
-            msg += f"  visible: {btn_info.get('visible', False)}\n"
-            msg += f"  disabled: {btn_info.get('disabled', False)}\n"
-        else:
-            msg += "  ❌ не найдена\n"
-        
-        msg += f"\n💬 Сообщений: {len(messages)}\n"
+        msg += f"💬 Сообщений: {len(messages)}\n"
         if messages:
-            for m in messages[-3:]:
+            for m in messages[-2:]:
                 msg += f"  - {m[:80]}...\n"
         
         await update.message.reply_text(msg)
