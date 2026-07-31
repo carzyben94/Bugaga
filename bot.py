@@ -1,4 +1,4 @@
-# bot.py - финальная версия с ожиданием кнопки
+# bot.py - ФИНАЛЬНАЯ ВЕРСИЯ с точными координатами
 import os
 import json
 import asyncio
@@ -40,12 +40,13 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# КООРДИНАТЫ
+# ТОЧНЫЕ КООРДИНАТЫ ИЗ СКРИНШОТОВ
 # ============================================================
 
-# Координаты из скриншотов
-TEXTAREA_COORDS = [328, 167, 245, 56]  # из JSON
-SEND_BUTTON_COORDS = [339, 291, 21, 21]  # из скриншота
+# Поле ввода (из JSON)
+TEXTAREA_COORDS = [328, 167, 245, 56]
+# Кнопка отправки (из скриншота 175606.jpg)
+SEND_BUTTON_COORDS = [352, 286, 35, 30]
 
 def get_center_coords(coords):
     x, y, w, h = coords
@@ -145,22 +146,24 @@ class BrowserHarness:
         })
         return True
     
-    async def wait_for_send_button(self, timeout=10):
+    async def wait_for_send_button(self, timeout=15):
         """Ожидать появления кнопки отправки"""
         logger.info("⏳ Ожидаю появления кнопки отправки...")
         sx, sy = get_center_coords(SEND_BUTTON_COORDS)
         
         for attempt in range(timeout):
-            # Проверяем элемент по координатам
             js = f"""
             (function() {{
                 var el = document.elementFromPoint({sx}, {sy});
                 if (!el) return false;
-                // Проверяем что элемент видимый
                 if (el.offsetParent === null) return false;
-                // Проверяем что это не disabled
                 if (el.disabled) return false;
-                return true;
+                // Проверяем что это кнопка отправки
+                var parent = el.closest('.message-input-right-button-send');
+                if (parent) return true;
+                // Или проверяем по классу
+                if (el.className && el.className.includes('send')) return true;
+                return false;
             }})()
             """
             exists = await self.evaluate(js)
@@ -176,16 +179,13 @@ class BrowserHarness:
     async def ask_qwen(self, question):
         """Запрос к Qwen"""
         try:
-            # Переход на сайт
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
             
-            # Установка кук
             if COOKIES:
                 await self.set_cookies(COOKIES)
                 await self.wait_for_load(2)
-                # Обновляем страницу после установки кук
                 await self.navigate("https://chat.qwen.ai/")
                 await self.wait_for_load(5)
             
@@ -209,11 +209,11 @@ class BrowserHarness:
             logger.info(f"📌 Ввод текста: {question[:30]}...")
             tx, ty = get_center_coords(TEXTAREA_COORDS)
             
-            # Сначала кликаем по полю
+            # Клик по полю
             await self.click_at_coords(tx, ty)
             await self.wait_for_load(0.3)
             
-            # Вводим текст через JS
+            # Ввод текста
             js = f"""
             (function() {{
                 var el = document.elementFromPoint({tx}, {ty});
@@ -227,31 +227,10 @@ class BrowserHarness:
                 el.value = '';
                 el.value = '{question.replace("'", "\\'")}';
                 
-                // Триггерим все события чтобы React обновился
                 el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
                 el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-                
-                // Дополнительно пробуем React onChange
-                var fiberKey = null;
-                for (var key in el) {{
-                    if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
-                        fiberKey = key;
-                        break;
-                    }}
-                }}
-                
-                if (fiberKey) {{
-                    var fiber = el[fiberKey];
-                    while (fiber) {{
-                        if (fiber.memoizedProps && fiber.memoizedProps.onChange) {{
-                            fiber.memoizedProps.onChange({{ target: el, type: 'change', bubbles: true }});
-                            break;
-                        }}
-                        fiber = fiber.return;
-                    }}
-                }}
                 
                 return {{success: true, value: el.value}};
             }})()
@@ -263,15 +242,16 @@ class BrowserHarness:
                 return None, "Не удалось ввести текст"
             
             # Ждем появления кнопки отправки
-            send_btn_visible = await self.wait_for_send_button(timeout=10)
+            send_btn_visible = await self.wait_for_send_button(timeout=15)
             
             if send_btn_visible:
-                # Нажимаем кнопку отправки
                 logger.info("📤 Нажимаю кнопку отправки...")
                 sx, sy = get_center_coords(SEND_BUTTON_COORDS)
                 await self.click_at_coords(sx, sy)
+                # Дополнительный клик для надежности
+                await self.wait_for_load(0.3)
+                await self.click_at_coords(sx, sy)
             else:
-                # Пробуем Enter
                 logger.info("⌨️ Кнопка не появилась, пробую Enter...")
                 await self._send_cdp("Input.dispatchKeyEvent", {
                     "type": "keyDown",
@@ -343,9 +323,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: НЕ ЗАГРУЖЕНЫ!"
     
     await update.message.reply_text(
-        f"🤖 Qwen Bot\n\n"
-        f"{cookies_status}\n\n"
-        f"📌 /debug — состояние"
+        f"🤖 **Qwen Bot**\n\n"
+        f"{cookies_status}\n"
+        f"📍 Кнопка отправки: {SEND_BUTTON_COORDS}\n\n"
+        f"📌 /debug — состояние",
+        parse_mode='Markdown'
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,7 +351,8 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return {{
                 visible: el.offsetParent !== null,
                 disabled: el.disabled || false,
-                text: (el.textContent || '').trim().slice(0, 30)
+                tag: el.tagName,
+                class: el.className || ''
             }};
         }})()
         """)
@@ -388,12 +371,12 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })()
         """)
         
-        msg = f"🔍 Отладка\n\n"
+        msg = f"🔍 **Отладка**\n\n"
         msg += f"Заголовок: {title}\n"
         msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
         msg += f"🔘 Кнопка отправки: {'✅ видна' if send_btn and send_btn.get('visible') else '❌ не видна'}\n"
         if send_btn:
-            msg += f"   disabled: {send_btn.get('disabled', False)}\n"
+            msg += f"   класс: {send_btn.get('class', '')}\n"
         msg += f"💬 Сообщений: {len(messages)}\n"
         msg += f"🍪 Кук: {len(COOKIES)}\n\n"
         
@@ -402,7 +385,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for m in messages[-3:]:
                 msg += f"  - {m[:80]}...\n"
         
-        await update.message.reply_text(msg)
+        await update.message.reply_text(msg, parse_mode='Markdown')
         
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
@@ -426,7 +409,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(response) > 4000:
             response = response[:4000] + "..."
         
-        await status_msg.edit_text(f"💬 Qwen:\n\n{response}")
+        await status_msg.edit_text(f"💬 **Qwen:**\n\n{response}", parse_mode='Markdown')
         
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -439,6 +422,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Qwen Bot запущен!")
+    logger.info(f"📍 Кнопка отправки: {SEND_BUTTON_COORDS}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
