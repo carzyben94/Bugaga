@@ -1,4 +1,4 @@
-# bot.py - с правильной реализацией клика через CDP
+# bot.py - универсальный клик для React
 import os
 import json
 import asyncio
@@ -46,9 +46,11 @@ except ImportError:
 ELEMENTS = {
     'textarea': {
         'coords': [328, 167, 245, 56],
+        'selector': '.message-input-textarea'
     },
     'send_button': {
         'coords': [720, 179, 32, 32],
+        'selector': '.omni-button-content-btn'
     }
 }
 
@@ -121,96 +123,230 @@ class BrowserHarness:
         logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
     
-    async def click_at_coords(self, x, y):
+    async def click_react(self, selector, x, y):
         """
-        Правильный клик через CDP с последовательностью:
-        1. mouseMoved - перемещение мыши к элементу (необходимо для React)
-        2. mousePressed - нажатие кнопки
-        3. mouseReleased - отпускание кнопки
+        Универсальный клик для React-приложений
+        Пробует все способы: CDP → JS click → React props
         """
-        logger.info(f"🖱️ Клик по координатам ({x}, {y})")
+        logger.info(f"🖱️ Клик по {selector} в ({x}, {y})")
         
-        # Шаг 1: Перемещение мыши к элементу
-        # React event delegation требует события mouseMoved [citation:12]
-        move_result = await self._send_cdp("Input.dispatchMouseEvent", {
-            "type": "mouseMoved",
-            "x": x,
-            "y": y
-        })
+        # ============================================================
+        # СПОСОБ 1: CDP клик (mouseMoved → mousePressed → mouseReleased)
+        # ============================================================
+        logger.info("  Способ 1: CDP клик...")
+        try:
+            # mouseMoved
+            await self._send_cdp("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y
+            })
+            await asyncio.sleep(0.05)
+            
+            # mousePressed
+            await self._send_cdp("Input.dispatchMouseEvent", {
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            await asyncio.sleep(0.05)
+            
+            # mouseReleased
+            await self._send_cdp("Input.dispatchMouseEvent", {
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "clickCount": 1
+            })
+            logger.info("  ✅ Способ 1 сработал")
+            return True
+        except Exception as e:
+            logger.warning(f"  ❌ Способ 1 не сработал: {e}")
         
-        if "error" in move_result:
-            logger.warning(f"Ошибка mouseMoved: {move_result.get('error')}")
+        # ============================================================
+        # СПОСОБ 2: JavaScript click
+        # ============================================================
+        logger.info("  Способ 2: JavaScript click...")
+        try:
+            js_click = f"""
+            (function() {{
+                var el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+                el.click();
+                return true;
+            }})()
+            """
+            result = await self.evaluate(js_click)
+            if result:
+                logger.info("  ✅ Способ 2 сработал")
+                return True
+        except Exception as e:
+            logger.warning(f"  ❌ Способ 2 не сработал: {e}")
         
-        await asyncio.sleep(0.05)
+        # ============================================================
+        # СПОСОБ 3: React props (onClick)
+        # ============================================================
+        logger.info("  Способ 3: React props...")
+        try:
+            react_click = f"""
+            (function() {{
+                var el = document.querySelector('{selector}');
+                if (!el) return false;
+                
+                // Ищем React Fiber
+                var fiberKey = null;
+                for (var key in el) {{
+                    if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
+                        fiberKey = key;
+                        break;
+                    }}
+                }}
+                
+                if (!fiberKey) return false;
+                
+                var fiber = el[fiberKey];
+                var onClickHandler = null;
+                
+                // Ищем onClick в пропсах
+                while (fiber) {{
+                    if (fiber.memoizedProps) {{
+                        if (fiber.memoizedProps.onClick) {{
+                            onClickHandler = fiber.memoizedProps.onClick;
+                            break;
+                        }}
+                        // Пробуем другие обработчики
+                        if (fiber.memoizedProps.onMouseDown) {{
+                            onClickHandler = fiber.memoizedProps.onMouseDown;
+                            break;
+                        }}
+                    }}
+                    fiber = fiber.return;
+                }}
+                
+                if (onClickHandler) {{
+                    onClickHandler({{ target: el, currentTarget: el, type: 'click', bubbles: true }});
+                    return true;
+                }}
+                
+                return false;
+            }})()
+            """
+            result = await self.evaluate(react_click)
+            if result:
+                logger.info("  ✅ Способ 3 сработал")
+                return True
+        except Exception as e:
+            logger.warning(f"  ❌ Способ 3 не сработал: {e}")
         
-        # Шаг 2: Нажатие кнопки
-        press_result = await self._send_cdp("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        })
+        # ============================================================
+        # СПОСОБ 4: React props (onChange для поля ввода)
+        # ============================================================
+        if 'textarea' in selector or 'input' in selector:
+            logger.info("  Способ 4: React onChange...")
+            try:
+                react_change = f"""
+                (function() {{
+                    var el = document.querySelector('{selector}');
+                    if (!el) return false;
+                    
+                    var fiberKey = null;
+                    for (var key in el) {{
+                        if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
+                            fiberKey = key;
+                            break;
+                        }}
+                    }}
+                    
+                    if (!fiberKey) return false;
+                    
+                    var fiber = el[fiberKey];
+                    var onChangeHandler = null;
+                    
+                    while (fiber) {{
+                        if (fiber.memoizedProps && fiber.memoizedProps.onChange) {{
+                            onChangeHandler = fiber.memoizedProps.onChange;
+                            break;
+                        }}
+                        fiber = fiber.return;
+                    }}
+                    
+                    if (onChangeHandler) {{
+                        el.value = el.value;
+                        onChangeHandler({{ target: el, type: 'change', bubbles: true }});
+                        return true;
+                    }}
+                    
+                    return false;
+                }})()
+                """
+                result = await self.evaluate(react_change)
+                if result:
+                    logger.info("  ✅ Способ 4 сработал")
+                    return True
+            except Exception as e:
+                logger.warning(f"  ❌ Способ 4 не сработал: {e}")
         
-        if "error" in press_result:
-            logger.error(f"Ошибка mousePressed: {press_result.get('error')}")
-            return False
-        
-        await asyncio.sleep(0.05)
-        
-        # Шаг 3: Отпускание кнопки
-        release_result = await self._send_cdp("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        })
-        
-        if "error" in release_result:
-            logger.error(f"Ошибка mouseReleased: {release_result.get('error')}")
-            return False
-        
-        logger.info(f"✅ Клик выполнен успешно")
-        return True
+        logger.warning("❌ Все способы клика не сработали!")
+        return False
     
-    async def set_text_at_coords(self, x, y, text):
-        """Установить текст в элемент по координатам"""
+    async def set_text_react(self, selector, x, y, text):
+        """Установить текст с поддержкой React"""
+        logger.info(f"✏️ Ввод текста в {selector}")
+        
+        # Способ 1: Прямая установка через CDP
         js = f"""
         (function() {{
-            var element = document.elementFromPoint({x}, {y});
-            if (!element) return false;
+            var el = document.querySelector('{selector}');
+            if (!el) return false;
             
-            element.focus();
-            element.click();
-            element.value = '';
-            element.value = '{text.replace("'", "\\'")}';
+            el.focus();
+            el.click();
+            el.value = '';
+            el.value = '{text.replace("'", "\\'")}';
             
-            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            element.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            element.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-            element.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+            // Важно: триггерим все события
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+            
+            // Пробуем React onChange
+            var fiberKey = null;
+            for (var key in el) {{
+                if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
+                    fiberKey = key;
+                    break;
+                }}
+            }}
+            
+            if (fiberKey) {{
+                var fiber = el[fiberKey];
+                while (fiber) {{
+                    if (fiber.memoizedProps && fiber.memoizedProps.onChange) {{
+                        fiber.memoizedProps.onChange({{ target: el, type: 'change', bubbles: true }});
+                        break;
+                    }}
+                    fiber = fiber.return;
+                }}
+            }}
             
             return true;
         }})()
         """
         return await self.evaluate(js)
     
-    async def wait_for_send_button(self, timeout=10):
-        """Ожидать появления кнопки отправки"""
-        logger.info("⏳ Ожидаю появления кнопки отправки...")
-        
-        coords = ELEMENTS['send_button']['coords']
-        x, y = get_center_coords(coords)
-        
+    async def wait_for_element(self, selector, timeout=10):
+        """Ожидать появления элемента"""
         js = f"""
         (function() {{
             var start = Date.now();
             while (Date.now() - start < {timeout * 1000}) {{
-                var element = document.elementFromPoint({x}, {y});
-                if (element && element.offsetParent !== null) {{
-                    return true;
-                }}
+                var el = document.querySelector('{selector}');
+                if (el && el.offsetParent !== null) return true;
                 var end = Date.now() + 500;
                 while (Date.now() < end) {{}}
             }}
@@ -267,35 +403,35 @@ class BrowserHarness:
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
             
-            # Координаты поля ввода
+            # ============================================================
+            # ШАГ 1: Ввод текста
+            # ============================================================
+            textarea_selector = ELEMENTS['textarea']['selector']
             textarea_coords = ELEMENTS['textarea']['coords']
             tx, ty = get_center_coords(textarea_coords)
             
-            # ШАГ 1: Клик по полю ввода
-            logger.info(f"📌 Клик по полю ввода ({tx}, {ty})...")
-            await self.click_at_coords(tx, ty)
-            await self.wait_for_load(0.5)
-            
-            # ШАГ 2: Ввод текста
-            logger.info(f"📌 Ввод текста...")
-            text_set = await self.set_text_at_coords(tx, ty, question)
+            logger.info("📌 ШАГ 1: Ввод текста...")
+            text_set = await self.set_text_react(textarea_selector, tx, ty, question)
             
             if not text_set:
                 return None, "Не удалось ввести текст"
             
             await self.wait_for_load(1)
             
-            # ШАГ 3: Ожидание появления кнопки отправки
-            send_btn_visible = await self.wait_for_send_button(timeout=10)
+            # ============================================================
+            # ШАГ 2: Отправка
+            # ============================================================
+            send_selector = ELEMENTS['send_button']['selector']
+            send_coords = ELEMENTS['send_button']['coords']
+            sx, sy = get_center_coords(send_coords)
+            
+            logger.info("📌 ШАГ 2: Ожидание кнопки отправки...")
+            send_btn_visible = await self.wait_for_element(send_selector, timeout=10)
             
             if send_btn_visible:
-                # ШАГ 4: Клик по кнопке отправки
-                coords = ELEMENTS['send_button']['coords']
-                sx, sy = get_center_coords(coords)
-                logger.info(f"📌 Клик по кнопке отправки ({sx}, {sy})...")
-                await self.click_at_coords(sx, sy)
+                logger.info("📌 ШАГ 3: Клик по кнопке отправки...")
+                await self.click_react(send_selector, sx, sy)
             else:
-                # ШАГ 4b: Enter если кнопка не появилась
                 logger.info("⏳ Кнопка не появилась, пробую Enter...")
                 enter_js = """
                 (function() {
@@ -310,8 +446,10 @@ class BrowserHarness:
             
             await self.wait_for_load(1)
             
-            # ШАГ 5: Ожидание ответа
-            logger.info("⏳ Ожидание ответа...")
+            # ============================================================
+            # ШАГ 3: Ожидание ответа
+            # ============================================================
+            logger.info("⏳ ШАГ 4: Ожидание ответа...")
             max_attempts = 120
             
             for attempt in range(max_attempts):
@@ -341,10 +479,12 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"Просто отправьте сообщение!\n"
-        f"Бот использует правильную последовательность CDP:\n"
-        f"mouseMoved → mousePressed → mouseReleased\n\n"
-        f"📌 /debug — состояние"
+        f"Использую универсальный клик для React:\n"
+        f"1. CDP mouse events\n"
+        f"2. JavaScript click\n"
+        f"3. React onClick props\n"
+        f"4. React onChange props\n\n"
+        f"Просто отправьте сообщение!"
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -353,9 +493,8 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         status = {}
         for name, element in ELEMENTS.items():
-            coords = element['coords']
-            x, y = get_center_coords(coords)
-            js = f"!!document.elementFromPoint({x}, {y})"
+            selector = element['selector']
+            js = f"!!document.querySelector('{selector}')"
             exists = await browser.evaluate(js)
             status[name] = exists
         
