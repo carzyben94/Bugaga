@@ -1,4 +1,4 @@
-# bot.py - с расширенной отладкой
+# bot.py - исправленная фильтрация ответов
 import os
 import json
 import asyncio
@@ -21,7 +21,7 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 logging.basicConfig(
-    level=logging.DEBUG,  # Включаем DEBUG для деталей
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -66,7 +66,6 @@ class BrowserHarness:
     def __init__(self, cdp_url="http://localhost:9222"):
         self.cdp_url = cdp_url
         self.ws_url = None
-        self.last_debug = {}  # Для отладки
     
     def _get_ws_url(self):
         try:
@@ -113,369 +112,95 @@ class BrowserHarness:
         result = await self._send_cdp("Page.navigate", {"url": url})
         return result.get("result", {})
     
-    async def evaluate(self, expression, log_result=True):
-        """Выполнить JS и вернуть результат"""
-        try:
-            result = await self._send_cdp("Runtime.evaluate", {
-                "expression": expression,
-                "returnByValue": True
-            })
-            
-            if "result" in result and "result" in result["result"]:
-                value = result["result"]["result"].get("value")
-                if log_result:
-                    logger.debug(f"JS result: {str(value)[:100]}...")
-                return value
-            elif "error" in result:
-                logger.error(f"JS error: {result['error']}")
-                return None
-            else:
-                logger.warning(f"JS unexpected result: {result}")
-                return None
-        except Exception as e:
-            logger.error(f"JS evaluate error: {e}")
-            return None
+    async def evaluate(self, expression):
+        result = await self._send_cdp("Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True
+        })
+        return result.get("result", {}).get("result", {}).get("value")
     
     async def wait_for_load(self, timeout=5):
         logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
     
-    # ============================================================
-    # ДИАГНОСТИКА
-    # ============================================================
+    async def click_at_coords(self, x, y):
+        """Клик через CDP"""
+        # mouseMoved
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y
+        })
+        await asyncio.sleep(0.05)
+        
+        # mousePressed
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        await asyncio.sleep(0.05)
+        
+        # mouseReleased
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        return True
     
-    async def get_page_snapshot(self):
-        """Получить снимок страницы для отладки"""
-        snapshot = {}
-        
-        # 1. Заголовок
-        snapshot['title'] = await self.evaluate("document.title")
-        
-        # 2. URL
-        snapshot['url'] = await self.evaluate("window.location.href")
-        
-        # 3. Проверка элементов
-        for name, element in ELEMENTS.items():
-            selector = element['selector']
-            exists = await self.evaluate(f"!!document.querySelector('{selector}')")
-            snapshot[f'{name}_exists'] = exists
-            
-            if exists:
-                # Получаем текст элемента
-                text = await self.evaluate(f"""
-                (function() {{
-                    var el = document.querySelector('{selector}');
-                    return el ? (el.textContent || '').trim() : null;
-                }})()
-                """)
-                snapshot[f'{name}_text'] = text[:100] if text else None
-        
-        # 4. Количество сообщений
-        snapshot['messages_count'] = await self.evaluate("""
-        (function() {
-            return document.querySelectorAll('.message-content, .chat-message').length;
-        })()
-        """)
-        
-        # 5. Последний ответ
-        snapshot['last_response'] = await self.get_last_response()
-        
-        # 6. Есть ли индикатор загрузки
-        snapshot['loading'] = await self.evaluate("""
-        (function() {
-            return !!document.querySelector('[class*="loading"], [class*="typing"], .anticon-loading');
-        })()
-        """)
-        
-        # 7. React Fiber на поле ввода
-        snapshot['textarea_fiber'] = await self.evaluate("""
-        (function() {
-            var el = document.querySelector('.message-input-textarea');
-            if (!el) return null;
-            for (var key in el) {
-                if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {
-                    return key;
-                }
-            }
-            return null;
-        })()
-        """)
-        
-        self.last_debug = snapshot
-        return snapshot
-    
-    # ============================================================
-    # КЛИКИ
-    # ============================================================
-    
-    async def click_method_1_cdp(self, x, y):
-        """Способ 1: CDP mouse events"""
-        logger.info("  [1] CDP mouse events...")
-        try:
-            # mouseMoved
-            result = await self._send_cdp("Input.dispatchMouseEvent", {
-                "type": "mouseMoved",
-                "x": x,
-                "y": y
-            })
-            if "error" in result:
-                logger.warning(f"  [1] mouseMoved error: {result['error']}")
-                return False
-            
-            await asyncio.sleep(0.05)
-            
-            # mousePressed
-            result = await self._send_cdp("Input.dispatchMouseEvent", {
-                "type": "mousePressed",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "clickCount": 1
-            })
-            if "error" in result:
-                logger.warning(f"  [1] mousePressed error: {result['error']}")
-                return False
-            
-            await asyncio.sleep(0.05)
-            
-            # mouseReleased
-            result = await self._send_cdp("Input.dispatchMouseEvent", {
-                "type": "mouseReleased",
-                "x": x,
-                "y": y,
-                "button": "left",
-                "clickCount": 1
-            })
-            if "error" in result:
-                logger.warning(f"  [1] mouseReleased error: {result['error']}")
-                return False
-            
-            logger.info("  ✅ [1] CDP клик сработал")
-            return True
-        except Exception as e:
-            logger.warning(f"  ❌ [1] CDP клик ошибка: {e}")
-            return False
-    
-    async def click_method_2_js(self, selector):
-        """Способ 2: JavaScript click"""
-        logger.info(f"  [2] JavaScript click...")
-        try:
-            result = await self.evaluate(f"""
-            (function() {{
-                var el = document.querySelector('{selector}');
-                if (!el) {{
-                    console.log('Element not found: {selector}');
-                    return false;
-                }}
-                el.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                el.click();
-                return true;
-            }})()
-            """)
-            if result:
-                logger.info("  ✅ [2] JS клик сработал")
-                return True
-            else:
-                logger.warning("  ❌ [2] JS клик вернул false")
-                return False
-        except Exception as e:
-            logger.warning(f"  ❌ [2] JS клик ошибка: {e}")
-            return False
-    
-    async def click_method_3_react_onclick(self, selector):
-        """Способ 3: React onClick props"""
-        logger.info("  [3] React onClick...")
-        try:
-            result = await self.evaluate(f"""
-            (function() {{
-                var el = document.querySelector('{selector}');
-                if (!el) return false;
-                
-                // Ищем React Fiber
-                var fiberKey = null;
-                for (var key in el) {{
-                    if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
-                        fiberKey = key;
-                        break;
-                    }}
-                }}
-                
-                if (!fiberKey) return false;
-                
-                var fiber = el[fiberKey];
-                var handler = null;
-                
-                while (fiber) {{
-                    if (fiber.memoizedProps) {{
-                        if (fiber.memoizedProps.onClick) {{
-                            handler = fiber.memoizedProps.onClick;
-                            break;
-                        }}
-                        if (fiber.memoizedProps.onMouseDown) {{
-                            handler = fiber.memoizedProps.onMouseDown;
-                            break;
-                        }}
-                    }}
-                    fiber = fiber.return;
-                }}
-                
-                if (handler) {{
-                    handler({{ target: el, currentTarget: el, type: 'click', bubbles: true }});
-                    return true;
-                }}
-                return false;
-            }})()
-            """)
-            if result:
-                logger.info("  ✅ [3] React onClick сработал")
-                return True
-            else:
-                logger.warning("  ❌ [3] React onClick не найден")
-                return False
-        except Exception as e:
-            logger.warning(f"  ❌ [3] React onClick ошибка: {e}")
-            return False
-    
-    async def click_method_4_react_onchange(self, selector):
-        """Способ 4: React onChange (для полей ввода)"""
-        if 'textarea' not in selector and 'input' not in selector:
-            return False
-        
-        logger.info("  [4] React onChange...")
-        try:
-            result = await self.evaluate(f"""
-            (function() {{
-                var el = document.querySelector('{selector}');
-                if (!el) return false;
-                
-                var fiberKey = null;
-                for (var key in el) {{
-                    if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
-                        fiberKey = key;
-                        break;
-                    }}
-                }}
-                
-                if (!fiberKey) return false;
-                
-                var fiber = el[fiberKey];
-                var handler = null;
-                
-                while (fiber) {{
-                    if (fiber.memoizedProps && fiber.memoizedProps.onChange) {{
-                        handler = fiber.memoizedProps.onChange;
-                        break;
-                    }}
-                    fiber = fiber.return;
-                }}
-                
-                if (handler) {{
-                    el.value = el.value;
-                    handler({{ target: el, type: 'change', bubbles: true }});
-                    return true;
-                }}
-                return false;
-            }})()
-            """)
-            if result:
-                logger.info("  ✅ [4] React onChange сработал")
-                return True
-            else:
-                logger.warning("  ❌ [4] React onChange не найден")
-                return False
-        except Exception as e:
-            logger.warning(f"  ❌ [4] React onChange ошибка: {e}")
-            return False
-    
-    async def click_react(self, selector, x, y):
-        """Универсальный клик - пробуем все способы"""
-        logger.info(f"🖱️ Клик по {selector} в ({x}, {y})")
-        
-        methods = [
-            ("CDP mouse events", lambda: self.click_method_1_cdp(x, y)),
-            ("JavaScript click", lambda: self.click_method_2_js(selector)),
-            ("React onClick", lambda: self.click_method_3_react_onclick(selector)),
-            ("React onChange", lambda: self.click_method_4_react_onchange(selector)),
-        ]
-        
-        for name, method in methods:
-            result = await method()
-            if result:
-                logger.info(f"✅ Клик выполнен через: {name}")
-                return True
-        
-        logger.error("❌ Все методы клика не сработали!")
-        return False
-    
-    # ============================================================
-    # РАБОТА С ТЕКСТОМ
-    # ============================================================
-    
-    async def set_text_react(self, selector, text):
-        """Установить текст с поддержкой React"""
-        logger.info(f"✏️ Ввод текста в {selector}")
-        
-        result = await self.evaluate(f"""
+    async def set_text_at_coords(self, x, y, text):
+        """Установить текст"""
+        js = f"""
         (function() {{
-            var el = document.querySelector('{selector}');
-            if (!el) {{
-                console.log('Element not found: {selector}');
-                return false;
-            }}
+            var element = document.elementFromPoint({x}, {y});
+            if (!element) return false;
             
-            el.focus();
-            el.click();
-            el.value = '';
-            el.value = '{text.replace("'", "\\'")}';
+            element.focus();
+            element.click();
+            element.value = '';
+            element.value = '{text.replace("'", "\\'")}';
             
-            // Триггерим все события
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-            
-            // Пробуем React onChange
-            var fiberKey = null;
-            for (var key in el) {{
-                if (key.indexOf('__reactFiber') === 0 || key.indexOf('__reactInternalInstance') === 0) {{
-                    fiberKey = key;
-                    break;
-                }}
-            }}
-            
-            if (fiberKey) {{
-                var fiber = el[fiberKey];
-                while (fiber) {{
-                    if (fiber.memoizedProps && fiber.memoizedProps.onChange) {{
-                        fiber.memoizedProps.onChange({{ target: el, type: 'change', bubbles: true }});
-                        break;
-                    }}
-                    fiber = fiber.return;
-                }}
-            }}
-            
-            // Дополнительно: пробуем onInput
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            element.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            element.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+            element.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
             
             return true;
         }})()
-        """)
-        
-        if result:
-            logger.info("✅ Текст установлен")
-        else:
-            logger.warning("❌ Не удалось установить текст")
-        
-        return result
+        """
+        return await self.evaluate(js)
     
-    # ============================================================
-    # ПОЛУЧЕНИЕ ОТВЕТА
-    # ============================================================
+    async def wait_for_send_button(self, timeout=10):
+        """Ожидать появления кнопки отправки"""
+        coords = ELEMENTS['send_button']['coords']
+        x, y = get_center_coords(coords)
+        
+        js = f"""
+        (function() {{
+            var start = Date.now();
+            while (Date.now() - start < {timeout * 1000}) {{
+                var element = document.elementFromPoint({x}, {y});
+                if (element && element.offsetParent !== null) {{
+                    return true;
+                }}
+                var end = Date.now() + 500;
+                while (Date.now() < end) {{}}
+            }}
+            return false;
+        }})()
+        """
+        return await self.evaluate(js)
     
     async def get_last_response(self):
-        """Получить последний ответ"""
-        return await self.evaluate("""
+        """Получить последний ответ с фильтрацией системных сообщений"""
+        js = """
         (function() {
+            // Ищем все сообщения на странице
             var selectors = [
                 '.message-content',
                 '.chat-message',
@@ -483,96 +208,102 @@ class BrowserHarness:
             ];
             
             var allMessages = [];
+            var systemPatterns = [
+                'AutoChoose',
+                'Get Started',
+                'style to create',
+                'Please enter a prompt',
+                'Что бы вы хотели изучить',
+                'Thinking completed',  // <- Добавили!
+                'Skip',               // <- Добавили!
+                'Thinking',
+                'completed'
+            ];
+            
             for (var s of selectors) {
                 var els = document.querySelectorAll(s);
                 for (var i = 0; i < els.length; i++) {
                     var text = (els[i].textContent || '').trim();
-                    if (text && 
-                        text.length > 10 && 
-                        !text.includes('AutoChoose') && 
-                        !text.includes('Get Started') &&
-                        !text.includes('style to create') &&
-                        !text.includes('Please enter a prompt') &&
-                        !text.includes('Что бы вы хотели изучить')) {
-                        allMessages.push({
-                            text: text,
-                            time: Date.now()
-                        });
+                    
+                    // Пропускаем пустые
+                    if (!text || text.length < 5) continue;
+                    
+                    // Пропускаем системные сообщения
+                    var isSystem = false;
+                    for (var p of systemPatterns) {
+                        if (text.includes(p)) {
+                            isSystem = true;
+                            break;
+                        }
                     }
+                    if (isSystem) continue;
+                    
+                    // Сохраняем валидные сообщения
+                    allMessages.push({
+                        text: text,
+                        length: text.length,
+                        time: Date.now()
+                    });
                 }
             }
             
             if (allMessages.length > 0) {
+                // Сортируем по времени (последние сверху)
                 allMessages.sort(function(a, b) { 
                     return b.time - a.time; 
                 });
-                return allMessages[0].text;
+                
+                // Возвращаем самое длинное сообщение (скорее всего ответ)
+                // или последнее по времени
+                var best = allMessages[0];
+                for (var i = 0; i < allMessages.length; i++) {
+                    if (allMessages[i].length > best.length) {
+                        best = allMessages[i];
+                    }
+                }
+                return best.text;
             }
             return null;
         })()
-        """)
-    
-    # ============================================================
-    # ОСНОВНАЯ ФУНКЦИЯ
-    # ============================================================
+        """
+        return await self.evaluate(js)
     
     async def ask_qwen(self, question):
-        """Запрос к Qwen с полной отладкой"""
+        """Запрос к Qwen"""
         try:
-            # Переход на сайт
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
             await self.wait_for_load(5)
             
-            # Делаем снимок страницы
-            logger.info("📸 Делаю снимок страницы...")
-            snapshot = await self.get_page_snapshot()
-            logger.info(f"  Заголовок: {snapshot.get('title')}")
-            logger.info(f"  Поле ввода: {'есть' if snapshot.get('textarea_exists') else 'нет'}")
-            logger.info(f"  Кнопка отправки: {'есть' if snapshot.get('send_button_exists') else 'нет'}")
-            logger.info(f"  Сообщений: {snapshot.get('messages_count')}")
-            logger.info(f"  React Fiber: {snapshot.get('textarea_fiber')}")
+            # Координаты поля ввода
+            textarea_coords = ELEMENTS['textarea']['coords']
+            tx, ty = get_center_coords(textarea_coords)
             
-            # ============================================================
-            # ШАГ 1: Ввод текста
-            # ============================================================
-            textarea_selector = ELEMENTS['textarea']['selector']
+            # ШАГ 1: Клик по полю ввода
+            logger.info(f"📌 Клик по полю ввода...")
+            await self.click_at_coords(tx, ty)
+            await self.wait_for_load(0.5)
             
-            logger.info("📌 ШАГ 1: Ввод текста...")
-            text_set = await self.set_text_react(textarea_selector, question)
+            # ШАГ 2: Ввод текста
+            logger.info(f"📌 Ввод текста...")
+            text_set = await self.set_text_at_coords(tx, ty, question)
             
             if not text_set:
                 return None, "Не удалось ввести текст"
             
             await self.wait_for_load(1)
             
-            # Снова проверяем появилась ли кнопка
-            send_exists = await self.evaluate(f"!!document.querySelector('{ELEMENTS['send_button']['selector']}')")
-            logger.info(f"  Кнопка отправки после ввода: {'есть' if send_exists else 'нет'}")
+            # ШАГ 3: Ожидание появления кнопки отправки
+            send_btn_visible = await self.wait_for_send_button(timeout=10)
             
-            # ============================================================
-            # ШАГ 2: Отправка
-            # ============================================================
-            send_selector = ELEMENTS['send_button']['selector']
-            send_coords = ELEMENTS['send_button']['coords']
-            sx, sy = get_center_coords(send_coords)
-            
-            if send_exists:
-                logger.info("📌 ШАГ 2: Клик по кнопке отправки...")
-                clicked = await self.click_react(send_selector, sx, sy)
-                if not clicked:
-                    logger.warning("⚠️ Клик не сработал, пробую Enter...")
-                    enter_js = """
-                    (function() {
-                        var el = document.querySelector('.message-input-textarea, textarea');
-                        if (!el) return false;
-                        el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-                        el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-                        return true;
-                    })()
-                    """
-                    await self.evaluate(enter_js)
+            if send_btn_visible:
+                # ШАГ 4: Клик по кнопке отправки
+                coords = ELEMENTS['send_button']['coords']
+                sx, sy = get_center_coords(coords)
+                logger.info(f"📌 Клик по кнопке отправки...")
+                await self.click_at_coords(sx, sy)
             else:
+                # ШАГ 4b: Enter если кнопка не появилась
                 logger.info("⏳ Кнопка не появилась, пробую Enter...")
                 enter_js = """
                 (function() {
@@ -587,11 +318,10 @@ class BrowserHarness:
             
             await self.wait_for_load(1)
             
-            # ============================================================
-            # ШАГ 3: Ожидание ответа
-            # ============================================================
-            logger.info("⏳ ШАГ 3: Ожидание ответа...")
+            # ШАГ 5: Ожидание ответа
+            logger.info("⏳ Ожидание ответа...")
             max_attempts = 120
+            last_response = None
             
             for attempt in range(max_attempts):
                 await asyncio.sleep(1)
@@ -599,21 +329,18 @@ class BrowserHarness:
                 response = await self.get_last_response()
                 
                 if response:
-                    logger.info(f"✅ Получен ответ: {response[:50]}...")
-                    return response, None
+                    # Проверяем что это не системное сообщение
+                    if len(response) > 10 and not response.startswith('Привет'):
+                        logger.info(f"✅ Получен ответ: {response[:50]}...")
+                        return response, None
+                    last_response = response
                 
-                # Проверяем индикатор загрузки
-                if attempt % 5 == 0:
-                    loading = await self.evaluate("""
-                    (function() {
-                        return !!document.querySelector('[class*="loading"], [class*="typing"], .anticon-loading');
-                    })()
-                    """)
-                    logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}, загрузка: {'да' if loading else 'нет'}")
+                if attempt % 10 == 0:
+                    logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
             
-            # Если ничего не нашли, делаем финальный снимок
-            final_snapshot = await self.get_page_snapshot()
-            logger.info(f"📸 Финальный снимок: {json.dumps(final_snapshot, indent=2, default=str)[:500]}")
+            # Если нашли что-то, но не уверены
+            if last_response and len(last_response) > 10:
+                return last_response, None
             
             return None, "Таймаут ожидания ответа"
                 
@@ -630,51 +357,34 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"С расширенной отладкой!\n"
-        f"Пробует 4 способа клика:\n"
-        f"1. CDP mouse events\n"
-        f"2. JavaScript click\n"
-        f"3. React onClick\n"
-        f"4. React onChange\n\n"
-        f"📌 /debug — детальная отладка\n"
-        f"📌 /snapshot — снимок страницы"
+        f"Просто отправьте сообщение!\n"
+        f"Бот фильтрует системные сообщения.\n\n"
+        f"📌 /debug — состояние"
     )
 
 async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Детальная отладка"""
     try:
-        snapshot = await browser.get_page_snapshot()
+        title = await browser.evaluate("document.title")
         
-        msg = "🔍 **Отладка**\n\n"
-        for key, value in snapshot.items():
-            if value is not None:
-                if isinstance(value, str) and len(value) > 100:
-                    value = value[:100] + "..."
-                msg += f"**{key}:** {value}\n"
+        status = {}
+        for name, element in ELEMENTS.items():
+            selector = element['selector']
+            js = f"!!document.querySelector('{selector}')"
+            exists = await browser.evaluate(js)
+            status[name] = exists
         
-        # Отправляем в Markdown
-        await update.message.reply_text(msg, parse_mode='Markdown')
+        response = await browser.get_last_response()
         
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Полный снимок страницы"""
-    try:
-        snapshot = await browser.get_page_snapshot()
-        # Сохраняем в файл
-        filename = "snapshot.json"
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(snapshot, f, indent=2, default=str, ensure_ascii=False)
+        msg = f"🔍 Отладка\n\n"
+        msg += f"Заголовок: {title}\n\n"
+        msg += "Элементы:\n"
+        for name, exists in status.items():
+            msg += f"  {name}: {'есть' if exists else 'нет'}\n"
         
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption="📸 Снимок страницы"
-            )
+        if response:
+            msg += f"\n📝 Ответ: {response[:200]}..."
         
-        os.remove(filename)
+        await update.message.reply_text(msg)
         
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
@@ -708,7 +418,6 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("debug", debug_command))
-    app.add_handler(CommandHandler("snapshot", snapshot_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     logger.info("🚀 Qwen Bot запущен!")
