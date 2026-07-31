@@ -1,4 +1,4 @@
-# bot.py - финальная версия с созданием нового чата
+# bot.py - исправленная версия с правильной отправкой
 import os
 import json
 import asyncio
@@ -102,22 +102,6 @@ class BrowserHarness:
     async def wait_for_load(self, timeout=15):
         await asyncio.sleep(timeout)
     
-    async def wait_for_selector(self, selector, timeout=30):
-        """Ожидать появления элемента"""
-        js = f"""
-        (function() {{
-            var start = Date.now();
-            while (Date.now() - start < {timeout * 1000}) {{
-                var el = document.querySelector('{selector}');
-                if (el) return true;
-                var end = Date.now() + 500;
-                while (Date.now() < end) {{}}
-            }}
-            return false;
-        }})()
-        """
-        return await self.evaluate(js)
-    
     async def click_element(self, selector):
         js = f"""
         (function() {{
@@ -190,7 +174,8 @@ class BrowserHarness:
                         !text.includes('AutoChoose') && 
                         !text.includes('Get Started') &&
                         !text.includes('style to create') &&
-                        !text.includes('window.iconfontsvgstring')) {
+                        !text.includes('window.iconfontsvgstring') &&
+                        !text.includes('Please enter a prompt')) {
                         allMessages.push({
                             text: text,
                             index: i,
@@ -240,21 +225,46 @@ class BrowserHarness:
         if not text_set:
             return False, "Не найдено поле ввода"
         
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
         
-        # 3. Нажимаем Enter для отправки
-        enter_js = """
-        (function() {
-            var el = document.querySelector('.message-input-textarea, textarea');
-            if (!el) return false;
-            el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-            el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-            return true;
-        })()
-        """
-        await self.evaluate(enter_js)
-        logger.info("⏎ Нажат Enter")
+        # 3. Ищем и нажимаем кнопку отправки (из JSON)
+        send_selectors = [
+            '.omni-button-content-btn',  # основная кнопка из JSON
+            'button[aria-label*="Голосовой режим"]',
+            '.omni-button-content',
+            '[role="button"]',
+            'button'
+        ]
         
+        clicked = False
+        for selector in send_selectors:
+            try:
+                # Проверяем, есть ли элемент
+                has_element = await self.evaluate(f"!!document.querySelector('{selector}')")
+                if has_element:
+                    result = await self.click_element(selector)
+                    if result:
+                        clicked = True
+                        logger.info(f"✅ Кнопка нажата: {selector}")
+                        break
+            except Exception as e:
+                logger.warning(f"Не удалось нажать {selector}: {e}")
+        
+        if not clicked:
+            # Пробуем Enter
+            enter_js = """
+            (function() {
+                var el = document.querySelector('.message-input-textarea, textarea');
+                if (!el) return false;
+                el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+                return true;
+            })()
+            """
+            await self.evaluate(enter_js)
+            logger.info("⏎ Нажат Enter")
+        
+        await asyncio.sleep(1)
         return True, "Сообщение отправлено"
     
     async def ask_qwen(self, question):
@@ -274,8 +284,6 @@ class BrowserHarness:
             
             # Ждем ответ с проверкой каждую секунду
             max_attempts = 120
-            last_response = None
-            stable_count = 0
             
             for attempt in range(max_attempts):
                 await asyncio.sleep(1)
@@ -285,33 +293,25 @@ class BrowserHarness:
                 
                 if response:
                     logger.info(f"📝 Найден ответ: {response[:50]}...")
-                    
-                    if response == last_response:
-                        stable_count += 1
-                    else:
-                        last_response = response
-                        stable_count = 0
-                    
-                    # Если ответ стабилен и достаточно длинный
-                    if stable_count > 3 and len(response) > 20:
-                        logger.info(f"✅ Ответ стабилен")
-                        return response, None
-                
-                # Проверяем, нет ли индикатора загрузки
-                loading = await self.evaluate(
-                    "!!document.querySelector('[class*=\"loading\"], [class*=\"typing\"], .anticon-loading')"
-                )
-                
-                if not loading and response and len(response) > 30:
-                    logger.info(f"✅ Загрузка завершена")
                     return response, None
                 
                 if attempt % 10 == 0:
                     logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
             
-            # Если ничего не нашли, возвращаем последний ответ
-            if last_response:
-                return last_response, None
+            # Проверяем, не появилось ли сообщение об ошибке
+            error_msg = await self.evaluate("""
+            (function() {
+                var els = document.querySelectorAll('[class*="error"], [class*="warning"]');
+                for (var i = 0; i < els.length; i++) {
+                    var text = (els[i].textContent || '').trim();
+                    if (text) return text;
+                }
+                return null;
+            })()
+            """)
+            
+            if error_msg:
+                return None, f"Ошибка: {error_msg}"
             
             return None, "Таймаут ожидания ответа"
                 
@@ -354,9 +354,21 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "!!document.querySelector('.message-input-textarea, textarea')"
         )
         
-        has_send_btn = await browser.evaluate(
-            "!!document.querySelector('.omni-button-content-btn')"
-        )
+        # Ищем все кнопки
+        buttons = await browser.evaluate("""
+        (function() {
+            var btns = [];
+            var els = document.querySelectorAll('button, [role="button"]');
+            for (var i = 0; i < els.length; i++) {
+                var text = (els[i].textContent || '').trim();
+                var aria = els[i].getAttribute('aria-label') || '';
+                if (text || aria) {
+                    btns.push(text || aria);
+                }
+            }
+            return btns.join(' | ');
+        })()
+        """)
         
         # Получаем последний ответ
         response = await browser.get_last_response()
@@ -380,7 +392,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔍 **Отладка**\n\n"
             f"📄 Заголовок: {title}\n"
             f"✏️ Поле ввода: {'✅' if has_textarea else '❌'}\n"
-            f"📤 Кнопка отправки: {'✅' if has_send_btn else '❌'}\n"
+            f"🔘 Кнопки: {buttons[:200] if buttons else 'Нет кнопок'}\n"
             f"💬 Сообщения на странице:\n{messages[:300] if messages else 'Нет сообщений'}\n\n"
             f"📝 Последний ответ:\n{response[:200] if response else 'Нет ответа'}",
             parse_mode='Markdown'
