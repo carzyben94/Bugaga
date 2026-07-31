@@ -1,4 +1,4 @@
-# bot.py - исправленная версия с правильным поиском ответов
+# bot.py - финальная версия с созданием нового чата
 import os
 import json
 import asyncio
@@ -102,6 +102,22 @@ class BrowserHarness:
     async def wait_for_load(self, timeout=15):
         await asyncio.sleep(timeout)
     
+    async def wait_for_selector(self, selector, timeout=30):
+        """Ожидать появления элемента"""
+        js = f"""
+        (function() {{
+            var start = Date.now();
+            while (Date.now() - start < {timeout * 1000}) {{
+                var el = document.querySelector('{selector}');
+                if (el) return true;
+                var end = Date.now() + 500;
+                while (Date.now() < end) {{}}
+            }}
+            return false;
+        }})()
+        """
+        return await self.evaluate(js)
+    
     async def click_element(self, selector):
         js = f"""
         (function() {{
@@ -131,30 +147,78 @@ class BrowserHarness:
         """
         return await self.evaluate(js)
     
-    async def get_element_text(self, selector):
-        js = f"""
-        (function() {{
-            var el = document.querySelector('{selector}');
-            if (!el) return null;
-            return (el.textContent || '').trim();
-        }})()
+    async def create_new_chat(self):
+        """Создать новый чат"""
+        # Нажимаем кнопку "Новый чат"
+        new_chat_selectors = [
+            '[aria-label="Новый чат"]',
+            '.sidebar-entry-fixed-list-content[role="button"]',
+            '.sidebar-entry-fixed-list-content'
+        ]
+        
+        for selector in new_chat_selectors:
+            try:
+                result = await self.click_element(selector)
+                if result:
+                    logger.info(f"✅ Создан новый чат через: {selector}")
+                    await self.wait_for_load(2)
+                    return True
+            except Exception as e:
+                logger.warning(f"Не удалось нажать {selector}: {e}")
+        
+        return False
+    
+    async def get_last_response(self):
+        """Получить последний ответ от Qwen"""
+        js = """
+        (function() {
+            // Ищем все сообщения
+            var selectors = [
+                '.message-content',
+                '.chat-message',
+                '[class*="message"]:not(:empty)'
+            ];
+            
+            var allMessages = [];
+            for (var s of selectors) {
+                var els = document.querySelectorAll(s);
+                for (var i = 0; i < els.length; i++) {
+                    var text = (els[i].textContent || '').trim();
+                    // Исключаем системные сообщения
+                    if (text && 
+                        text.length > 10 && 
+                        !text.includes('AutoChoose') && 
+                        !text.includes('Get Started') &&
+                        !text.includes('style to create') &&
+                        !text.includes('window.iconfontsvgstring')) {
+                        allMessages.push({
+                            text: text,
+                            index: i,
+                            time: Date.now()
+                        });
+                    }
+                }
+            }
+            
+            if (allMessages.length > 0) {
+                // Сортируем по времени (последние сверху)
+                allMessages.sort(function(a, b) { 
+                    return b.time - a.time || b.index - a.index; 
+                });
+                return allMessages[0].text;
+            }
+            return null;
+        })()
         """
         return await self.evaluate(js)
     
     async def send_message_to_qwen(self, text):
         """Отправить сообщение в Qwen"""
         
-        # 1. Ждем загрузки
-        await self.wait_for_load(2)
+        # 1. Создаем новый чат
+        await self.create_new_chat()
         
-        # 2. Нажимаем кнопку "Новый чат" если есть
-        try:
-            await self.click_element('[aria-label="Новый чат"]')
-            await self.wait_for_load(1)
-        except:
-            pass
-        
-        # 3. Находим текстовое поле
+        # 2. Находим текстовое поле
         textarea_selectors = [
             '.message-input-textarea',
             'textarea[placeholder*="помочь"]',
@@ -176,126 +240,22 @@ class BrowserHarness:
         if not text_set:
             return False, "Не найдено поле ввода"
         
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         
-        # 4. Ищем кнопку отправки
-        send_selectors = [
-            '.omni-button-content-btn',
-            'button[aria-label*="Голосовой режим"]',
-            '.omni-button-content',
-            '[role="button"] svg[type="icon-line-waveform"]'
-        ]
-        
-        clicked = False
-        for selector in send_selectors:
-            try:
-                result = await self.click_element(selector)
-                if result:
-                    clicked = True
-                    logger.info(f"✅ Кнопка нажата: {selector}")
-                    break
-            except Exception as e:
-                logger.warning(f"Не удалось нажать {selector}: {e}")
-        
-        if not clicked:
-            # Пробуем Enter
-            enter_js = """
-            (function() {
-                var el = document.querySelector('.message-input-textarea, textarea');
-                if (!el) return false;
-                el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
-                el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
-                return true;
-            })()
-            """
-            await self.evaluate(enter_js)
-            logger.info("⏎ Нажат Enter")
+        # 3. Нажимаем Enter для отправки
+        enter_js = """
+        (function() {
+            var el = document.querySelector('.message-input-textarea, textarea');
+            if (!el) return false;
+            el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+            el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+            return true;
+        })()
+        """
+        await self.evaluate(enter_js)
+        logger.info("⏎ Нажат Enter")
         
         return True, "Сообщение отправлено"
-    
-    async def wait_for_response(self, timeout=120):
-        """Ожидать ответ от Qwen"""
-        
-        # JavaScript для поиска ответа с правильными селекторами
-        js = f"""
-        (function() {{
-            var startTime = Date.now();
-            var maxWait = {timeout * 1000};
-            var lastResponse = null;
-            var stableCount = 0;
-            
-            function findResponse() {{
-                // Правильные селекторы для Qwen из JSON
-                var selectors = [
-                    '.message-content',           // из JSON
-                    '.chat-message',              // из JSON
-                    '[class*="message"]:not(:empty)',
-                    '.ant-message',
-                    '[class*="response"]'
-                ];
-                
-                var allTexts = [];
-                for (var s of selectors) {{
-                    var els = document.querySelectorAll(s);
-                    for (var i = 0; i < els.length; i++) {{
-                        var text = (els[i].textContent || '').trim();
-                        // Фильтруем системные сообщения
-                        if (text && 
-                            text.length > 10 && 
-                            !text.includes('AutoChoose') && 
-                            !text.includes('Get Started') &&
-                            !text.includes('style to create') &&
-                            !text.includes('window.iconfontsvgstring')) {{
-                            allTexts.push(text);
-                        }}
-                    }}
-                }}
-                
-                if (allTexts.length > 0) {{
-                    // Сортируем по длине (самый длинный текст - скорее всего ответ)
-                    allTexts.sort(function(a, b) {{ return b.length - a.length; }});
-                    return allTexts[0];
-                }}
-                return null;
-            }}
-            
-            while (Date.now() - startTime < maxWait) {{
-                var response = findResponse();
-                
-                if (response) {{
-                    if (response === lastResponse) {{
-                        stableCount++;
-                    }} else {{
-                        lastResponse = response;
-                        stableCount = 0;
-                    }}
-                    
-                    // Если ответ стабилен и достаточно длинный
-                    if (stableCount > 5 && response.length > 20) {{
-                        return response;
-                    }}
-                }}
-                
-                // Проверяем индикатор загрузки
-                var loading = document.querySelector(
-                    '[class*="loading"], [class*="typing"], .anticon-loading, [class*="thinking"]'
-                );
-                
-                if (!loading && response && response.length > 30) {{
-                    return response;
-                }}
-                
-                // Ждем 1 секунду
-                var end = Date.now() + 1000;
-                while (Date.now() < end) {{}}
-            }}
-            
-            return lastResponse || null;
-        }})()
-        """
-        
-        result = await self.evaluate(js)
-        return result
     
     async def ask_qwen(self, question):
         """Задать вопрос Qwen"""
@@ -311,28 +271,49 @@ class BrowserHarness:
                 return None, msg
             
             logger.info("⏳ Ожидаю ответ...")
-            response = await self.wait_for_response(120)
             
-            if response:
-                logger.info(f"✅ Получен ответ: {response[:100]}...")
-                return response, None
-            else:
-                # Пробуем получить все тексты для отладки
-                all_texts = await self.evaluate("""
-                (function() {
-                    var texts = [];
-                    var els = document.querySelectorAll('[class*="message"]');
-                    for (var i = 0; i < els.length; i++) {
-                        var text = (els[i].textContent || '').trim();
-                        if (text && text.length > 5) {
-                            texts.push(text);
-                        }
-                    }
-                    return texts.join(' | ');
-                })()
-                """)
-                logger.error(f"❌ Найдены тексты: {all_texts}")
-                return None, "Не удалось получить ответ от Qwen"
+            # Ждем ответ с проверкой каждую секунду
+            max_attempts = 120
+            last_response = None
+            stable_count = 0
+            
+            for attempt in range(max_attempts):
+                await asyncio.sleep(1)
+                
+                # Получаем текущий ответ
+                response = await self.get_last_response()
+                
+                if response:
+                    logger.info(f"📝 Найден ответ: {response[:50]}...")
+                    
+                    if response == last_response:
+                        stable_count += 1
+                    else:
+                        last_response = response
+                        stable_count = 0
+                    
+                    # Если ответ стабилен и достаточно длинный
+                    if stable_count > 3 and len(response) > 20:
+                        logger.info(f"✅ Ответ стабилен")
+                        return response, None
+                
+                # Проверяем, нет ли индикатора загрузки
+                loading = await self.evaluate(
+                    "!!document.querySelector('[class*=\"loading\"], [class*=\"typing\"], .anticon-loading')"
+                )
+                
+                if not loading and response and len(response) > 30:
+                    logger.info(f"✅ Загрузка завершена")
+                    return response, None
+                
+                if attempt % 10 == 0:
+                    logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
+            
+            # Если ничего не нашли, возвращаем последний ответ
+            if last_response:
+                return last_response, None
+            
+            return None, "Таймаут ожидания ответа"
                 
         except Exception as e:
             logger.error(f"❌ Ошибка: {e}")
@@ -348,7 +329,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 **Qwen Bot**\n\n"
         f"Просто отправьте мне сообщение!\n"
-        f"Я передам его Qwen через веб-интерфейс.\n\n"
+        f"Я создам новый чат в Qwen и передам ваш вопрос.\n\n"
         f"📌 /clear — перезагрузить страницу\n"
         f"📌 /debug — показать состояние",
         parse_mode='Markdown'
@@ -377,11 +358,14 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "!!document.querySelector('.omni-button-content-btn')"
         )
         
+        # Получаем последний ответ
+        response = await browser.get_last_response()
+        
         # Получаем все сообщения
         messages = await browser.evaluate("""
         (function() {
             var texts = [];
-            var els = document.querySelectorAll('.message-content, .chat-message, [class*="message"]');
+            var els = document.querySelectorAll('.message-content, .chat-message');
             for (var i = 0; i < els.length; i++) {
                 var text = (els[i].textContent || '').trim();
                 if (text && text.length > 5 && text.length < 500) {
@@ -397,7 +381,8 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📄 Заголовок: {title}\n"
             f"✏️ Поле ввода: {'✅' if has_textarea else '❌'}\n"
             f"📤 Кнопка отправки: {'✅' if has_send_btn else '❌'}\n"
-            f"💬 Сообщения на странице:\n{messages[:500] if messages else 'Нет сообщений'}",
+            f"💬 Сообщения на странице:\n{messages[:300] if messages else 'Нет сообщений'}\n\n"
+            f"📝 Последний ответ:\n{response[:200] if response else 'Нет ответа'}",
             parse_mode='Markdown'
         )
     except Exception as e:
@@ -406,7 +391,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = update.message.text
     
-    status_msg = await update.message.reply_text("💭 Обращаюсь к Qwen...")
+    status_msg = await update.message.reply_text("💭 Создаю новый чат и отправляю вопрос Qwen...")
     
     try:
         response, error = await browser.ask_qwen(question)
