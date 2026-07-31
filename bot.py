@@ -1,4 +1,4 @@
-# bot.py
+# bot.py - с автоматическим A11Y парсингом
 import os
 import json
 import asyncio
@@ -6,7 +6,7 @@ import logging
 import httpx
 import warnings
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 warnings.filterwarnings("ignore")
 
@@ -22,12 +22,8 @@ if not TELEGRAM_TOKEN:
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("telegram").setLevel(logging.CRITICAL)
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +36,17 @@ try:
     logger.info(f"✅ Загружено {len(COOKIES)} кук")
 except ImportError:
     COOKIES = []
-    logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
+    logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# BROWSER HARNESS (с увеличенным буфером)
+# СЕЛЕКТОРЫ
+# ============================================================
+
+TEXTAREA_SELECTOR = ".message-input-textarea"
+SEND_BUTTON_SELECTOR = ".omni-button-content-btn"
+
+# ============================================================
+# BROWSER HARNESS
 # ============================================================
 
 class BrowserHarness:
@@ -74,11 +77,7 @@ class BrowserHarness:
             max_size=10_000_000,
             write_limit=10_000_000
         ) as ws:
-            message = {
-                "id": 1,
-                "method": method,
-                "params": params or {}
-            }
+            message = {"id": 1, "method": method, "params": params or {}}
             await ws.send(json.dumps(message))
             response = await ws.recv()
             return json.loads(response)
@@ -96,6 +95,7 @@ class BrowserHarness:
             logger.error(f"Ошибка установки кук: {e}")
     
     async def navigate(self, url):
+        logger.info(f"🌐 Переход на {url}")
         result = await self._send_cdp("Page.navigate", {"url": url})
         return result.get("result", {})
     
@@ -106,570 +106,384 @@ class BrowserHarness:
         })
         return result.get("result", {}).get("result", {}).get("value")
     
-    async def wait_for_load(self, timeout=15):
+    async def wait_for_load(self, timeout=3):
+        logger.info(f"⏳ Ожидание {timeout}с...")
         await asyncio.sleep(timeout)
-
-browser = BrowserHarness(CDP_URL)
-
-# ============================================================
-# DOM ПАРСЕР (ГЛУБОКИЙ)
-# ============================================================
-
-def get_dom_parser_js():
-    """JavaScript для глубокого парсинга DOM"""
-    return """
-(function() {
-    function walk(node, arr) {
-        if (!node || node.nodeType !== 1) return;
+    
+    async def click_at_coords(self, x, y):
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y
+        })
+        await asyncio.sleep(0.05)
         
-        var el = node;
-        var data = {
-            t: el.tagName.toLowerCase(),
-            id: el.id || '',
-            cl: (typeof el.className === 'string' ? el.className : ''),
-            tx: (el.textContent || '').trim().slice(0, 300),
-            v: el.value || '',
-            ph: el.getAttribute('placeholder') || '',
-            hr: el.getAttribute('href') || '',
-            sr: el.getAttribute('src') || '',
-            nm: el.getAttribute('name') || '',
-            tp: el.getAttribute('type') || '',
-            rl: el.getAttribute('role') || '',
-            ds: !!el.disabled,
-            vs: !!(el.offsetParent || el.getClientRects().length),
-            rc: (function() {
-                var r = el.getBoundingClientRect();
-                return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
-            })(),
-            dt: (function() {
-                var d = {};
-                for (var i = 0; i < el.attributes.length; i++) {
-                    var a = el.attributes[i];
-                    if (a.name.indexOf('data-') === 0) d[a.name] = a.value;
-                }
-                return Object.keys(d).length ? d : null;
-            })(),
-            ar: (function() {
-                var a = {};
-                var keys = ['label','describedby','hidden','expanded','selected','checked','disabled'];
-                for (var i = 0; i < keys.length; i++) {
-                    var v = el.getAttribute('aria-' + keys[i]);
-                    if (v) a[keys[i]] = v;
-                }
-                return Object.keys(a).length ? a : null;
-            })(),
-            rf: (function() {
-                var fiberKey = null;
-                var keys = Object.keys(el);
-                for (var i = 0; i < keys.length; i++) {
-                    if (keys[i].indexOf('__reactFiber') === 0 || keys[i].indexOf('__reactInternalInstance') === 0) {
-                        fiberKey = keys[i];
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        await asyncio.sleep(0.05)
+        
+        await self._send_cdp("Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": x,
+            "y": y,
+            "button": "left",
+            "clickCount": 1
+        })
+        return True
+    
+    async def click_element(self, selector):
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return {{found: false}};
+            if (el.offsetParent === null) return {{found: false, hidden: true}};
+            if (el.disabled) return {{found: true, disabled: true}};
+            var rect = el.getBoundingClientRect();
+            return {{
+                found: true,
+                x: Math.round(rect.left + rect.width / 2),
+                y: Math.round(rect.top + rect.height / 2)
+            }};
+        }})()
+        """
+        result = await self.evaluate(js)
+        
+        if result and result.get('found') and not result.get('disabled'):
+            x, y = result['x'], result['y']
+            return await self.click_at_coords(x, y)
+        return False
+    
+    async def set_text(self, selector, text):
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return {{success: false, error: 'Элемент не найден'}};
+            el.focus();
+            el.click();
+            el.value = '';
+            el.value = '{text.replace("'", "\\'")}';
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
+            return {{success: true, value: el.value}};
+        }})()
+        """
+        return await self.evaluate(js)
+    
+    async def get_text_value(self, selector):
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            return el ? el.value : null;
+        }})()
+        """
+        return await self.evaluate(js)
+    
+    async def parse_a11y_tree(self):
+        """Парсинг Accessibility Tree на лету"""
+        js = """
+        (function() {
+            var results = [];
+            var allElements = document.querySelectorAll('[role], div, span, p, h1, h2, h3, h4, h5, h6, li, td, th, label, button, a');
+            
+            for (var i = 0; i < allElements.length; i++) {
+                var el = allElements[i];
+                if (el.offsetParent === null) continue;
+                
+                var text = (el.textContent || '').trim();
+                if (!text || text.length < 3) continue;
+                
+                var role = el.getAttribute('role') || el.tagName.toLowerCase();
+                var ariaLabel = el.getAttribute('aria-label') || '';
+                var className = el.className || '';
+                var id = el.id || '';
+                
+                // Проверяем что это не системное сообщение
+                var systemPatterns = [
+                    'AutoChoose', 'Get Started', 'Please enter',
+                    'Что бы вы хотели', 'Log in', 'Sign up',
+                    'Скачать приложение', 'Войти', 'Завершено размышление',
+                    'Thinking completed', 'Выберите', 'Ваш выбор',
+                    'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
+                    'Проекты', 'Все чаты', 'Используя Qwen Studio',
+                    'Пользовательские условия', 'Политика конфиденциальности',
+                    'Сообщить', 'Первое изображение', 'Выберите один из образцов'
+                ];
+                
+                var isSystem = false;
+                for (var p of systemPatterns) {
+                    if (text.includes(p)) {
+                        isSystem = true;
                         break;
                     }
                 }
-                if (!fiberKey) return null;
-                var f = el[fiberKey];
-                var p = {};
-                while (f) {
-                    if (f.memoizedProps) {
-                        var mp = f.memoizedProps;
-                        for (var k in mp) p[k] = mp[k];
-                    }
-                    f = f.return;
-                }
-                var clean = {};
-                for (var k in p) {
-                    if (k.indexOf('_') !== 0 && k !== 'children' && typeof p[k] !== 'function' && typeof p[k] !== 'object') {
-                        clean[k] = p[k];
+                
+                // Также проверяем по aria-label
+                for (var p of systemPatterns) {
+                    if (ariaLabel.includes(p)) {
+                        isSystem = true;
+                        break;
                     }
                 }
-                return Object.keys(clean).length ? clean : null;
-            })(),
-            cs: (function() {
-                var s = {};
-                var props = ['display','visibility','opacity','position','width','height','color','backgroundColor','fontSize','zIndex','cursor'];
-                var cs = window.getComputedStyle(el);
-                for (var i = 0; i < props.length; i++) {
-                    s[props[i]] = cs[props[i]];
-                }
-                return s;
-            })(),
-            ev: (function() {
-                var e = [];
-                var evs = ['onclick','onchange','oninput','onsubmit','onfocus','onblur','onkeydown','onscroll'];
-                for (var i = 0; i < evs.length; i++) {
-                    if (el[evs[i]]) e.push(evs[i]);
-                }
-                return e.length ? e : null;
-            })(),
-            sh: el.shadowRoot ? {mode: el.shadowRoot.mode, kids: el.shadowRoot.children.length} : null
-        };
-        
-        arr.push(data);
-        
-        if (el.shadowRoot) {
-            var shadowKids = el.shadowRoot.children;
-            for (var i = 0; i < shadowKids.length; i++) {
-                walk(shadowKids[i], arr);
-            }
-        }
-        
-        if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentDocument) {
-            walk(el.contentDocument.documentElement, arr);
-        }
-        
-        var kids = el.children;
-        for (var i = 0; i < kids.length; i++) {
-            walk(kids[i], arr);
-        }
-    }
-    
-    var elements = [];
-    walk(document.documentElement, elements);
-    
-    var grouped = {};
-    for (var i = 0; i < elements.length; i++) {
-        var el = elements[i];
-        var tag = el.t;
-        if (!grouped[tag]) grouped[tag] = [];
-        grouped[tag].push(el);
-    }
-    
-    var stats = {total: elements.length, tags: Object.keys(grouped).length, byTag: {}};
-    for (var tag in grouped) stats.byTag[tag] = grouped[tag].length;
-    
-    return JSON.stringify({
-        page: {
-            url: window.location.href,
-            domain: window.location.hostname,
-            title: document.title,
-            desc: (document.querySelector('meta[name="description"]') || {}).content || ''
-        },
-        stats: stats,
-        elements: grouped
-    });
-})();
-"""
-
-# ============================================================
-# ACCESSIBILITY TREE ПАРСЕР
-# ============================================================
-
-def get_accessibility_tree_js():
-    """JavaScript для получения Accessibility Tree"""
-    return """
-(function() {
-    function getAccessibilityNode(element) {
-        if (!element) return null;
-        
-        var role = element.getAttribute('role') || 
-                   element.tagName.toLowerCase();
-        
-        var aria = {};
-        for (var attr of element.attributes) {
-            if (attr.name.startsWith('aria-')) {
-                aria[attr.name] = attr.value;
-            }
-        }
-        
-        var label = element.getAttribute('aria-label') || 
-                   element.getAttribute('aria-labelledby') ||
-                   element.getAttribute('label') ||
-                   element.title ||
-                   '';
-        
-        var description = element.getAttribute('aria-description') ||
-                        element.getAttribute('aria-describedby') ||
-                        '';
-        
-        var state = {
-            disabled: element.hasAttribute('disabled') || element.hasAttribute('aria-disabled'),
-            hidden: element.hasAttribute('hidden') || element.getAttribute('aria-hidden') === 'true',
-            expanded: element.getAttribute('aria-expanded') === 'true',
-            selected: element.hasAttribute('aria-selected') && element.getAttribute('aria-selected') !== 'false',
-            checked: element.hasAttribute('aria-checked') && element.getAttribute('aria-checked') !== 'false',
-            pressed: element.getAttribute('aria-pressed') === 'true',
-            busy: element.getAttribute('aria-busy') === 'true',
-            invalid: element.getAttribute('aria-invalid') === 'true',
-            required: element.hasAttribute('required') || element.getAttribute('aria-required') === 'true'
-        };
-        
-        var level = element.getAttribute('aria-level') || 
-                   (element.tagName.match(/^H([1-6])$/i) ? RegExp.$1 : null);
-        
-        var focusable = element.tabIndex >= 0 || 
-                       ['input','button','select','textarea','a'].includes(element.tagName.toLowerCase());
-        
-        var hiddenForScreenReader = element.getAttribute('aria-hidden') === 'true' ||
-                                    element.style.display === 'none' ||
-                                    element.style.visibility === 'hidden';
-        
-        var textContent = element.textContent.trim().slice(0, 200);
-        var alt = element.getAttribute('alt') || '';
-        var title = element.title || '';
-        var controlType = element.getAttribute('type') || 
-                         element.getAttribute('role') || 
-                         element.tagName.toLowerCase();
-        var value = element.value || element.getAttribute('value') || '';
-        var placeholder = element.placeholder || '';
-        
-        return {
-            role: role,
-            label: label,
-            description: description,
-            aria: aria,
-            state: state,
-            level: level,
-            focusable: focusable,
-            hiddenForScreenReader: hiddenForScreenReader,
-            textContent: textContent,
-            alt: alt,
-            title: title,
-            controlType: controlType,
-            value: value,
-            placeholder: placeholder,
-            name: element.name || '',
-            id: element.id || '',
-            className: element.className || '',
-            accessibilityScore: calculateAccessibilityScore(element)
-        };
-    }
-    
-    function calculateAccessibilityScore(element) {
-        var score = 100;
-        var tag = element.tagName.toLowerCase();
-        
-        if (tag === 'img' && !element.alt) score -= 20;
-        
-        if (tag === 'input' && !element.id && !element.getAttribute('aria-label') && !element.title) {
-            score -= 25;
-        }
-        
-        if (['button','a','input','select','textarea'].includes(tag)) {
-            if (!element.getAttribute('aria-label') && 
-                !element.title && 
-                !element.textContent.trim()) {
-                score -= 15;
-            }
-        }
-        
-        if (tag === 'a' && !element.textContent.trim() && !element.title && !element.getAttribute('aria-label')) {
-            score -= 20;
-        }
-        
-        if (tag.match(/^h[1-6]$/i) && !element.textContent.trim()) {
-            score -= 10;
-        }
-        
-        return Math.max(0, score);
-    }
-    
-    function walkAccessibilityTree(node, depth) {
-        if (!node || depth > 20) return null;
-        
-        var result = getAccessibilityNode(node);
-        var children = [];
-        
-        for (var child of node.children) {
-            var childResult = walkAccessibilityTree(child, depth + 1);
-            if (childResult) {
-                children.push(childResult);
-            }
-        }
-        
-        if (node.shadowRoot) {
-            for (var child of node.shadowRoot.children) {
-                var childResult = walkAccessibilityTree(child, depth + 1);
-                if (childResult) {
-                    children.push(childResult);
+                
+                if (!isSystem) {
+                    // Определяем тип элемента
+                    var elementType = 'text';
+                    if (role === 'button' || el.tagName === 'BUTTON') elementType = 'button';
+                    else if (role === 'input' || el.tagName === 'INPUT') elementType = 'input';
+                    else if (role === 'textarea' || el.tagName === 'TEXTAREA') elementType = 'textarea';
+                    else if (role === 'img' || el.tagName === 'IMG') elementType = 'image';
+                    else if (role === 'link' || el.tagName === 'A') elementType = 'link';
+                    
+                    // Собираем селектор
+                    var selector = '';
+                    if (id) {
+                        selector = '#' + id;
+                    } else if (className && typeof className === 'string') {
+                        var classes = className.split(' ').filter(c => c && c.length > 0);
+                        if (classes.length > 0) {
+                            selector = '.' + classes.join('.');
+                        }
+                    }
+                    
+                    results.push({
+                        text: text.slice(0, 300),
+                        length: text.length,
+                        role: role,
+                        elementType: elementType,
+                        selector: selector || el.tagName.toLowerCase(),
+                        ariaLabel: ariaLabel.slice(0, 100),
+                        className: className.slice(0, 100),
+                        id: id
+                    });
                 }
             }
-        }
-        
-        if ((node.tagName === 'IFRAME' || node.tagName === 'FRAME') && node.contentDocument) {
-            var childResult = walkAccessibilityTree(node.contentDocument.documentElement, depth + 1);
-            if (childResult) {
-                children.push(childResult);
+            
+            // Убираем дубликаты по тексту
+            var unique = [];
+            var seen = new Set();
+            for (var i = 0; i < results.length; i++) {
+                var key = results[i].text.slice(0, 50) + results[i].role;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    unique.push(results[i]);
+                }
             }
-        }
-        
-        result.children = children.length ? children : null;
-        result.issues = getAccessibilityIssues(node);
-        
-        return result;
-    }
+            
+            // Сортируем по длине текста (самые длинные сверху)
+            unique.sort(function(a, b) { return b.length - a.length; });
+            return unique;
+        })()
+        """
+        return await self.evaluate(js)
     
-    function getAccessibilityIssues(element) {
-        var issues = [];
-        var tag = element.tagName.toLowerCase();
-        var text = element.textContent || '';
+    async def find_response_in_a11y(self, question):
+        """Найти ответ в Accessibility Tree"""
+        logger.info("🔍 Анализирую Accessibility Tree...")
         
-        if (tag === 'input' && !element.id && !element.getAttribute('aria-label') && 
-            !element.title && !element.placeholder) {
-            issues.push('Поле ввода без метки');
-        }
+        # Получаем все элементы из A11Y
+        elements = await self.parse_a11y_tree()
+        logger.info(f"📝 Найдено элементов в A11Y: {len(elements)}")
         
-        if (tag === 'img' && !element.alt && !element.getAttribute('role') === 'presentation') {
-            issues.push('Изображение без alt текста');
-        }
+        # Ищем ответ (самый длинный текст, который не является вопросом)
+        for el in elements:
+            # Проверяем что это не кнопка, не поле ввода, не ссылка
+            if el['elementType'] in ['button', 'input', 'textarea', 'link', 'image']:
+                continue
+            
+            # Проверяем что это не наш вопрос
+            if question in el['text']:
+                continue
+            
+            # Проверяем что текст достаточно длинный (это обычно ответ)
+            if el['length'] > 20:
+                logger.info(f"✅ Найден ответ: {el['text'][:50]}...")
+                logger.info(f"   Роль: {el['role']}, Селектор: {el['selector']}")
+                return el['text']
         
-        if (tag === 'button' && !text.trim() && !element.getAttribute('aria-label')) {
-            issues.push('Кнопка без текста');
-        }
-        
-        if (tag === 'a' && !text.trim() && !element.getAttribute('aria-label')) {
-            issues.push('Ссылка без текста');
-        }
-        
-        if (tag.match(/^h[1-6]$/i) && !text.trim()) {
-            issues.push('Пустой заголовок');
-        }
-        
-        if (element.getAttribute('aria-hidden') === 'true' && 
-            ['button','a','input','select','textarea'].includes(tag)) {
-            issues.push('Интерактивный элемент скрыт для скринридера');
-        }
-        
-        return issues.length ? issues : null;
-    }
+        return None
     
-    var tree = {
-        document: {
-            role: 'document',
-            title: document.title,
-            url: window.location.href,
-            domain: window.location.hostname,
-            language: document.documentElement.lang || 'unknown'
-        },
-        accessibilityTree: walkAccessibilityTree(document.body, 0),
-        summary: {
-            totalElements: document.querySelectorAll('*').length,
-            accessibleElements: document.querySelectorAll('[role], [aria-label], [title], button, a, input, select, textarea').length,
-            issues: [],
-            score: 0
-        }
-    };
+    async def send_enter(self):
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        await asyncio.sleep(0.05)
+        await self._send_cdp("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": "Enter",
+            "code": "Enter",
+            "windowsVirtualKeyCode": 13,
+        })
+        return True
     
-    var allIssues = [];
-    document.querySelectorAll('*').forEach(function(el) {
-        var issues = getAccessibilityIssues(el);
-        if (issues) {
-            allIssues = allIssues.concat(issues);
-        }
-    });
-    
-    tree.summary.issues = [...new Set(allIssues)];
-    tree.summary.score = Math.max(0, 100 - allIssues.length * 5);
-    
-    return JSON.stringify(tree);
-})();
-"""
+    async def ask_qwen(self, question):
+        """Задать вопрос и найти ответ через A11Y"""
+        try:
+            # ШАГ 1: Переход на сайт
+            logger.info("🚀 Переход на chat.qwen.ai...")
+            await self.navigate("https://chat.qwen.ai/")
+            await self.wait_for_load(5)
+            
+            # ШАГ 2: Установка кук
+            if COOKIES:
+                await self.set_cookies(COOKIES)
+                await self.wait_for_load(2)
+                await self.navigate("https://chat.qwen.ai/")
+                await self.wait_for_load(5)
+            
+            # ШАГ 3: Ввод текста
+            logger.info(f"📌 Ввод текста: {question[:30]}...")
+            result = await self.set_text(TEXTAREA_SELECTOR, question)
+            
+            if not result or not result.get('success'):
+                return None, "Не удалось ввести текст"
+            
+            await self.wait_for_load(0.5)
+            
+            # ШАГ 4: Отправка
+            logger.info("📤 Отправка сообщения...")
+            
+            # Пробуем кнопку отправки
+            clicked = await self.click_element(SEND_BUTTON_SELECTOR)
+            
+            if not clicked:
+                logger.info("⌨️ Кнопка не нажалась, пробую Enter...")
+                await self.send_enter()
+            
+            await self.wait_for_load(2)
+            
+            # ШАГ 5: Поиск ответа через A11Y
+            logger.info("⏳ Ожидание ответа...")
+            max_attempts = 60
+            
+            for attempt in range(max_attempts):
+                await asyncio.sleep(1)
+                
+                response = await self.find_response_in_a11y(question)
+                
+                if response:
+                    return response, None
+                
+                if attempt % 10 == 0:
+                    logger.info(f"⏳ Ожидание... {attempt}/{max_attempts}")
+            
+            return None, "Таймаут ожидания ответа"
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            return None, str(e)
 
-# ============================================================
-# ОСНОВНОЙ ПАРСЕР
-# ============================================================
-
-async def parse_dom(url, include_accessibility=True):
-    """Глубокий парсинг DOM страницы с поддержкой Accessibility Tree"""
-    try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
-        
-        await browser.navigate(url)
-        await browser.wait_for_load(10)
-        
-        dom_js = get_dom_parser_js()
-        dom_result = await browser.evaluate(dom_js)
-        
-        a11y_result = None
-        if include_accessibility:
-            a11y_js = get_accessibility_tree_js()
-            a11y_result = await browser.evaluate(a11y_js)
-        
-        result = {
-            "dom": json.loads(dom_result) if dom_result else None,
-            "accessibility": json.loads(a11y_result) if a11y_result else None,
-            "timestamp": asyncio.get_event_loop().time()
-        }
-        
-        return result, None
-        
-    except Exception as e:
-        logger.error(f"Ошибка парсинга: {e}")
-        return None, str(e)
+browser = BrowserHarness(CDP_URL)
 
 # ============================================================
 # КОМАНДЫ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: не загружены"
+    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: НЕ ЗАГРУЖЕНЫ!"
     
     await update.message.reply_text(
-        f"🌐 **DOM Parser Bot**\n\n"
+        f"🤖 **Qwen Bot (A11Y)**\n\n"
         f"{cookies_status}\n\n"
-        f"Глубокий парсинг DOM:\n"
-        f"• React Fiber / Props\n"
-        f"• Shadow DOM\n"
-        f"• Все атрибуты и стили\n"
-        f"• Позиции элементов\n"
-        f"• **Accessibility Tree** ♿\n\n"
-        f"Использование:\n"
-        f"/dom <url> — парсинг DOM\n"
-        f"/dom <url> --a11y — парсинг DOM + Accessibility\n"
-        f"/a11y <url> — только Accessibility Tree",
+        f"Бот автоматически парсит Accessibility Tree\n"
+        f"для поиска ответа!\n\n"
+        f"📌 /debug — состояние\n"
+        f"📌 /a11y — показать A11Y дерево",
         parse_mode='Markdown'
     )
 
-async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажите URL\nПример: /dom https://example.com")
-        return
+async def a11y_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать Accessibility Tree"""
+    try:
+        elements = await browser.parse_a11y_tree()
+        
+        if not elements:
+            await update.message.reply_text("Нет элементов в A11Y дереве")
+            return
+        
+        msg = f"🌳 **Accessibility Tree ({len(elements)} элементов)**\n\n"
+        
+        for i, el in enumerate(elements[:15]):
+            msg += f"{i+1}. [{el['elementType']}] {el['text'][:80]}...\n"
+            msg += f"   Роль: {el['role']}\n"
+            msg += f"   Длина: {el['length']}\n\n"
+        
+        if len(elements) > 15:
+            msg += f"... и еще {len(elements) - 15} элементов"
+        
+        await update.message.reply_text(msg[:4000], parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        title = await browser.evaluate("document.title")
+        textarea_value = await browser.get_text_value(TEXTAREA_SELECTOR)
+        
+        # Получаем A11Y
+        elements = await browser.parse_a11y_tree()
+        
+        response = None
+        for el in elements:
+            if el['length'] > 20 and el['elementType'] == 'text':
+                response = el['text']
+                break
+        
+        msg = f"🔍 **Отладка**\n\n"
+        msg += f"Заголовок: {title}\n"
+        msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
+        msg += f"🌳 A11Y элементов: {len(elements)}\n"
+        msg += f"💬 Ответ Qwen: {response[:200] if response else 'нет'}\n"
+        msg += f"🍪 Кук: {len(COOKIES)}\n"
+        
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question = update.message.text
     
-    url = context.args[0].strip()
-    include_a11y = '--a11y' in context.args
-    
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    status_msg = await update.message.reply_text(f"🌐 Загружаю {url}...")
+    status_msg = await update.message.reply_text("🚀 Отправляю запрос...")
     
     try:
-        result, error = await parse_dom(url, include_accessibility=include_a11y)
+        response, error = await browser.ask_qwen(question)
         
         if error:
-            await status_msg.edit_text(f"❌ Ошибка: {error}")
+            await status_msg.edit_text(f"❌ {error}")
             return
         
-        if not result or not result.get('dom'):
-            await status_msg.edit_text("❌ Не удалось получить данные")
+        if not response:
+            await status_msg.edit_text("❌ Нет ответа")
             return
         
-        domain = result['dom']['page']['domain'].replace('.', '_')
-        filename = f"dom_{domain}.json"
+        if len(response) > 4000:
+            response = response[:4000] + "..."
         
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        
-        stats = result['dom'].get('stats', {})
-        a11y_score = result.get('accessibility', {}).get('summary', {}).get('score', 'N/A')
-        
-        caption = (
-            f"📊 **DOM страницы**\n"
-            f"🔗 {result['dom']['page']['url']}\n"
-            f"📝 {result['dom']['page']['title'][:100]}\n"
-            f"📦 Всего элементов: {stats.get('total', 0)}\n"
-            f"🏷️ Уникальных тегов: {stats.get('tags', 0)}\n"
-        )
-        
-        if include_a11y and a11y_score != 'N/A':
-            caption += f"♿ Оценка доступности: {a11y_score}/100\n"
-        
-        caption += "\n**Топ тегов:**\n"
-        by_tag = stats.get('byTag', {})
-        top_tags = sorted(by_tag.items(), key=lambda x: x[1], reverse=True)[:10]
-        for tag, count in top_tags:
-            caption += f"• <{tag}>: {count}\n"
-        
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=caption,
-                parse_mode='Markdown'
-            )
-        
-        await status_msg.delete()
-        os.remove(filename)
+        await status_msg.edit_text(f"💬 **Qwen:**\n\n{response}", parse_mode='Markdown')
         
     except Exception as e:
-        logger.error(f"Ошибка команды /dom: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def a11y_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для получения Accessibility Tree"""
-    if not context.args:
-        await update.message.reply_text(
-            "❌ Укажите URL\n"
-            "Пример: /a11y https://example.com"
-        )
-        return
-    
-    url = context.args[0].strip()
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    status_msg = await update.message.reply_text(f"🔍 Анализирую доступность {url}...")
-    
-    try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
-        
-        await browser.navigate(url)
-        await browser.wait_for_load(10)
-        
-        a11y_js = get_accessibility_tree_js()
-        result = await browser.evaluate(a11y_js)
-        
-        if not result:
-            await status_msg.edit_text("❌ Не удалось получить дерево доступности")
-            return
-        
-        a11y_data = json.loads(result)
-        
-        summary = a11y_data.get('summary', {})
-        score = summary.get('score', 0)
-        issues_count = len(summary.get('issues', []))
-        
-        report = (
-            f"♿ **Отчет по доступности**\n"
-            f"🔗 {url}\n\n"
-            f"📊 **Оценка:** {score}/100\n"
-            f"📦 Всего элементов: {summary.get('totalElements', 0)}\n"
-            f"♿ Доступных элементов: {summary.get('accessibleElements', 0)}\n"
-            f"⚠️ Проблем: {issues_count}\n"
-        )
-        
-        if issues_count > 0:
-            report += "\n**Найденные проблемы:**\n"
-            for issue in summary.get('issues', [])[:10]:
-                report += f"• {issue}\n"
-            if issues_count > 10:
-                report += f"• ... и еще {issues_count - 10} проблем\n"
-        
-        domain = a11y_data['document'].get('domain', 'report').replace('.', '_')
-        filename = f"a11y_{domain}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(a11y_data, f, ensure_ascii=False, indent=2)
-        
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=report,
-                parse_mode='Markdown'
-            )
-        
-        await status_msg.delete()
-        os.remove(filename)
-        
-    except Exception as e:
-        logger.error(f"Ошибка /a11y: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# ЗАПУСК
-# ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dom", dom_command))
+    app.add_handler(CommandHandler("debug", debug_command))
     app.add_handler(CommandHandler("a11y", a11y_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("🚀 Бот запущен с поддержкой Accessibility Tree!")
+    logger.info("🚀 Qwen Bot запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
