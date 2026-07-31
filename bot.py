@@ -106,7 +106,7 @@ class BrowserHarness:
         """Выполнить JavaScript"""
         result = await self._send_cdp("Runtime.evaluate", {
             "expression": expression,
-            "returnByValue": True
+            "returnByValue": true
         })
         return result.get("result", {}).get("result", {}).get("value")
     
@@ -118,150 +118,388 @@ class BrowserHarness:
 browser = BrowserHarness(CDP_URL)
 
 # ============================================================
-# DOM ПАРСЕР
+# DOM ПАРСЕР (ГЛУБОКИЙ)
 # ============================================================
 
-def get_dom_parser_js():
-    """JavaScript код для парсинга DOM"""
+def get_deep_dom_parser_js():
+    """JavaScript для глубокого парсинга DOM (все элементы, все атрибуты, React, Shadow DOM)"""
     return """
     (function() {
-        function getElementInfo(el) {
-            const info = {
-                tag: el.tagName.toLowerCase(),
-                text: (el.textContent || '').trim().slice(0, 200),
-                id: el.id || '',
-                className: (typeof el.className === 'string' ? el.className : '') || '',
-                name: el.getAttribute('name') || '',
-                type: el.getAttribute('type') || '',
-                placeholder: el.getAttribute('placeholder') || '',
-                href: el.getAttribute('href') || '',
-                src: el.getAttribute('src') || '',
-                value: el.value || '',
-                disabled: el.disabled || false,
-                visible: el.offsetParent !== null,
-                xpath: '',
-                cssSelector: '',
-                dataAttributes: {},
-                ariaAttributes: {},
-                eventHandlers: []
-            };
+        // Рекурсивный обход ВСЕХ элементов, включая Shadow DOM
+        function getAllElements(root) {
+            const elements = [];
             
-            // Data-* атрибуты
+            function traverse(node) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    elements.push(node);
+                    
+                    // Проверяем Shadow DOM
+                    if (node.shadowRoot) {
+                        traverse(node.shadowRoot);
+                    }
+                    
+                    // Проверяем iframe
+                    if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
+                        try {
+                            const iframeDoc = node.contentDocument || node.contentWindow.document;
+                            if (iframeDoc && iframeDoc.documentElement) {
+                                traverse(iframeDoc.documentElement);
+                            }
+                        } catch(e) {}
+                    }
+                    
+                    // Обходим дочерние элементы
+                    for (const child of node.children) {
+                        traverse(child);
+                    }
+                    
+                    // Обходим shadow DOM у кастомных элементов
+                    if (node.tagName.includes('-')) {
+                        if (node.shadowRoot) {
+                            traverse(node.shadowRoot);
+                        }
+                    }
+                }
+            }
+            
+            traverse(root);
+            return elements;
+        }
+        
+        function extractReactFiber(el) {
+            const key = Object.keys(el).find(k => 
+                k.startsWith('__reactFiber') || 
+                k.startsWith('__reactInternalInstance')
+            );
+            return key ? el[key] : null;
+        }
+        
+        function extractReactProps(el) {
+            const fiber = extractReactFiber(el);
+            if (!fiber) return null;
+            
+            const props = {};
+            let node = fiber;
+            
+            while (node) {
+                if (node.memoizedProps) {
+                    Object.assign(props, node.memoizedProps);
+                }
+                if (node.pendingProps) {
+                    Object.assign(props, node.pendingProps);
+                }
+                node = node.return;
+            }
+            
+            // Убираем служебные React-свойства
+            const cleanProps = {};
+            for (const [key, value] of Object.entries(props)) {
+                if (!key.startsWith('_') && 
+                    !key.startsWith('$$') &&
+                    key !== 'children' &&
+                    typeof value !== 'function' &&
+                    typeof value !== 'object') {
+                    cleanProps[key] = value;
+                }
+            }
+            
+            return Object.keys(cleanProps).length > 0 ? cleanProps : null;
+        }
+        
+        function buildXPath(el) {
+            if (el.id) return `//*[@id="${el.id}"]`;
+            
+            const parts = [];
+            let current = el;
+            
+            while (current && current.nodeType === Node.ELEMENT_NODE) {
+                let index = 1;
+                let sibling = current.previousElementSibling;
+                
+                while (sibling) {
+                    if (sibling.tagName === current.tagName) index++;
+                    sibling = sibling.previousElementSibling;
+                }
+                
+                const tagPart = current.tagName.toLowerCase();
+                const indexPart = index > 1 ? `[${index}]` : '';
+                parts.unshift(`${tagPart}${indexPart}`);
+                
+                current = current.parentElement;
+            }
+            
+            return '/' + parts.join('/');
+        }
+        
+        function buildCSSSelector(el) {
+            if (el.id) return `#${CSS.escape(el.id)}`;
+            
+            const parts = [];
+            let current = el;
+            let depth = 0;
+            
+            while (current && current !== document.documentElement && depth < 5) {
+                let selector = current.tagName.toLowerCase();
+                
+                if (current.id) {
+                    parts.unshift(`#${CSS.escape(current.id)}`);
+                    break;
+                }
+                
+                if (current.className && typeof current.className === 'string') {
+                    const classes = current.className.trim().split(/\\s+/).filter(c => c);
+                    if (classes.length > 0) {
+                        selector += '.' + classes.map(c => CSS.escape(c)).join('.');
+                    }
+                }
+                
+                // Проверяем уникальность
+                const sameTagSiblings = Array.from(current.parentElement?.children || [])
+                    .filter(s => s.tagName === current.tagName);
+                
+                if (sameTagSiblings.length > 1) {
+                    const index = sameTagSiblings.indexOf(current) + 1;
+                    selector += `:nth-of-type(${index})`;
+                }
+                
+                parts.unshift(selector);
+                current = current.parentElement;
+                depth++;
+            }
+            
+            return parts.join(' > ');
+        }
+        
+        function getAttributes(el) {
+            const attrs = {};
             for (const attr of el.attributes) {
-                if (attr.name.startsWith('data-')) {
-                    info.dataAttributes[attr.name] = attr.value;
-                }
+                attrs[attr.name] = attr.value;
             }
-            
-            // ARIA атрибуты
-            const ariaAttrs = ['aria-label', 'aria-describedby', 'aria-hidden', 'aria-expanded', 'aria-selected', 'aria-checked'];
-            for (const attr of ariaAttrs) {
-                const val = el.getAttribute(attr);
-                if (val) info.ariaAttributes[attr] = val;
-            }
-            
-            // Обработчики событий
-            ['onclick', 'onsubmit', 'onchange', 'oninput', 'onfocus'].forEach(handler => {
-                if (el[handler]) info.eventHandlers.push(handler);
-            });
-            
-            // XPath (упрощенный)
-            try {
-                if (info.id) {
-                    info.xpath = `//*[@id="${info.id}"]`;
-                } else if (info.className) {
-                    const cls = info.className.split(' ')[0];
-                    info.xpath = `//${info.tag}[contains(@class, "${cls}")]`;
-                } else {
-                    info.xpath = `//${info.tag}`;
-                }
-            } catch(e) {}
-            
-            // CSS селектор
-            if (info.id) {
-                info.cssSelector = `#${info.id}`;
-            } else if (info.className) {
-                const cls = info.className.split(' ').filter(c => c).join('.');
-                info.cssSelector = `${info.tag}.${cls}`;
-            } else {
-                info.cssSelector = info.tag;
-            }
-            
-            return info;
+            return attrs;
         }
         
-        // Собираем элементы
-        const result = {
-            page: {
-                url: window.location.href,
-                title: document.title,
-                timestamp: Date.now()
+        function getComputedStyles(el) {
+            const styles = {};
+            const computed = window.getComputedStyle(el);
+            const importantProps = [
+                'display', 'visibility', 'opacity', 'position',
+                'width', 'height', 'top', 'left', 'right', 'bottom',
+                'color', 'backgroundColor', 'fontSize', 'fontWeight',
+                'border', 'borderRadius', 'padding', 'margin',
+                'zIndex', 'cursor', 'pointerEvents'
+            ];
+            
+            for (const prop of importantProps) {
+                styles[prop] = computed[prop];
+            }
+            
+            return styles;
+        }
+        
+        function getEventListeners(el) {
+            const events = [];
+            const possibleEvents = [
+                'onclick', 'ondblclick', 'onmousedown', 'onmouseup',
+                'onchange', 'oninput', 'onsubmit', 'onfocus', 'onblur',
+                'onkeydown', 'onkeyup', 'onkeypress',
+                'ontouchstart', 'ontouchend', 'ontouchmove',
+                'onload', 'onerror', 'onscroll'
+            ];
+            
+            for (const event of possibleEvents) {
+                if (el[event]) {
+                    events.push(event);
+                }
+            }
+            
+            return events;
+        }
+        
+        function getElementData(el) {
+            const tag = el.tagName.toLowerCase();
+            const role = el.getAttribute('role');
+            const type = el.getAttribute('type');
+            
+            return {
+                tag: tag,
+                role: role,
+                type: type,
+                
+                // Идентификаторы
+                id: el.id || null,
+                name: el.getAttribute('name') || null,
+                className: typeof el.className === 'string' ? el.className : '',
+                testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || 
+                        el.getAttribute('data-cy') || el.getAttribute('data-qa') || null,
+                
+                // Контент
+                text: (el.textContent || '').trim().slice(0, 500),
+                innerHTML: el.innerHTML ? el.innerHTML.slice(0, 1000) : '',
+                placeholder: el.getAttribute('placeholder') || null,
+                value: el.value !== undefined ? el.value : null,
+                href: el.getAttribute('href') || null,
+                src: el.getAttribute('src') || null,
+                alt: el.getAttribute('alt') || null,
+                title: el.getAttribute('title') || null,
+                
+                // Состояние
+                disabled: el.disabled || false,
+                readOnly: el.readOnly || false,
+                required: el.required || false,
+                checked: el.checked || false,
+                selected: el.selected || false,
+                
+                // Видимость
+                visible: !!(el.offsetParent || el.getClientRects().length > 0),
+                rect: (() => {
+                    const r = el.getBoundingClientRect();
+                    return {
+                        x: Math.round(r.x),
+                        y: Math.round(r.y),
+                        width: Math.round(r.width),
+                        height: Math.round(r.height)
+                    };
+                })(),
+                
+                // Навигация
+                xpath: buildXPath(el),
+                cssSelector: buildCSSSelector(el),
+                
+                // Атрибуты (все)
+                attributes: getAttributes(el),
+                
+                // ARIA
+                aria: {
+                    label: el.getAttribute('aria-label') || null,
+                    describedby: el.getAttribute('aria-describedby') || null,
+                    hidden: el.getAttribute('aria-hidden') || null,
+                    expanded: el.getAttribute('aria-expanded') || null,
+                    selected: el.getAttribute('aria-selected') || null,
+                    checked: el.getAttribute('aria-checked') || null,
+                    disabled: el.getAttribute('aria-disabled') || null,
+                    required: el.getAttribute('aria-required') || null,
+                    live: el.getAttribute('aria-live') || null,
+                    atomic: el.getAttribute('aria-atomic') || null,
+                },
+                
+                // Data атрибуты
+                dataAttributes: (() => {
+                    const data = {};
+                    for (const attr of el.attributes) {
+                        if (attr.name.startsWith('data-')) {
+                            data[attr.name] = attr.value;
+                        }
+                    }
+                    return Object.keys(data).length > 0 ? data : null;
+                })(),
+                
+                // React
+                reactProps: extractReactProps(el),
+                reactFiber: (() => {
+                    const fiber = extractReactFiber(el);
+                    if (!fiber) return null;
+                    return {
+                        tag: fiber.tag,
+                        key: fiber.key,
+                        memoizedState: fiber.memoizedState ? typeof fiber.memoizedState : null,
+                    };
+                })(),
+                
+                // Стили
+                computedStyles: getComputedStyles(el),
+                
+                // События
+                eventListeners: getEventListeners(el),
+                
+                // Shadow DOM
+                shadowRoot: el.shadowRoot ? {
+                    mode: el.shadowRoot.mode,
+                    childCount: el.shadowRoot.children.length,
+                    innerHTML: el.shadowRoot.innerHTML.slice(0, 500)
+                } : null,
+                
+                // Дочерние элементы (только прямые, без рекурсии)
+                childElementCount: el.children.length,
+                childTags: Array.from(el.children).slice(0, 20).map(c => c.tagName.toLowerCase()),
+                
+                // Родитель
+                parentTag: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
+                
+                // Форма
+                form: el.form ? {
+                    id: el.form.id,
+                    name: el.form.getAttribute('name'),
+                    action: el.form.action,
+                    method: el.form.method,
+                } : null,
+            };
+        }
+        
+        // Собираем ВСЕ элементы
+        const allElements = getAllElements(document.documentElement);
+        const elementsData = allElements.map(el => getElementData(el));
+        
+        // Группируем по тегам
+        const grouped = {};
+        for (const el of elementsData) {
+            const tag = el.tag;
+            if (!grouped[tag]) grouped[tag] = [];
+            grouped[tag].push(el);
+        }
+        
+        // Информация о странице
+        const pageInfo = {
+            url: window.location.href,
+            domain: window.location.hostname,
+            pathname: window.location.pathname,
+            title: document.title,
+            description: document.querySelector('meta[name="description"]')?.content || null,
+            keywords: document.querySelector('meta[name="keywords"]')?.content || null,
+            charset: document.characterSet,
+            lang: document.documentElement.lang || null,
+            timestamp: Date.now(),
+            viewport: {
+                width: window.innerWidth,
+                height: window.innerHeight,
             },
-            elements: {
-                inputs: [],
-                buttons: [],
-                links: [],
-                selects: [],
-                textareas: [],
-                forms: [],
-                images: [],
-                headings: [],
-                divs: [],
-                spans: [],
-                lis: [],
-                others: []
-            }
+            scripts: Array.from(document.scripts).map(s => s.src).filter(Boolean),
+            stylesheets: Array.from(document.styleSheets).map(s => s.href).filter(Boolean),
+            meta: (() => {
+                const meta = {};
+                document.querySelectorAll('meta').forEach(m => {
+                    const name = m.getAttribute('name') || m.getAttribute('property');
+                    const content = m.getAttribute('content');
+                    if (name && content) meta[name] = content;
+                });
+                return meta;
+            })(),
         };
-        
-        // Селекторы для сбора
-        const selectorMap = {
-            inputs: 'input:not([type="hidden"])',
-            buttons: 'button, input[type="submit"], input[type="button"], [role="button"]',
-            links: 'a[href]',
-            selects: 'select',
-            textareas: 'textarea',
-            forms: 'form',
-            images: 'img[src]',
-            headings: 'h1, h2, h3, h4, h5, h6',
-            divs: 'div[id], div[class]',
-            spans: 'span[id], span[class]',
-            lis: 'li[id], li[class]'
-        };
-        
-        const processed = new Set();
-        
-        for (const [category, selector] of Object.entries(selectorMap)) {
-            const elements = document.querySelectorAll(selector);
-            for (const el of elements) {
-                if (!processed.has(el)) {
-                    processed.add(el);
-                    result.elements[category].push(getElementInfo(el));
-                }
-            }
-        }
-        
-        // Собираем элементы с data-* атрибутами, которые могли пропустить
-        document.querySelectorAll('[data-testid], [data-test], [data-cy], [data-qa]').forEach(el => {
-            if (!processed.has(el)) {
-                processed.add(el);
-                result.elements.others.push(getElementInfo(el));
-            }
-        });
         
         // Статистика
-        result.stats = {
-            total: processed.size,
-            byCategory: Object.fromEntries(
-                Object.entries(result.elements).map(([k, v]) => [k, v.length])
-            )
+        const stats = {
+            totalElements: elementsData.length,
+            uniqueTags: Object.keys(grouped).length,
+            byTag: Object.fromEntries(
+                Object.entries(grouped).map(([tag, els]) => [tag, els.length])
+            ),
+            withReact: elementsData.filter(el => el.reactProps).length,
+            withShadowDOM: elementsData.filter(el => el.shadowRoot).length,
+            visible: elementsData.filter(el => el.visible).length,
+            interactive: elementsData.filter(el => 
+                ['input', 'button', 'select', 'textarea', 'a'].includes(el.tag)
+            ).length,
         };
         
-        return JSON.stringify(result);
+        return JSON.stringify({
+            page: pageInfo,
+            stats: stats,
+            elements: grouped,
+        });
     })();
     """
 
-async def parse_dom(url):
-    """Парсит DOM страницы"""
+async def parse_dom_deep(url):
+    """Глубокий парсинг DOM страницы"""
     try:
         # Устанавливаем куки
         if COOKIES:
@@ -271,8 +509,8 @@ async def parse_dom(url):
         await browser.navigate(url)
         await browser.wait_for_load(10)
         
-        # Выполняем парсинг
-        js_code = get_dom_parser_js()
+        # Выполняем глубокий парсинг
+        js_code = get_deep_dom_parser_js()
         result = await browser.evaluate(js_code)
         
         if not result:
@@ -295,6 +533,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🌐 **DOM Parser Bot**\n\n"
         f"{cookies_status}\n\n"
+        f"Глубокий парсинг DOM с поддержкой:\n"
+        f"• React Fiber / Props\n"
+        f"• Shadow DOM\n"
+        f"• XPath / CSS селекторы\n"
+        f"• Все атрибуты и стили\n"
+        f"• Позиции элементов\n\n"
         f"Использование:\n"
         f"/dom <url> — парсинг DOM страницы\n\n"
         f"Примеры:\n"
@@ -314,15 +558,13 @@ async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     url = context.args[0].strip()
     
-    # Добавляем протокол если нужно
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
     
     status_msg = await update.message.reply_text(f"🌐 Загружаю {url}...")
     
     try:
-        # Парсим
-        dom_data, error = await parse_dom(url)
+        dom_data, error = await parse_dom_deep(url)
         
         if error:
             await status_msg.edit_text(f"❌ Ошибка: {error}")
@@ -332,30 +574,36 @@ async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Не удалось получить данные")
             return
         
-        # Отправляем JSON
+        # Сохраняем JSON
         json_str = json.dumps(dom_data, ensure_ascii=False, indent=2)
         
-        # Сохраняем во временный файл
-        filename = f"dom_{dom_data['page']['url'].replace('https://', '').replace('http://', '').replace('/', '_')[:50]}.json"
+        domain = dom_data['page']['domain'].replace('.', '_')
+        filename = f"dom_{domain}.json"
         
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(json_str)
         
-        # Отправляем файл
+        # Статистика
         stats = dom_data.get('stats', {})
-        total = stats.get('total', 0)
         
         caption = (
             f"📊 **DOM страницы**\n"
             f"🔗 {dom_data['page']['url']}\n"
             f"📝 {dom_data['page']['title'][:100]}\n"
-            f"📦 Всего элементов: {total}\n\n"
-            f"**По категориям:**\n"
+            f"📦 Всего элементов: {stats.get('totalElements', 0)}\n"
+            f"🏷️ Уникальных тегов: {stats.get('uniqueTags', 0)}\n"
+            f"⚛️ React элементов: {stats.get('withReact', 0)}\n"
+            f"🌑 Shadow DOM: {stats.get('withShadowDOM', 0)}\n"
+            f"👁️ Видимых: {stats.get('visible', 0)}\n"
+            f"🖱️ Интерактивных: {stats.get('interactive', 0)}\n\n"
+            f"**Топ тегов:**\n"
         )
         
-        for category, count in stats.get('byCategory', {}).items():
-            if count > 0:
-                caption += f"• {category}: {count}\n"
+        # Топ-10 тегов
+        by_tag = stats.get('byTag', {})
+        top_tags = sorted(by_tag.items(), key=lambda x: x[1], reverse=True)[:10]
+        for tag, count in top_tags:
+            caption += f"• <{tag}>: {count}\n"
         
         with open(filename, 'rb') as f:
             await update.message.reply_document(
@@ -366,8 +614,6 @@ async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         await status_msg.delete()
-        
-        # Удаляем временный файл
         os.remove(filename)
         
     except Exception as e:
@@ -379,7 +625,6 @@ async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 def main():
-    """Запуск бота"""
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
