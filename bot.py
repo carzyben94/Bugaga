@@ -1,4 +1,4 @@
-# bot.py - улучшенная версия с отладкой
+# bot.py - исправленная версия с правильным поиском ответов
 import os
 import json
 import asyncio
@@ -144,31 +144,20 @@ class BrowserHarness:
     async def send_message_to_qwen(self, text):
         """Отправить сообщение в Qwen"""
         
-        # 1. Ждем загрузки страницы
-        await self.wait_for_load(3)
+        # 1. Ждем загрузки
+        await self.wait_for_load(2)
         
-        # 2. Проверяем, есть ли кнопка "Новый чат" и нажимаем её
-        new_chat_selectors = [
-            '.sidebar-entry-fixed-list-content[role="button"]',
-            '[aria-label="Новый чат"]',
-            '.sidebar-entry-fixed-list-content'
-        ]
+        # 2. Нажимаем кнопку "Новый чат" если есть
+        try:
+            await self.click_element('[aria-label="Новый чат"]')
+            await self.wait_for_load(1)
+        except:
+            pass
         
-        for selector in new_chat_selectors:
-            try:
-                result = await self.click_element(selector)
-                if result:
-                    logger.info(f"✅ Нажата кнопка нового чата: {selector}")
-                    await self.wait_for_load(2)
-                    break
-            except:
-                pass
-        
-        # 3. Ищем текстовое поле
+        # 3. Находим текстовое поле
         textarea_selectors = [
             '.message-input-textarea',
             'textarea[placeholder*="помочь"]',
-            'textarea[placeholder*="help"]',
             'textarea',
             '[contenteditable="true"]'
         ]
@@ -193,9 +182,8 @@ class BrowserHarness:
         send_selectors = [
             '.omni-button-content-btn',
             'button[aria-label*="Голосовой режим"]',
-            '[role="button"] .icon-line-waveform',
             '.omni-button-content',
-            'button:has(svg[type="icon-line-waveform"])'
+            '[role="button"] svg[type="icon-line-waveform"]'
         ]
         
         clicked = False
@@ -213,7 +201,7 @@ class BrowserHarness:
             # Пробуем Enter
             enter_js = """
             (function() {
-                var el = document.querySelector('.message-input-textarea, textarea[placeholder*="помочь"], textarea');
+                var el = document.querySelector('.message-input-textarea, textarea');
                 if (!el) return false;
                 el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
                 el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
@@ -228,18 +216,20 @@ class BrowserHarness:
     async def wait_for_response(self, timeout=120):
         """Ожидать ответ от Qwen"""
         
-        # JavaScript для поиска ответа
+        # JavaScript для поиска ответа с правильными селекторами
         js = f"""
         (function() {{
             var startTime = Date.now();
             var maxWait = {timeout * 1000};
+            var lastResponse = null;
+            var stableCount = 0;
             
-            function getLastMessage() {{
-                // Ищем все сообщения
+            function findResponse() {{
+                // Правильные селекторы для Qwen из JSON
                 var selectors = [
-                    '.message-content',
-                    '.chat-message',
-                    '[class*="message"]',
+                    '.message-content',           // из JSON
+                    '.chat-message',              // из JSON
+                    '[class*="message"]:not(:empty)',
                     '.ant-message',
                     '[class*="response"]'
                 ];
@@ -249,34 +239,28 @@ class BrowserHarness:
                     var els = document.querySelectorAll(s);
                     for (var i = 0; i < els.length; i++) {{
                         var text = (els[i].textContent || '').trim();
-                        // Исключаем системные сообщения
+                        // Фильтруем системные сообщения
                         if (text && 
                             text.length > 10 && 
                             !text.includes('AutoChoose') && 
                             !text.includes('Get Started') &&
-                            !text.includes('style to create')) {{
-                            allTexts.push({{
-                                text: text,
-                                index: i,
-                                time: Date.now()
-                            }});
+                            !text.includes('style to create') &&
+                            !text.includes('window.iconfontsvgstring')) {{
+                            allTexts.push(text);
                         }}
                     }}
                 }}
                 
-                // Сортируем по времени (последние сообщения)
                 if (allTexts.length > 0) {{
-                    allTexts.sort(function(a, b) {{ return b.time - a.time || b.index - a.index; }});
-                    return allTexts[0].text;
+                    // Сортируем по длине (самый длинный текст - скорее всего ответ)
+                    allTexts.sort(function(a, b) {{ return b.length - a.length; }});
+                    return allTexts[0];
                 }}
                 return null;
             }}
             
-            var lastResponse = null;
-            var stableCount = 0;
-            
             while (Date.now() - startTime < maxWait) {{
-                var response = getLastMessage();
+                var response = findResponse();
                 
                 if (response) {{
                     if (response === lastResponse) {{
@@ -286,8 +270,8 @@ class BrowserHarness:
                         stableCount = 0;
                     }}
                     
-                    // Если ответ стабилен и длинный - это финальный ответ
-                    if (stableCount > 3 && response.length > 20) {{
+                    // Если ответ стабилен и достаточно длинный
+                    if (stableCount > 5 && response.length > 20) {{
                         return response;
                     }}
                 }}
@@ -297,18 +281,19 @@ class BrowserHarness:
                     '[class*="loading"], [class*="typing"], .anticon-loading, [class*="thinking"]'
                 );
                 
-                if (!loading && response && response.length > 20) {{
+                if (!loading && response && response.length > 30) {{
                     return response;
                 }}
                 
-                await sleep(1000);
+                // Ждем 1 секунду
+                var end = Date.now() + 1000;
+                while (Date.now() < end) {{}}
             }}
             
             return lastResponse || null;
         }})()
         """
         
-        # Заменяем sleep на паузу в цикле
         result = await self.evaluate(js)
         return result
     
@@ -332,9 +317,21 @@ class BrowserHarness:
                 logger.info(f"✅ Получен ответ: {response[:100]}...")
                 return response, None
             else:
-                # Пробуем получить текст страницы для отладки
-                page_text = await self.evaluate("document.body.textContent")
-                logger.error(f"❌ Ответ не получен. Текст страницы: {page_text[:500]}")
+                # Пробуем получить все тексты для отладки
+                all_texts = await self.evaluate("""
+                (function() {
+                    var texts = [];
+                    var els = document.querySelectorAll('[class*="message"]');
+                    for (var i = 0; i < els.length; i++) {
+                        var text = (els[i].textContent || '').trim();
+                        if (text && text.length > 5) {
+                            texts.push(text);
+                        }
+                    }
+                    return texts.join(' | ');
+                })()
+                """)
+                logger.error(f"❌ Найдены тексты: {all_texts}")
                 return None, "Не удалось получить ответ от Qwen"
                 
         except Exception as e:
@@ -380,17 +377,27 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "!!document.querySelector('.omni-button-content-btn')"
         )
         
-        # Получаем текст страницы (первые 200 символов)
-        page_text = await browser.evaluate(
-            "document.body.textContent.slice(0, 200)"
-        )
+        # Получаем все сообщения
+        messages = await browser.evaluate("""
+        (function() {
+            var texts = [];
+            var els = document.querySelectorAll('.message-content, .chat-message, [class*="message"]');
+            for (var i = 0; i < els.length; i++) {
+                var text = (els[i].textContent || '').trim();
+                if (text && text.length > 5 && text.length < 500) {
+                    texts.push(text);
+                }
+            }
+            return texts.join(' | ');
+        })()
+        """)
         
         await update.message.reply_text(
             f"🔍 **Отладка**\n\n"
             f"📄 Заголовок: {title}\n"
             f"✏️ Поле ввода: {'✅' if has_textarea else '❌'}\n"
-            f"📤 Кнопка отправки: {'✅' if has_send_btn else '❌'}\n\n"
-            f"📝 Текст страницы:\n{page_text}",
+            f"📤 Кнопка отправки: {'✅' if has_send_btn else '❌'}\n"
+            f"💬 Сообщения на странице:\n{messages[:500] if messages else 'Нет сообщений'}",
             parse_mode='Markdown'
         )
     except Exception as e:
