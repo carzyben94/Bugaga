@@ -1,4 +1,4 @@
-# bot.py
+# bot.py - улучшенная версия с правильными селекторами из JSON
 import os
 import json
 import asyncio
@@ -6,7 +6,7 @@ import logging
 import httpx
 import warnings
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 warnings.filterwarnings("ignore")
 
@@ -26,9 +26,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("telegram").setLevel(logging.CRITICAL)
-
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -40,10 +37,10 @@ try:
     logger.info(f"✅ Загружено {len(COOKIES)} кук")
 except ImportError:
     COOKIES = []
-    logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
+    logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# BROWSER HARNESS (с увеличенным буфером)
+# BROWSER HARNESS
 # ============================================================
 
 class BrowserHarness:
@@ -69,17 +66,12 @@ class BrowserHarness:
             if not self.ws_url:
                 raise Exception("Нет активных вкладок")
         
-        # Увеличиваем буфер до 10 МБ
         async with websockets.connect(
             self.ws_url,
-            max_size=10_000_000,  # 10 MB на приём
-            write_limit=10_000_000  # 10 MB на отправку
+            max_size=10_000_000,
+            write_limit=10_000_000
         ) as ws:
-            message = {
-                "id": 1,
-                "method": method,
-                "params": params or {}
-            }
+            message = {"id": 1, "method": method, "params": params or {}}
             await ws.send(json.dumps(message))
             response = await ws.recv()
             return json.loads(response)
@@ -109,257 +101,227 @@ class BrowserHarness:
     
     async def wait_for_load(self, timeout=15):
         await asyncio.sleep(timeout)
+    
+    async def click_element(self, selector):
+        """Кликнуть по элементу"""
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return false;
+            el.click();
+            el.dispatchEvent(new MouseEvent('click', {{ bubbles: true }}));
+            return true;
+        }})()
+        """
+        return await self.evaluate(js)
+    
+    async def set_text(self, selector, text):
+        """Установить текст"""
+        js = f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) return false;
+            el.value = '{text.replace("'", "\\'")}';
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return true;
+        }})()
+        """
+        return await self.evaluate(js)
+    
+    async def send_message_to_qwen(self, text):
+        """Отправить сообщение в Qwen используя правильные селекторы из JSON"""
+        
+        # 1. Находим текстовое поле (из JSON: t="textarea", cl="message-input-textarea")
+        textarea_selectors = [
+            '.message-input-textarea',  # основной класс из JSON
+            'textarea[placeholder*="помочь"]',
+            'textarea[placeholder*="help"]',
+            '.chat-message-input textarea'
+        ]
+        
+        text_set = False
+        for selector in textarea_selectors:
+            result = await self.set_text(selector, text)
+            if result:
+                text_set = True
+                logger.info(f"✅ Текст установлен через селектор: {selector}")
+                break
+        
+        if not text_set:
+            return False, "Не найдено поле ввода"
+        
+        await asyncio.sleep(0.5)
+        
+        # 2. Находим кнопку отправки (из JSON: cl="omni-button-content-btn")
+        send_selectors = [
+            '.omni-button-content-btn',  # основная кнопка из JSON
+            'button[aria-label*="Голосовой режим"]',
+            'button[aria-label*="Voice"]',
+            '[role="button"] .icon-line-waveform',
+            '.message-input-right-button-send'
+        ]
+        
+        clicked = False
+        for selector in send_selectors:
+            result = await self.click_element(selector)
+            if result:
+                clicked = True
+                logger.info(f"✅ Кнопка нажата через селектор: {selector}")
+                break
+        
+        if not clicked:
+            # Пробуем Enter
+            enter_js = """
+            (function() {
+                var el = document.querySelector('.message-input-textarea, textarea[placeholder*="помочь"]');
+                if (!el) return false;
+                el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+                return true;
+            })()
+            """
+            await self.evaluate(enter_js)
+            logger.info("⏎ Нажат Enter")
+        
+        return True, "Сообщение отправлено"
+    
+    async def wait_for_response(self, timeout=90):
+        """Ожидать ответ от Qwen"""
+        js = f"""
+        (function() {{
+            var startTime = Date.now();
+            var maxWait = {timeout * 1000};
+            
+            function findResponse() {{
+                // Ищем последний ответ
+                var selectors = [
+                    '.message-content:not(:empty)',
+                    '.chat-message:not(:empty)',
+                    '[class*="message"]:not(:empty)',
+                    '.ant-message'
+                ];
+                
+                var allTexts = [];
+                for (var s of selectors) {{
+                    var els = document.querySelectorAll(s);
+                    for (var i = 0; i < els.length; i++) {{
+                        var text = (els[i].textContent || '').trim();
+                        if (text && text.length > 10) {{
+                            allTexts.push(text);
+                        }}
+                    }}
+                }}
+                
+                // Возвращаем самый длинный текст (скорее всего ответ)
+                if (allTexts.length > 0) {{
+                    allTexts.sort(function(a, b) {{ return b.length - a.length; }});
+                    return allTexts[0];
+                }}
+                return null;
+            }}
+            
+            var lastResponse = null;
+            while (Date.now() - startTime < maxWait) {{
+                var response = findResponse();
+                if (response && response !== lastResponse) {{
+                    lastResponse = response;
+                    // Если ответ длинный, вероятно это финальный ответ
+                    if (response.length > 50) {{
+                        return response;
+                    }}
+                }}
+                
+                // Проверяем, нет ли индикатора загрузки
+                var loading = document.querySelector('[class*="loading"], [class*="typing"], .anticon-loading');
+                if (!loading && response && response.length > 20) {{
+                    return response;
+                }}
+                
+                // Ждем 1 секунду
+                var end = Date.now() + 1000;
+                while (Date.now() < end) {{}}
+            }}
+            
+            return lastResponse || null;
+        }})()
+        """
+        return await self.evaluate(js)
+    
+    async def ask_qwen(self, question):
+        """Задать вопрос Qwen"""
+        try:
+            # Открываем Qwen
+            await self.navigate("https://chat.qwen.ai/")
+            await self.wait_for_load(5)
+            
+            # Отправляем сообщение
+            success, msg = await self.send_message_to_qwen(question)
+            if not success:
+                return None, msg
+            
+            # Ждем ответ
+            response = await self.wait_for_response(90)
+            
+            if response:
+                return response, None
+            else:
+                return None, "Не удалось получить ответ"
+                
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            return None, str(e)
 
 browser = BrowserHarness(CDP_URL)
-
-# ============================================================
-# DOM ПАРСЕР (ГЛУБОКИЙ)
-# ============================================================
-
-def get_dom_parser_js():
-    """JavaScript для глубокого парсинга DOM"""
-    return """
-(function() {
-    function walk(node, arr) {
-        if (!node || node.nodeType !== 1) return;
-        
-        var el = node;
-        var data = {
-            t: el.tagName.toLowerCase(),
-            id: el.id || '',
-            cl: (typeof el.className === 'string' ? el.className : ''),
-            tx: (el.textContent || '').trim().slice(0, 300),
-            v: el.value || '',
-            ph: el.getAttribute('placeholder') || '',
-            hr: el.getAttribute('href') || '',
-            sr: el.getAttribute('src') || '',
-            nm: el.getAttribute('name') || '',
-            tp: el.getAttribute('type') || '',
-            rl: el.getAttribute('role') || '',
-            ds: !!el.disabled,
-            vs: !!(el.offsetParent || el.getClientRects().length),
-            rc: (function() {
-                var r = el.getBoundingClientRect();
-                return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
-            })(),
-            dt: (function() {
-                var d = {};
-                for (var i = 0; i < el.attributes.length; i++) {
-                    var a = el.attributes[i];
-                    if (a.name.indexOf('data-') === 0) d[a.name] = a.value;
-                }
-                return Object.keys(d).length ? d : null;
-            })(),
-            ar: (function() {
-                var a = {};
-                var keys = ['label','describedby','hidden','expanded','selected','checked','disabled'];
-                for (var i = 0; i < keys.length; i++) {
-                    var v = el.getAttribute('aria-' + keys[i]);
-                    if (v) a[keys[i]] = v;
-                }
-                return Object.keys(a).length ? a : null;
-            })(),
-            rf: (function() {
-                var fiberKey = null;
-                var keys = Object.keys(el);
-                for (var i = 0; i < keys.length; i++) {
-                    if (keys[i].indexOf('__reactFiber') === 0 || keys[i].indexOf('__reactInternalInstance') === 0) {
-                        fiberKey = keys[i];
-                        break;
-                    }
-                }
-                if (!fiberKey) return null;
-                var f = el[fiberKey];
-                var p = {};
-                while (f) {
-                    if (f.memoizedProps) {
-                        var mp = f.memoizedProps;
-                        for (var k in mp) p[k] = mp[k];
-                    }
-                    f = f.return;
-                }
-                var clean = {};
-                for (var k in p) {
-                    if (k.indexOf('_') !== 0 && k !== 'children' && typeof p[k] !== 'function' && typeof p[k] !== 'object') {
-                        clean[k] = p[k];
-                    }
-                }
-                return Object.keys(clean).length ? clean : null;
-            })(),
-            cs: (function() {
-                var s = {};
-                var props = ['display','visibility','opacity','position','width','height','color','backgroundColor','fontSize','zIndex','cursor'];
-                var cs = window.getComputedStyle(el);
-                for (var i = 0; i < props.length; i++) {
-                    s[props[i]] = cs[props[i]];
-                }
-                return s;
-            })(),
-            ev: (function() {
-                var e = [];
-                var evs = ['onclick','onchange','oninput','onsubmit','onfocus','onblur','onkeydown','onscroll'];
-                for (var i = 0; i < evs.length; i++) {
-                    if (el[evs[i]]) e.push(evs[i]);
-                }
-                return e.length ? e : null;
-            })(),
-            sh: el.shadowRoot ? {mode: el.shadowRoot.mode, kids: el.shadowRoot.children.length} : null
-        };
-        
-        arr.push(data);
-        
-        // Shadow DOM
-        if (el.shadowRoot) {
-            var shadowKids = el.shadowRoot.children;
-            for (var i = 0; i < shadowKids.length; i++) {
-                walk(shadowKids[i], arr);
-            }
-        }
-        
-        // iframe
-        if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentDocument) {
-            walk(el.contentDocument.documentElement, arr);
-        }
-        
-        // Дети
-        var kids = el.children;
-        for (var i = 0; i < kids.length; i++) {
-            walk(kids[i], arr);
-        }
-    }
-    
-    var elements = [];
-    walk(document.documentElement, elements);
-    
-    // Группировка
-    var grouped = {};
-    for (var i = 0; i < elements.length; i++) {
-        var el = elements[i];
-        var tag = el.t;
-        if (!grouped[tag]) grouped[tag] = [];
-        grouped[tag].push(el);
-    }
-    
-    // Статистика
-    var stats = {total: elements.length, tags: Object.keys(grouped).length, byTag: {}};
-    for (var tag in grouped) stats.byTag[tag] = grouped[tag].length;
-    
-    return JSON.stringify({
-        page: {
-            url: window.location.href,
-            domain: window.location.hostname,
-            title: document.title,
-            desc: (document.querySelector('meta[name="description"]') || {}).content || ''
-        },
-        stats: stats,
-        elements: grouped
-    });
-})();
-"""
-
-async def parse_dom(url):
-    """Глубокий парсинг DOM страницы"""
-    try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
-        
-        await browser.navigate(url)
-        await browser.wait_for_load(10)
-        
-        js_code = get_dom_parser_js()
-        result = await browser.evaluate(js_code)
-        
-        if not result:
-            return None, "Пустой результат"
-        
-        return json.loads(result), None
-        
-    except Exception as e:
-        logger.error(f"Ошибка парсинга: {e}")
-        return None, str(e)
 
 # ============================================================
 # КОМАНДЫ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: не загружены"
-    
     await update.message.reply_text(
-        f"🌐 **DOM Parser Bot**\n\n"
-        f"{cookies_status}\n\n"
-        f"Глубокий парсинг DOM:\n"
-        f"• React Fiber / Props\n"
-        f"• Shadow DOM\n"
-        f"• Все атрибуты и стили\n"
-        f"• Позиции элементов\n\n"
-        f"Использование:\n"
-        f"/dom <url> — парсинг DOM страницы",
+        f"🤖 **Qwen Bot**\n\n"
+        f"Просто отправьте мне сообщение!\n"
+        f"Я передам его Qwen через веб-интерфейс.\n\n"
+        f"📌 /clear — перезагрузить страницу",
         parse_mode='Markdown'
     )
 
-async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Укажите URL\nПример: /dom https://example.com")
-        return
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await browser.navigate("https://chat.qwen.ai/")
+        await browser.wait_for_load(3)
+        await update.message.reply_text("✅ Страница перезагружена")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question = update.message.text
     
-    url = context.args[0].strip()
-    
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    status_msg = await update.message.reply_text(f"🌐 Загружаю {url}...")
+    status_msg = await update.message.reply_text("💭 Обращаюсь к Qwen...")
     
     try:
-        dom_data, error = await parse_dom(url)
+        response, error = await browser.ask_qwen(question)
         
         if error:
-            await status_msg.edit_text(f"❌ Ошибка: {error}")
+            await status_msg.edit_text(f"❌ {error}")
             return
         
-        if not dom_data:
-            await status_msg.edit_text("❌ Не удалось получить данные")
+        if not response:
+            await status_msg.edit_text("❌ Не удалось получить ответ")
             return
         
-        # Сохраняем JSON
-        json_str = json.dumps(dom_data, ensure_ascii=False, indent=2)
+        # Обрезаем длинный ответ
+        if len(response) > 4000:
+            response = response[:4000] + "...\n\n(ответ обрезан)"
         
-        domain = dom_data['page']['domain'].replace('.', '_')
-        filename = f"dom_{domain}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(json_str)
-        
-        # Статистика
-        stats = dom_data.get('stats', {})
-        
-        caption = (
-            f"📊 **DOM страницы**\n"
-            f"🔗 {dom_data['page']['url']}\n"
-            f"📝 {dom_data['page']['title'][:100]}\n"
-            f"📦 Всего элементов: {stats.get('total', 0)}\n"
-            f"🏷️ Уникальных тегов: {stats.get('tags', 0)}\n\n"
-            f"**Топ тегов:**\n"
+        await status_msg.edit_text(
+            f"💬 **Qwen:**\n\n{response}",
+            parse_mode='Markdown'
         )
         
-        by_tag = stats.get('byTag', {})
-        top_tags = sorted(by_tag.items(), key=lambda x: x[1], reverse=True)[:10]
-        for tag, count in top_tags:
-            caption += f"• <{tag}>: {count}\n"
-        
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=caption,
-                parse_mode='Markdown'
-            )
-        
-        await status_msg.delete()
-        os.remove(filename)
-        
     except Exception as e:
-        logger.error(f"Ошибка команды /dom: {e}")
+        logger.error(f"Ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
@@ -370,9 +332,10 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dom", dom_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Qwen Bot запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
