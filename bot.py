@@ -43,18 +43,15 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
 
 # ============================================================
-# BROWSER HARNESS (минимальный)
+# BROWSER HARNESS (с увеличенным буфером)
 # ============================================================
 
 class BrowserHarness:
-    """Минимальная обертка над Chrome DevTools Protocol"""
-    
     def __init__(self, cdp_url="http://localhost:9222"):
         self.cdp_url = cdp_url
         self.ws_url = None
     
     def _get_ws_url(self):
-        """Получить WebSocket URL активной вкладки"""
         try:
             resp = httpx.get(f"{self.cdp_url}/json/list", timeout=5)
             pages = resp.json()
@@ -65,7 +62,6 @@ class BrowserHarness:
         return None
     
     async def _send_cdp(self, method, params=None):
-        """Отправить CDP команду через WebSocket"""
         import websockets
         
         if not self.ws_url:
@@ -73,7 +69,12 @@ class BrowserHarness:
             if not self.ws_url:
                 raise Exception("Нет активных вкладок")
         
-        async with websockets.connect(self.ws_url) as ws:
+        # Увеличиваем буфер до 10 МБ
+        async with websockets.connect(
+            self.ws_url,
+            max_size=10_000_000,  # 10 MB на приём
+            write_limit=10_000_000  # 10 MB на отправку
+        ) as ws:
             message = {
                 "id": 1,
                 "method": method,
@@ -84,10 +85,8 @@ class BrowserHarness:
             return json.loads(response)
     
     async def set_cookies(self, cookies):
-        """Установить куки через CDP"""
         if not cookies:
             return
-        
         try:
             result = await self._send_cdp("Network.setCookies", {"cookies": cookies})
             if "error" in result:
@@ -98,417 +97,176 @@ class BrowserHarness:
             logger.error(f"Ошибка установки кук: {e}")
     
     async def navigate(self, url):
-        """Перейти на URL"""
         result = await self._send_cdp("Page.navigate", {"url": url})
         return result.get("result", {})
     
     async def evaluate(self, expression):
-        """Выполнить JavaScript"""
         result = await self._send_cdp("Runtime.evaluate", {
             "expression": expression,
-            "returnByValue": True  # ← ИСПРАВЛЕНО
+            "returnByValue": True
         })
         return result.get("result", {}).get("result", {}).get("value")
     
     async def wait_for_load(self, timeout=15):
-        """Подождать загрузки страницы"""
         await asyncio.sleep(timeout)
 
-# Глобальный экземпляр
 browser = BrowserHarness(CDP_URL)
 
 # ============================================================
 # DOM ПАРСЕР (ГЛУБОКИЙ)
 # ============================================================
 
-def get_deep_dom_parser_js():
-    """JavaScript для глубокого парсинга DOM (все элементы, все атрибуты, React, Shadow DOM)"""
+def get_dom_parser_js():
+    """JavaScript для глубокого парсинга DOM"""
     return """
-    (function() {
-        // Рекурсивный обход ВСЕХ элементов, включая Shadow DOM
-        function getAllElements(root) {
-            const elements = [];
-            
-            function traverse(node) {
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    elements.push(node);
-                    
-                    // Проверяем Shadow DOM
-                    if (node.shadowRoot) {
-                        node.shadowRoot.childNodes.forEach(child => {
-                            if (child.nodeType === Node.ELEMENT_NODE) {
-                                elements.push(child);
-                                traverse(child);
-                            }
-                        });
-                    }
-                    
-                    // Проверяем iframe
-                    if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
-                        try {
-                            const iframeDoc = node.contentDocument || node.contentWindow.document;
-                            if (iframeDoc && iframeDoc.documentElement) {
-                                traverse(iframeDoc.documentElement);
-                            }
-                        } catch(e) {}
-                    }
-                    
-                    // Обходим дочерние элементы
-                    for (const child of node.children) {
-                        traverse(child);
-                    }
-                }
-            }
-            
-            traverse(root);
-            return elements;
-        }
+(function() {
+    function walk(node, arr) {
+        if (!node || node.nodeType !== 1) return;
         
-        function extractReactFiber(el) {
-            const key = Object.keys(el).find(k => 
-                k.startsWith('__reactFiber') || 
-                k.startsWith('__reactInternalInstance')
-            );
-            return key ? el[key] : null;
-        }
-        
-        function extractReactProps(el) {
-            const fiber = extractReactFiber(el);
-            if (!fiber) return null;
-            
-            const props = {};
-            let node = fiber;
-            
-            while (node) {
-                if (node.memoizedProps) {
-                    Object.assign(props, node.memoizedProps);
+        var el = node;
+        var data = {
+            t: el.tagName.toLowerCase(),
+            id: el.id || '',
+            cl: (typeof el.className === 'string' ? el.className : ''),
+            tx: (el.textContent || '').trim().slice(0, 300),
+            v: el.value || '',
+            ph: el.getAttribute('placeholder') || '',
+            hr: el.getAttribute('href') || '',
+            sr: el.getAttribute('src') || '',
+            nm: el.getAttribute('name') || '',
+            tp: el.getAttribute('type') || '',
+            rl: el.getAttribute('role') || '',
+            ds: !!el.disabled,
+            vs: !!(el.offsetParent || el.getClientRects().length),
+            rc: (function() {
+                var r = el.getBoundingClientRect();
+                return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+            })(),
+            dt: (function() {
+                var d = {};
+                for (var i = 0; i < el.attributes.length; i++) {
+                    var a = el.attributes[i];
+                    if (a.name.indexOf('data-') === 0) d[a.name] = a.value;
                 }
-                if (node.pendingProps) {
-                    Object.assign(props, node.pendingProps);
+                return Object.keys(d).length ? d : null;
+            })(),
+            ar: (function() {
+                var a = {};
+                var keys = ['label','describedby','hidden','expanded','selected','checked','disabled'];
+                for (var i = 0; i < keys.length; i++) {
+                    var v = el.getAttribute('aria-' + keys[i]);
+                    if (v) a[keys[i]] = v;
                 }
-                node = node.return;
-            }
-            
-            // Убираем служебные React-свойства
-            const cleanProps = {};
-            for (const [key, value] of Object.entries(props)) {
-                if (!key.startsWith('_') && 
-                    !key.startsWith('$$') &&
-                    key !== 'children' &&
-                    typeof value !== 'function' &&
-                    typeof value !== 'object') {
-                    cleanProps[key] = value;
-                }
-            }
-            
-            return Object.keys(cleanProps).length > 0 ? cleanProps : null;
-        }
-        
-        function buildXPath(el) {
-            if (el.id) return '//*[@id="' + el.id + '"]';
-            
-            const parts = [];
-            let current = el;
-            
-            while (current && current.nodeType === Node.ELEMENT_NODE) {
-                let index = 1;
-                let sibling = current.previousElementSibling;
-                
-                while (sibling) {
-                    if (sibling.tagName === current.tagName) index++;
-                    sibling = sibling.previousElementSibling;
-                }
-                
-                const tagPart = current.tagName.toLowerCase();
-                const indexPart = index > 1 ? '[' + index + ']' : '';
-                parts.unshift(tagPart + indexPart);
-                
-                current = current.parentElement;
-            }
-            
-            return '/' + parts.join('/');
-        }
-        
-        function buildCSSSelector(el) {
-            if (el.id) return '#' + CSS.escape(el.id);
-            
-            const parts = [];
-            let current = el;
-            let depth = 0;
-            
-            while (current && current !== document.documentElement && depth < 5) {
-                let selector = current.tagName.toLowerCase();
-                
-                if (current.id) {
-                    parts.unshift('#' + CSS.escape(current.id));
-                    break;
-                }
-                
-                if (current.className && typeof current.className === 'string') {
-                    const classes = current.className.trim().split(/\\s+/).filter(function(c) { return c; });
-                    if (classes.length > 0) {
-                        selector += '.' + classes.map(function(c) { return CSS.escape(c); }).join('.');
+                return Object.keys(a).length ? a : null;
+            })(),
+            rf: (function() {
+                var fiberKey = null;
+                var keys = Object.keys(el);
+                for (var i = 0; i < keys.length; i++) {
+                    if (keys[i].indexOf('__reactFiber') === 0 || keys[i].indexOf('__reactInternalInstance') === 0) {
+                        fiberKey = keys[i];
+                        break;
                     }
                 }
-                
-                const parent = current.parentElement;
-                if (parent) {
-                    const sameTagSiblings = Array.from(parent.children).filter(function(s) {
-                        return s.tagName === current.tagName;
-                    });
-                    
-                    if (sameTagSiblings.length > 1) {
-                        const index = sameTagSiblings.indexOf(current) + 1;
-                        selector += ':nth-of-type(' + index + ')';
+                if (!fiberKey) return null;
+                var f = el[fiberKey];
+                var p = {};
+                while (f) {
+                    if (f.memoizedProps) {
+                        var mp = f.memoizedProps;
+                        for (var k in mp) p[k] = mp[k];
+                    }
+                    f = f.return;
+                }
+                var clean = {};
+                for (var k in p) {
+                    if (k.indexOf('_') !== 0 && k !== 'children' && typeof p[k] !== 'function' && typeof p[k] !== 'object') {
+                        clean[k] = p[k];
                     }
                 }
-                
-                parts.unshift(selector);
-                current = parent;
-                depth++;
-            }
-            
-            return parts.join(' > ');
-        }
-        
-        function getAttributes(el) {
-            const attrs = {};
-            for (const attr of el.attributes) {
-                attrs[attr.name] = attr.value;
-            }
-            return attrs;
-        }
-        
-        function getComputedStyles(el) {
-            const styles = {};
-            const computed = window.getComputedStyle(el);
-            const importantProps = [
-                'display', 'visibility', 'opacity', 'position',
-                'width', 'height', 'top', 'left', 'right', 'bottom',
-                'color', 'backgroundColor', 'fontSize', 'fontWeight',
-                'border', 'borderRadius', 'padding', 'margin',
-                'zIndex', 'cursor', 'pointerEvents'
-            ];
-            
-            for (const prop of importantProps) {
-                styles[prop] = computed[prop];
-            }
-            
-            return styles;
-        }
-        
-        function getEventListeners(el) {
-            const events = [];
-            const possibleEvents = [
-                'onclick', 'ondblclick', 'onmousedown', 'onmouseup',
-                'onchange', 'oninput', 'onsubmit', 'onfocus', 'onblur',
-                'onkeydown', 'onkeyup', 'onkeypress',
-                'ontouchstart', 'ontouchend', 'ontouchmove',
-                'onload', 'onerror', 'onscroll'
-            ];
-            
-            for (const event of possibleEvents) {
-                if (el[event]) {
-                    events.push(event);
+                return Object.keys(clean).length ? clean : null;
+            })(),
+            cs: (function() {
+                var s = {};
+                var props = ['display','visibility','opacity','position','width','height','color','backgroundColor','fontSize','zIndex','cursor'];
+                var cs = window.getComputedStyle(el);
+                for (var i = 0; i < props.length; i++) {
+                    s[props[i]] = cs[props[i]];
                 }
+                return s;
+            })(),
+            ev: (function() {
+                var e = [];
+                var evs = ['onclick','onchange','oninput','onsubmit','onfocus','onblur','onkeydown','onscroll'];
+                for (var i = 0; i < evs.length; i++) {
+                    if (el[evs[i]]) e.push(evs[i]);
+                }
+                return e.length ? e : null;
+            })(),
+            sh: el.shadowRoot ? {mode: el.shadowRoot.mode, kids: el.shadowRoot.children.length} : null
+        };
+        
+        arr.push(data);
+        
+        // Shadow DOM
+        if (el.shadowRoot) {
+            var shadowKids = el.shadowRoot.children;
+            for (var i = 0; i < shadowKids.length; i++) {
+                walk(shadowKids[i], arr);
             }
-            
-            return events;
         }
         
-        function getElementData(el) {
-            const tag = el.tagName.toLowerCase();
-            
-            return {
-                tag: tag,
-                role: el.getAttribute('role') || null,
-                type: el.getAttribute('type') || null,
-                
-                // Идентификаторы
-                id: el.id || null,
-                name: el.getAttribute('name') || null,
-                className: typeof el.className === 'string' ? el.className : '',
-                testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || 
-                        el.getAttribute('data-cy') || el.getAttribute('data-qa') || null,
-                
-                // Контент
-                text: (el.textContent || '').trim().slice(0, 500),
-                innerHTML: el.innerHTML ? el.innerHTML.slice(0, 1000) : '',
-                placeholder: el.getAttribute('placeholder') || null,
-                value: el.value !== undefined ? el.value : null,
-                href: el.getAttribute('href') || null,
-                src: el.getAttribute('src') || null,
-                alt: el.getAttribute('alt') || null,
-                title: el.getAttribute('title') || null,
-                
-                // Состояние
-                disabled: el.disabled || false,
-                readOnly: el.readOnly || false,
-                required: el.required || false,
-                checked: el.checked || false,
-                selected: el.selected || false,
-                
-                // Видимость и позиция
-                visible: !!(el.offsetParent || el.getClientRects().length > 0),
-                rect: (function() {
-                    const r = el.getBoundingClientRect();
-                    return {
-                        x: Math.round(r.x),
-                        y: Math.round(r.y),
-                        width: Math.round(r.width),
-                        height: Math.round(r.height)
-                    };
-                })(),
-                
-                // Навигация
-                xpath: buildXPath(el),
-                cssSelector: buildCSSSelector(el),
-                
-                // Атрибуты (все)
-                attributes: getAttributes(el),
-                
-                // ARIA
-                aria: {
-                    label: el.getAttribute('aria-label') || null,
-                    describedby: el.getAttribute('aria-describedby') || null,
-                    hidden: el.getAttribute('aria-hidden') || null,
-                    expanded: el.getAttribute('aria-expanded') || null,
-                    selected: el.getAttribute('aria-selected') || null,
-                    checked: el.getAttribute('aria-checked') || null,
-                    disabled: el.getAttribute('aria-disabled') || null,
-                    required: el.getAttribute('aria-required') || null,
-                    live: el.getAttribute('aria-live') || null,
-                    atomic: el.getAttribute('aria-atomic') || null,
-                },
-                
-                // Data атрибуты
-                dataAttributes: (function() {
-                    const data = {};
-                    for (const attr of el.attributes) {
-                        if (attr.name.startsWith('data-')) {
-                            data[attr.name] = attr.value;
-                        }
-                    }
-                    return Object.keys(data).length > 0 ? data : null;
-                })(),
-                
-                // React
-                reactProps: extractReactProps(el),
-                
-                // Стили
-                computedStyles: getComputedStyles(el),
-                
-                // События
-                eventListeners: getEventListeners(el),
-                
-                // Shadow DOM
-                shadowRoot: el.shadowRoot ? {
-                    mode: el.shadowRoot.mode,
-                    childCount: el.shadowRoot.children.length
-                } : null,
-                
-                // Дочерние элементы
-                childElementCount: el.children.length,
-                childTags: Array.from(el.children).slice(0, 20).map(function(c) { return c.tagName.toLowerCase(); }),
-                
-                // Родитель
-                parentTag: el.parentElement ? el.parentElement.tagName.toLowerCase() : null,
-                
-                // Форма
-                form: el.form ? {
-                    id: el.form.id || null,
-                    name: el.form.getAttribute('name') || null,
-                    action: el.form.action || null,
-                    method: el.form.method || null,
-                } : null,
-            };
+        // iframe
+        if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentDocument) {
+            walk(el.contentDocument.documentElement, arr);
         }
         
-        // Собираем ВСЕ элементы
-        const allElements = getAllElements(document.documentElement);
-        const elementsData = [];
-        
-        for (let i = 0; i < allElements.length; i++) {
-            elementsData.push(getElementData(allElements[i]));
+        // Дети
+        var kids = el.children;
+        for (var i = 0; i < kids.length; i++) {
+            walk(kids[i], arr);
         }
-        
-        // Группируем по тегам
-        const grouped = {};
-        for (let i = 0; i < elementsData.length; i++) {
-            const el = elementsData[i];
-            const tag = el.tag;
-            if (!grouped[tag]) grouped[tag] = [];
-            grouped[tag].push(el);
-        }
-        
-        // Информация о странице
-        const pageInfo = {
+    }
+    
+    var elements = [];
+    walk(document.documentElement, elements);
+    
+    // Группировка
+    var grouped = {};
+    for (var i = 0; i < elements.length; i++) {
+        var el = elements[i];
+        var tag = el.t;
+        if (!grouped[tag]) grouped[tag] = [];
+        grouped[tag].push(el);
+    }
+    
+    // Статистика
+    var stats = {total: elements.length, tags: Object.keys(grouped).length, byTag: {}};
+    for (var tag in grouped) stats.byTag[tag] = grouped[tag].length;
+    
+    return JSON.stringify({
+        page: {
             url: window.location.href,
             domain: window.location.hostname,
-            pathname: window.location.pathname,
             title: document.title,
-            description: (document.querySelector('meta[name="description"]') || {}).content || null,
-            keywords: (document.querySelector('meta[name="keywords"]') || {}).content || null,
-            charset: document.characterSet,
-            lang: document.documentElement.lang || null,
-            timestamp: Date.now(),
-            viewport: {
-                width: window.innerWidth,
-                height: window.innerHeight,
-            },
-            scripts: Array.from(document.scripts).map(function(s) { return s.src; }).filter(Boolean),
-            stylesheets: Array.from(document.styleSheets).map(function(s) { return s.href || ''; }).filter(function(h) { return h; }),
-            meta: (function() {
-                const meta = {};
-                document.querySelectorAll('meta').forEach(function(m) {
-                    const name = m.getAttribute('name') || m.getAttribute('property');
-                    const content = m.getAttribute('content');
-                    if (name && content) meta[name] = content;
-                });
-                return meta;
-            })(),
-        };
-        
-        // Статистика
-        const stats = {
-            totalElements: elementsData.length,
-            uniqueTags: Object.keys(grouped).length,
-            byTag: (function() {
-                const counts = {};
-                for (const tag of Object.keys(grouped)) {
-                    counts[tag] = grouped[tag].length;
-                }
-                return counts;
-            })(),
-            withReact: elementsData.filter(function(el) { return el.reactProps; }).length,
-            withShadowDOM: elementsData.filter(function(el) { return el.shadowRoot; }).length,
-            visible: elementsData.filter(function(el) { return el.visible; }).length,
-            interactive: elementsData.filter(function(el) { 
-                return ['input', 'button', 'select', 'textarea', 'a'].includes(el.tag);
-            }).length,
-        };
-        
-        return JSON.stringify({
-            page: pageInfo,
-            stats: stats,
-            elements: grouped,
-        });
-    })();
-    """
+            desc: (document.querySelector('meta[name="description"]') || {}).content || ''
+        },
+        stats: stats,
+        elements: grouped
+    });
+})();
+"""
 
-async def parse_dom_deep(url):
+async def parse_dom(url):
     """Глубокий парсинг DOM страницы"""
     try:
-        # Устанавливаем куки
         if COOKIES:
             await browser.set_cookies(COOKIES)
         
-        # Переходим на URL
         await browser.navigate(url)
         await browser.wait_for_load(10)
         
-        # Выполняем глубокий парсинг
-        js_code = get_deep_dom_parser_js()
+        js_code = get_dom_parser_js()
         result = await browser.evaluate(js_code)
         
         if not result:
@@ -525,33 +283,24 @@ async def parse_dom_deep(url):
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветствие"""
     cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: не загружены"
     
     await update.message.reply_text(
         f"🌐 **DOM Parser Bot**\n\n"
         f"{cookies_status}\n\n"
-        f"Глубокий парсинг DOM с поддержкой:\n"
+        f"Глубокий парсинг DOM:\n"
         f"• React Fiber / Props\n"
         f"• Shadow DOM\n"
-        f"• XPath / CSS селекторы\n"
         f"• Все атрибуты и стили\n"
         f"• Позиции элементов\n\n"
         f"Использование:\n"
-        f"/dom <url> — парсинг DOM страницы\n\n"
-        f"Примеры:\n"
-        f"/dom https://example.com\n"
-        f"/dom x.com",
+        f"/dom <url> — парсинг DOM страницы",
         parse_mode='Markdown'
     )
 
 async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /dom"""
     if not context.args:
-        await update.message.reply_text(
-            "❌ Укажите URL\n"
-            "Пример: /dom https://example.com"
-        )
+        await update.message.reply_text("❌ Укажите URL\nПример: /dom https://example.com")
         return
     
     url = context.args[0].strip()
@@ -562,7 +311,7 @@ async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text(f"🌐 Загружаю {url}...")
     
     try:
-        dom_data, error = await parse_dom_deep(url)
+        dom_data, error = await parse_dom(url)
         
         if error:
             await status_msg.edit_text(f"❌ Ошибка: {error}")
@@ -588,16 +337,11 @@ async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 **DOM страницы**\n"
             f"🔗 {dom_data['page']['url']}\n"
             f"📝 {dom_data['page']['title'][:100]}\n"
-            f"📦 Всего элементов: {stats.get('totalElements', 0)}\n"
-            f"🏷️ Уникальных тегов: {stats.get('uniqueTags', 0)}\n"
-            f"⚛️ React элементов: {stats.get('withReact', 0)}\n"
-            f"🌑 Shadow DOM: {stats.get('withShadowDOM', 0)}\n"
-            f"👁️ Видимых: {stats.get('visible', 0)}\n"
-            f"🖱️ Интерактивных: {stats.get('interactive', 0)}\n\n"
+            f"📦 Всего элементов: {stats.get('total', 0)}\n"
+            f"🏷️ Уникальных тегов: {stats.get('tags', 0)}\n\n"
             f"**Топ тегов:**\n"
         )
         
-        # Топ-10 тегов
         by_tag = stats.get('byTag', {})
         top_tags = sorted(by_tag.items(), key=lambda x: x[1], reverse=True)[:10]
         for tag, count in top_tags:
