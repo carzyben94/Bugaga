@@ -1,11 +1,10 @@
-# bot.py - финальная простая версия
+# bot.py - с верификацией отправки
 import os
 import json
 import asyncio
 import logging
 import httpx
 import warnings
-import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -67,6 +66,7 @@ class BrowserHarness:
     def __init__(self, cdp_url="http://localhost:9222"):
         self.cdp_url = cdp_url
         self.ws_url = None
+        self.last_sent_message = None  # Для отслеживания
     
     def _get_ws_url(self):
         try:
@@ -194,14 +194,61 @@ class BrowserHarness:
         """
         return await self.evaluate(js)
     
-    async def get_qwen_response(self):
-        """
-        Получить ответ Qwen со страницы.
-        Ищем последнее сообщение после "Завершено размышление"
-        """
+    async def get_messages_on_page(self):
+        """Получить все сообщения на странице"""
         js = """
         (function() {
-            // Ищем все блоки с сообщениями
+            var selectors = [
+                '.message-content',
+                '.chat-message',
+                '[class*="message"]'
+            ];
+            
+            var messages = [];
+            for (var s of selectors) {
+                var els = document.querySelectorAll(s);
+                for (var i = 0; i < els.length; i++) {
+                    var text = (els[i].textContent || '').trim();
+                    if (text && text.length > 2) {
+                        messages.push(text);
+                    }
+                }
+            }
+            
+            // Если ничего не нашли, берем текст body и разбиваем
+            if (messages.length === 0) {
+                var bodyText = document.body.textContent || '';
+                var lines = bodyText.split('\\n');
+                for (var i = 0; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (line && line.length > 5) {
+                        messages.push(line);
+                    }
+                }
+            }
+            
+            return messages;
+        })()
+        """
+        return await self.evaluate(js)
+    
+    async def verify_message_sent(self, message_text):
+        """Проверить, отправилось ли сообщение"""
+        messages = await self.get_messages_on_page()
+        
+        # Проверяем, есть ли наш текст в сообщениях
+        for msg in messages:
+            if message_text.lower() in msg.lower() and len(msg) > 5:
+                logger.info(f"✅ Сообщение найдено на странице: {msg[:30]}...")
+                return True
+        
+        logger.warning(f"❌ Сообщение '{message_text[:30]}...' не найдено на странице")
+        return False
+    
+    async def get_qwen_response(self):
+        """Получить ответ Qwen"""
+        js = """
+        (function() {
             var selectors = [
                 '.message-content',
                 '.chat-message',
@@ -219,7 +266,6 @@ class BrowserHarness:
                 }
             }
             
-            // Если ничего не нашли, берем текст body
             if (allTexts.length === 0) {
                 var bodyText = document.body.textContent || '';
                 var lines = bodyText.split('\\n');
@@ -236,7 +282,8 @@ class BrowserHarness:
                 'AutoChoose', 'Get Started', 'style to create',
                 'Please enter a prompt', 'Что бы вы хотели изучить',
                 'Log in', 'Sign up', 'Qwen3.7-Plus', 'Новый чат',
-                'Сообщество', 'Coder', 'Проекты', 'Все чаты'
+                'Сообщество', 'Coder', 'Проекты', 'Все чаты',
+                'Завершено размышление', 'Thinking completed'
             ];
             
             var filtered = [];
@@ -249,51 +296,29 @@ class BrowserHarness:
                         break;
                     }
                 }
-                if (!isSystem) {
+                if (!isSystem && text.length > 10) {
                     filtered.push(text);
                 }
             }
             
-            // Ищем ответ - обычно после "Завершено размышление" или самое длинное
-            var response = null;
-            var maxLen = 0;
-            
-            for (var i = 0; i < filtered.length; i++) {
-                var text = filtered[i];
-                
-                // Если есть "Завершено размышление" - берем следующий блок
-                if (text.includes('Завершено размышление') && i + 1 < filtered.length) {
-                    var nextText = filtered[i + 1];
-                    if (nextText.length > 10) {
-                        response = nextText;
-                        break;
-                    }
-                }
-                
-                // Или выбираем самый длинный текст
-                if (text.length > maxLen && text.length > 20) {
-                    maxLen = text.length;
-                    response = text;
-                }
-            }
-            
-            // Если нашли ответ, но он начинается с "Привет" и короткий - ищем дальше
-            if (response && response.length < 30 && response.includes('Привет')) {
-                for (var i = 0; i < filtered.length; i++) {
-                    if (filtered[i].length > 30 && !filtered[i].includes('Завершено')) {
+            // Берем самое длинное сообщение (это обычно ответ)
+            if (filtered.length > 0) {
+                var response = filtered[0];
+                for (var i = 1; i < filtered.length; i++) {
+                    if (filtered[i].length > response.length) {
                         response = filtered[i];
-                        break;
                     }
                 }
+                return response;
             }
             
-            return response;
+            return null;
         })()
         """
         return await self.evaluate(js)
     
     async def ask_qwen(self, question):
-        """Запрос к Qwen"""
+        """Запрос к Qwen с верификацией"""
         try:
             logger.info("🚀 Переход на chat.qwen.ai...")
             await self.navigate("https://chat.qwen.ai/")
@@ -340,9 +365,34 @@ class BrowserHarness:
                 """
                 await self.evaluate(enter_js)
             
-            await self.wait_for_load(1)
+            await self.wait_for_load(2)
             
-            # ШАГ 5: Ожидание ответа
+            # ШАГ 5: ВЕРИФИКАЦИЯ - проверяем, что сообщение отправилось
+            logger.info("🔍 Проверяем, что сообщение отправилось...")
+            message_sent = await self.verify_message_sent(question)
+            
+            if not message_sent:
+                # Пробуем еще раз Enter
+                logger.info("⏳ Сообщение не найдено, пробую Enter еще раз...")
+                enter_js = """
+                (function() {
+                    var el = document.querySelector('.message-input-textarea, textarea');
+                    if (!el) return false;
+                    el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+                    return true;
+                })()
+                """
+                await self.evaluate(enter_js)
+                await self.wait_for_load(2)
+                
+                # Проверяем еще раз
+                message_sent = await self.verify_message_sent(question)
+                
+                if not message_sent:
+                    return None, "Не удалось отправить сообщение (текст не появился на странице)"
+            
+            # ШАГ 6: Ожидание ответа
             logger.info("⏳ Ожидание ответа...")
             max_attempts = 120
             
@@ -352,8 +402,8 @@ class BrowserHarness:
                 response = await self.get_qwen_response()
                 
                 if response:
-                    # Проверяем что это реальный ответ
-                    if len(response) > 10 and not response.startswith('Привет'):
+                    # Проверяем что это не наш вопрос
+                    if response != question and len(response) > 10:
                         logger.info(f"✅ Получен ответ: {response[:50]}...")
                         return response, None
                 
@@ -375,8 +425,8 @@ browser = BrowserHarness(CDP_URL)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🤖 Qwen Bot\n\n"
-        f"Просто отправьте сообщение!\n"
-        f"Бот ищет ответ после 'Завершено размышление'.\n\n"
+        f"С верификацией отправки!\n"
+        f"Проверяет, что сообщение действительно отправилось.\n\n"
         f"📌 /debug — состояние"
     )
 
@@ -391,6 +441,7 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             exists = await browser.evaluate(js)
             status[name] = exists
         
+        messages = await browser.get_messages_on_page()
         response = await browser.get_qwen_response()
         
         msg = f"🔍 Отладка\n\n"
@@ -399,10 +450,14 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for name, exists in status.items():
             msg += f"  {name}: {'есть' if exists else 'нет'}\n"
         
+        msg += f"\n📝 Сообщений на странице: {len(messages)}\n"
+        if messages:
+            msg += f"Последние 3:\n"
+            for m in messages[-3:]:
+                msg += f"  - {m[:50]}...\n"
+        
         if response:
             msg += f"\n📝 Ответ Qwen:\n{response[:200]}..."
-        else:
-            msg += "\n📝 Ответ не найден"
         
         await update.message.reply_text(msg)
         
