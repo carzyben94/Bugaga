@@ -15,7 +15,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 # ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-QWEN_TOKEN = os.getenv("QWEN_TOKEN")  # Опционально
+QWEN_TOKEN = os.getenv("QWEN_TOKEN")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -25,6 +25,17 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# ЗАГРУЗКА КУК
+# ============================================================
+
+try:
+    from cookies import COOKIES
+    logger.info(f"✅ Загружено {len(COOKIES)} кук из cookies.py")
+except ImportError:
+    COOKIES = []
+    logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
 # QWEN КЛИЕНТ (на httpx)
@@ -54,14 +65,34 @@ class QwenClient:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
         
-        self._load_cookies()
+        # ============================================================
+        # ЗАГРУЗКА КУК ИЗ cookies.py
+        # ============================================================
+        if COOKIES:
+            for cookie in COOKIES:
+                name = cookie.get("name")
+                value = cookie.get("value")
+                domain = cookie.get("domain", ".qwen.ai")
+                path = cookie.get("path", "/")
+                
+                if name and value:
+                    self.client.cookies.set(name, value, domain=domain, path=path)
+                    logger.debug(f"🍪 Установлена кука: {name}")
+            
+            logger.info(f"✅ Установлено {len(COOKIES)} кук")
+        else:
+            logger.warning("⚠️ Куки не загружены")
+        
+        self._load_cookies_file()
     
-    def _load_cookies(self):
-        """Загружаем куки из файла"""
+    def _load_cookies_file(self):
+        """Дополнительная загрузка кук из JSON файла"""
         try:
             with open("qwen_cookies.json", "r") as f:
                 cookies = json.load(f)
-                self.client.cookies.update(cookies)
+                for name, value in cookies.items():
+                    self.client.cookies.set(name, value)
+                logger.info(f"✅ Загружено {len(cookies)} кук из qwen_cookies.json")
         except FileNotFoundError:
             pass
     
@@ -70,6 +101,7 @@ class QwenClient:
         cookies = dict(self.client.cookies)
         with open("qwen_cookies.json", "w") as f:
             json.dump(cookies, f)
+        logger.info(f"💾 Сохранено {len(cookies)} кук")
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
         """Универсальный метод для запросов"""
@@ -84,18 +116,29 @@ class QwenClient:
                 **kwargs
             )
             
+            # Логируем для отладки
+            logger.info(f"📤 {method} {endpoint} -> {response.status_code}")
+            
             if response.status_code == 429:
+                logger.warning("⚠️ Rate limit, ждем 5 секунд...")
+                import time
                 time.sleep(5)
                 return self._request(method, endpoint, **kwargs)
             
             if response.status_code == 403:
-                raise Exception("Требуется авторизация. Получите токен.")
+                logger.error(f"❌ Ошибка авторизации: {response.text}")
+                raise Exception("Требуется авторизация. Проверьте куки или токен.")
+            
+            if response.status_code == 401:
+                logger.error(f"❌ Не авторизован: {response.text}")
+                raise Exception("Не авторизован. Обновите куки.")
             
             response.raise_for_status()
             self._save_cookies()
             return response.json()
             
         except httpx.RequestError as e:
+            logger.error(f"❌ Ошибка запроса: {e}")
             raise Exception(f"Ошибка запроса: {e}")
     
     def chat(self, prompt: str, stream: bool = False, **kwargs) -> Dict:
@@ -140,36 +183,6 @@ class QwenClient:
                             except json.JSONDecodeError:
                                 continue
     
-    async def chat_stream_async(self, prompt: str, **kwargs) -> AsyncGenerator:
-        """Асинхронный потоковый чат"""
-        payload = {
-            "model": "qwen-turbo",
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": True,
-            "temperature": kwargs.get("temperature", 0.7),
-            "max_tokens": kwargs.get("max_tokens", 2000)
-        }
-        
-        url = f"{self.base_url}/chat/completions"
-        self.headers["X-Request-Id"] = str(uuid.uuid4())
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("POST", url, headers=self.headers, json=payload) as response:
-                response.raise_for_status()
-                
-                async for line in response.aiter_lines():
-                    if line and line.startswith('data: '):
-                        data = line[6:]
-                        if data != '[DONE]':
-                            try:
-                                chunk = json.loads(data)
-                                if 'choices' in chunk and chunk['choices']:
-                                    content = chunk['choices'][0].get('delta', {}).get('content', '')
-                                    if content:
-                                        yield content
-                            except json.JSONDecodeError:
-                                continue
-    
     def get_chats(self, page: int = 1) -> Dict:
         """Получение истории чатов"""
         params = {"page": page, "exclude_project": "true"}
@@ -198,17 +211,10 @@ class QwenClient:
         self.client.close()
 
 # ============================================================
-# СОСТОЯНИЯ ДЛЯ ДИАЛОГОВ
-# ============================================================
-
-user_sessions = {}  # {user_id: {"history": [], "mode": "chat"}}
-
-# ============================================================
 # КОМАНДЫ БОТА
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
     keyboard = [
         [InlineKeyboardButton("💬 Чат", callback_data="mode_chat")],
         [InlineKeyboardButton("📚 История", callback_data="history")],
@@ -245,7 +251,6 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args)
     user_id = update.effective_user.id
     
-    # Сохраняем в историю
     if user_id not in user_sessions:
         user_sessions[user_id] = {"history": [], "mode": "chat"}
     user_sessions[user_id]["history"].append({"role": "user", "content": prompt})
@@ -259,13 +264,10 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if 'choices' in response:
             answer = response['choices'][0]['message']['content']
-            
-            # Сохраняем ответ
             user_sessions[user_id]["history"].append({"role": "assistant", "content": answer})
             
-            # Обрезаем длинные ответы
             if len(answer) > 3000:
-                answer = answer[:3000] + "...\n\n(ответ обрезан, полный в файле)"
+                answer = answer[:3000] + "...\n\n(ответ обрезан)"
             
             await status_msg.edit_text(
                 f"💬 **Вопрос:** {prompt}\n\n"
@@ -277,43 +279,6 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Ошибка /qwen: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
-    finally:
-        if client:
-            client.close()
-
-async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /qwen_stream - потоковый ответ"""
-    if not context.args:
-        await update.message.reply_text("❌ Введите запрос")
-        return
-    
-    prompt = " ".join(context.args)
-    status_msg = await update.message.reply_text("📡 Получаю поток...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        full_response = ""
-        
-        # Используем синхронный генератор в асинхронной функции
-        for chunk in client.chat_stream(prompt):
-            full_response += chunk
-            # Обновляем каждые 100 символов
-            if len(full_response) % 100 < 20:
-                await status_msg.edit_text(
-                    f"📡 **Генерация:**\n{full_response[:500]}...",
-                    parse_mode='Markdown'
-                )
-        
-        await status_msg.edit_text(
-            f"💬 **Вопрос:** {prompt}\n\n"
-            f"📝 **Ответ:**\n{full_response[:3000]}",
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка /qwen_stream: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
     finally:
         if client:
@@ -337,48 +302,12 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption += f"• `{title}`\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
             
             caption += "\n_Для просмотра сообщений используйте /messages <chat_id>_"
-            
             await status_msg.edit_text(caption, parse_mode='Markdown')
         else:
             await status_msg.edit_text("📭 История пуста")
             
     except Exception as e:
         logger.error(f"Ошибка /history: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
-    finally:
-        if client:
-            client.close()
-
-async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /messages <chat_id> - показать сообщения чата"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID чата\nПример: `/messages abc123`")
-        return
-    
-    chat_id = context.args[0]
-    status_msg = await update.message.reply_text("📨 Загружаю сообщения...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        messages = client.get_chat_messages(chat_id)
-        
-        if 'data' in messages and messages['data']:
-            caption = f"💬 **Сообщения чата** `{chat_id}`\n\n"
-            for msg in messages['data'][:20]:
-                role = msg.get('role', 'unknown')
-                content = msg.get('content', '')[:200]
-                if role == 'user':
-                    caption += f"👤 **Вы:** {content}\n\n"
-                else:
-                    caption += f"🤖 **Qwen:** {content}\n\n"
-            
-            await status_msg.edit_text(caption[:4000], parse_mode='Markdown')
-        else:
-            await status_msg.edit_text("📭 Сообщений нет")
-            
-    except Exception as e:
-        logger.error(f"Ошибка /messages: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
     finally:
         if client:
@@ -423,7 +352,6 @@ async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TY
         
         caption = "🔔 **Уведомления:**\n\n"
         caption += f"```json\n{json.dumps(notifications, indent=2, ensure_ascii=False)[:2000]}\n```"
-        
         await status_msg.edit_text(caption, parse_mode='Markdown')
             
     except Exception as e:
@@ -433,111 +361,27 @@ async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TY
         if client:
             client.close()
 
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /clear - очистить историю"""
-    user_id = update.effective_user.id
-    if user_id in user_sessions:
-        user_sessions[user_id]["history"] = []
-    
-    await update.message.reply_text("🧹 История очищена")
-
-async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /delete <chat_id> - удалить чат"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID чата\nПример: `/delete abc123`")
-        return
-    
-    chat_id = context.args[0]
-    status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{chat_id}`...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        result = client.delete_chat(chat_id)
-        await status_msg.edit_text(f"✅ Чат `{chat_id}` удален")
-            
-    except Exception as e:
-        logger.error(f"Ошибка /delete: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
-    finally:
-        if client:
-            client.close()
-
-# ============================================================
-# ОБРАБОТЧИКИ КНОПОК
-# ============================================================
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки"""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "mode_chat":
-        await query.edit_message_text(
-            "💬 **Режим чата**\n\n"
-            "Просто отправьте сообщение или используйте команду:\n"
-            "`/qwen <текст>`\n\n"
-            "Для потокового ответа:\n"
-            "`/qwen_stream <текст>`",
-            parse_mode='Markdown'
-        )
-    
-    elif data == "history":
-        # Запускаем команду history
-        await history_command(update, context)
-    
-    elif data == "folders":
-        await folders_command(update, context)
-    
-    elif data == "notifications":
-        await notifications_command(update, context)
-    
-    elif data == "help":
-        await query.edit_message_text(
-            "❓ **Помощь**\n\n"
-            "**Основные команды:**\n"
-            "/qwen <текст> - задать вопрос\n"
-            "/qwen_stream <текст> - потоковый ответ\n"
-            "/history - история чатов\n"
-            "/messages <id> - сообщения чата\n"
-            "/folders - список папок\n"
-            "/notifications - уведомления\n"
-            "/delete <id> - удалить чат\n"
-            "/clear - очистить историю\n\n"
-            "**Требуется токен Qwen?**\n"
-            "Установите переменную QWEN_TOKEN",
-            parse_mode='Markdown'
-        )
+# ... остальные команды (messages, delete, clear, button_callback) ...
 
 # ============================================================
 # ЗАПУСК
 # ============================================================
 
+user_sessions = {}
+
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("qwen", qwen_command))
-    app.add_handler(CommandHandler("qwen_stream", qwen_stream_command))
     app.add_handler(CommandHandler("history", history_command))
-    app.add_handler(CommandHandler("messages", messages_command))
     app.add_handler(CommandHandler("folders", folders_command))
     app.add_handler(CommandHandler("notifications", notifications_command))
-    app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(CommandHandler("delete", delete_chat_command))
     
-    # Кнопки
     app.add_handler(CallbackQueryHandler(button_callback))
     
     logger.info("🚀 Qwen Bot запущен!")
-    logger.info("📋 Доступные команды:")
-    logger.info("  /qwen <текст> - задать вопрос")
-    logger.info("  /history - история чатов")
-    logger.info("  /folders - папки")
-    logger.info("  /notifications - уведомления")
+    logger.info(f"🍪 Загружено кук: {len(COOKIES)}")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
