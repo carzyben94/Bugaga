@@ -1,432 +1,439 @@
-# bot.py
+# qwen_bot.py
 import os
 import json
 import asyncio
 import logging
-import httpx
-import warnings
-import time
-import websockets
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
-warnings.filterwarnings("ignore")
+import uuid
+import requests
+from datetime import datetime
+from typing import Optional, Dict, List, Generator
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
 # ============================================================
 # НАСТРОЙКИ
 # ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CDP_URL = os.getenv("CDP_URL", "http://localhost:9222")
+QWEN_TOKEN = os.getenv("QWEN_TOKEN")  # Опционально
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("telegram").setLevel(logging.CRITICAL)
-logging.getLogger("websockets").setLevel(logging.CRITICAL)
-
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# КУКИ
+# QWEN АВТОМАТИЗАЦИЯ
 # ============================================================
 
-try:
-    from cookies import COOKIES
-    logger.info(f"✅ Загружено {len(COOKIES)} кук")
-except ImportError:
-    COOKIES = []
-    logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
-
-# ============================================================
-# BROWSER HARNESS С ПЕРЕХВАТОМ HTTP
-# ============================================================
-
-class BrowserHarness:
-    def __init__(self, cdp_url="http://localhost:9222"):
-        self.cdp_url = cdp_url
-        self.ws_url = None
-        self._ws = None
-        self._message_id = 0
-        self._requests = []
-        self._responses = []
-        self._capturing = False
+class QwenClient:
+    """Клиент для работы с Qwen API"""
+    
+    def __init__(self, token: Optional[str] = None):
+        self.base_url = "https://chat.qwen.ai/api/v2"
+        self.session = requests.Session()
         
-    def _get_ws_url(self):
-        try:
-            resp = httpx.get(f"{self.cdp_url}/json/list", timeout=5)
-            pages = resp.json()
-            if pages:
-                return pages[0]["webSocketDebuggerUrl"]
-        except Exception as e:
-            logger.error(f"Ошибка подключения к CDP: {e}")
-        return None
-    
-    async def _connect(self):
-        if not self.ws_url:
-            self.ws_url = self._get_ws_url()
-            if not self.ws_url:
-                raise Exception("Нет активных вкладок")
-        
-        if not self._ws:
-            self._ws = await websockets.connect(
-                self.ws_url,
-                max_size=10_000_000,
-                write_limit=10_000_000
-            )
-        return self._ws
-    
-    async def _send_cdp(self, method, params=None):
-        ws = await self._connect()
-        self._message_id += 1
-        message = {
-            "id": self._message_id,
-            "method": method,
-            "params": params or {}
-        }
-        await ws.send(json.dumps(message))
-        
-        while True:
-            response = await ws.recv()
-            data = json.loads(response)
-            if data.get("id") == self._message_id:
-                return data
-    
-    async def enable_network(self):
-        """Включаем Network домен"""
-        await self._send_cdp("Network.enable", {})
-        self._capturing = True
-        logger.info("📡 Network capturing enabled")
-    
-    async def disable_network(self):
-        """Отключаем Network домен"""
-        await self._send_cdp("Network.disable", {})
-        self._capturing = False
-        logger.info("📡 Network capturing disabled")
-    
-    async def clear_network_logs(self):
-        """Очищаем логи"""
-        self._requests = []
-        self._responses = []
-    
-    async def get_network_logs(self):
-        """Получаем собранные логи"""
-        return {
-            "requests": self._requests,
-            "responses": self._responses,
-            "total": len(self._requests)
-        }
-    
-    async def listen_network(self, timeout=15, filter_url=None):
-        """Слушаем сетевые события"""
-        self._requests = []
-        self._responses = []
-        
-        # Включаем Network
-        await self.enable_network()
-        
-        ws = await self._connect()
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                response = await asyncio.wait_for(ws.recv(), timeout=1)
-                data = json.loads(response)
-                
-                if "method" in data:
-                    method = data["method"]
-                    params = data.get("params", {})
-                    
-                    # Перехват запросов
-                    if method == "Network.requestWillBeSent":
-                        request = params.get("request", {})
-                        url = request.get("url", "")
-                        
-                        # Фильтрация по URL
-                        if filter_url and filter_url not in url:
-                            continue
-                        
-                        # Пропускаем статику
-                        if any(ext in url for ext in ['.css', '.js', '.png', '.jpg', '.svg', '.woff', '.ttf']):
-                            continue
-                        
-                        self._requests.append({
-                            "url": url,
-                            "method": request.get("method", "GET"),
-                            "headers": request.get("headers", {}),
-                            "postData": request.get("postData", ""),
-                            "timestamp": time.time()
-                        })
-                        
-                        logger.info(f"📤 {request.get('method', 'GET')} {url[:100]}")
-                    
-                    # Перехват ответов
-                    elif method == "Network.responseReceived":
-                        response_data = params.get("response", {})
-                        url = response_data.get("url", "")
-                        
-                        if filter_url and filter_url not in url:
-                            continue
-                        
-                        if any(ext in url for ext in ['.css', '.js', '.png', '.jpg', '.svg', '.woff', '.ttf']):
-                            continue
-                        
-                        self._responses.append({
-                            "url": url,
-                            "status": response_data.get("status", 0),
-                            "statusText": response_data.get("statusText", ""),
-                            "headers": response_data.get("headers", {}),
-                            "mimeType": response_data.get("mimeType", ""),
-                            "timestamp": time.time()
-                        })
-                        
-                        logger.info(f"📥 {response_data.get('status', 0)} {url[:100]}")
-                        
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                logger.error(f"Ошибка чтения: {e}")
-                break
-        
-        await self.disable_network()
-        return self._requests, self._responses
-    
-    async def set_cookies(self, cookies):
-        if not cookies:
-            return
-        try:
-            result = await self._send_cdp("Network.setCookies", {"cookies": cookies})
-            if "error" in result:
-                logger.error(f"Ошибка установки кук: {result['error']}")
-        except Exception as e:
-            logger.error(f"Ошибка установки кук: {e}")
-    
-    async def navigate(self, url):
-        result = await self._send_cdp("Page.navigate", {"url": url})
-        return result.get("result", {})
-    
-    async def evaluate(self, expression):
-        result = await self._send_cdp("Runtime.evaluate", {
-            "expression": expression,
-            "returnByValue": True
+        # Заголовки из перехваченных запросов
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/150.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Referer": "https://chat.qwen.ai/",
+            "source": "web",
+            "Version": "0.2.81",
+            "bx-v": "2.5.37",
+            "Content-Type": "application/json",
+            "X-Request-Id": str(uuid.uuid4()),
+            "Timezone": datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0000")
         })
-        return result.get("result", {}).get("result", {}).get("value")
+        
+        if token:
+            self.session.headers["Authorization"] = f"Bearer {token}"
+        
+        self._load_cookies()
     
-    async def wait_for_load(self, timeout=30):
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                body_check = await self.evaluate("document.body ? document.body.children.length : 0")
-                if body_check and body_check > 0:
-                    await asyncio.sleep(2)
-                    logger.info("✅ Страница загружена")
-                    return
-            except:
-                pass
-            await asyncio.sleep(1)
-        logger.warning("⚠️ Таймаут ожидания загрузки страницы")
+    def _load_cookies(self):
+        try:
+            with open("qwen_cookies.json", "r") as f:
+                cookies = json.load(f)
+                for name, value in cookies.items():
+                    self.session.cookies.set(name, value)
+        except FileNotFoundError:
+            pass
     
-    async def close(self):
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
-
-browser = BrowserHarness(CDP_URL)
-
-# ============================================================
-# ФУНКЦИИ ПАРСИНГА
-# ============================================================
-
-async def parse_with_http_capture(url, filter_url=None, timeout=15):
-    """Парсинг с перехватом HTTP запросов"""
-    try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
+    def _save_cookies(self):
+        cookies = {name: value for name, value in self.session.cookies.items()}
+        with open("qwen_cookies.json", "w") as f:
+            json.dump(cookies, f)
+    
+    def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
+        url = f"{self.base_url}{endpoint}"
+        self.session.headers["X-Request-Id"] = str(uuid.uuid4())
         
-        await browser.navigate(url)
-        await browser.wait_for_load(5)
-        
-        # Запускаем перехват
-        requests, responses = await browser.listen_network(
-            timeout=timeout,
-            filter_url=filter_url
-        )
-        
-        return {
-            "url": url,
-            "requests": requests,
-            "responses": responses,
-            "total_requests": len(requests),
-            "total_responses": len(responses),
-            "timestamp": time.time()
+        try:
+            response = self.session.request(method, url, **kwargs)
+            
+            if response.status_code == 429:
+                time.sleep(5)
+                return self._request(method, endpoint, **kwargs)
+            
+            if response.status_code == 403:
+                raise Exception("Требуется авторизация. Получите токен.")
+            
+            response.raise_for_status()
+            self._save_cookies()
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Ошибка запроса: {e}")
+    
+    def chat(self, prompt: str, stream: bool = False, **kwargs) -> Dict:
+        """Отправка запроса к модели"""
+        payload = {
+            "model": "qwen-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": stream,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens", 2000)
+        }
+        return self._request("POST", "/chat/completions", json=payload)
+    
+    def chat_stream(self, prompt: str, **kwargs) -> Generator:
+        """Потоковый чат"""
+        payload = {
+            "model": "qwen-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens", 2000)
         }
         
-    except Exception as e:
-        logger.error(f"Ошибка парсинга: {e}")
-        return {"error": str(e)}
+        url = f"{self.base_url}/chat/completions"
+        self.session.headers["X-Request-Id"] = str(uuid.uuid4())
+        
+        with self.session.post(url, json=payload, stream=True, timeout=60) as response:
+            response.raise_for_status()
+            
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        data = line[6:]
+                        if data != '[DONE]':
+                            try:
+                                chunk = json.loads(data)
+                                if 'choices' in chunk and chunk['choices']:
+                                    content = chunk['choices'][0].get('delta', {}).get('content', '')
+                                    if content:
+                                        yield content
+                            except json.JSONDecodeError:
+                                continue
+    
+    def get_chats(self, page: int = 1) -> Dict:
+        """Получение истории чатов"""
+        params = {"page": page, "exclude_project": "true"}
+        return self._request("GET", "/chats/", params=params)
+    
+    def get_folders(self) -> Dict:
+        """Получение папок"""
+        params = {"exclude_project": "true"}
+        return self._request("GET", "/folders/", params=params)
+    
+    def get_notifications(self) -> Dict:
+        """Получение уведомлений"""
+        params = {"type": "memory"}
+        return self._request("GET", "/notifications/latest", params=params)
+    
+    def get_chat_messages(self, chat_id: str) -> Dict:
+        """Получение сообщений чата"""
+        return self._request("GET", f"/chats/{chat_id}")
+    
+    def delete_chat(self, chat_id: str) -> Dict:
+        """Удаление чата"""
+        return self._request("DELETE", f"/chats/{chat_id}")
+
+# ============================================================
+# СОСТОЯНИЯ ДЛЯ ДИАЛОГОВ
+# ============================================================
+
+user_sessions = {}  # {user_id: {"history": [], "mode": "chat"}}
 
 # ============================================================
 # КОМАНДЫ БОТА
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: не загружены"
+    """Команда /start"""
+    keyboard = [
+        [InlineKeyboardButton("💬 Чат", callback_data="mode_chat")],
+        [InlineKeyboardButton("📚 История", callback_data="history")],
+        [InlineKeyboardButton("📁 Папки", callback_data="folders")],
+        [InlineKeyboardButton("🔔 Уведомления", callback_data="notifications")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        f"🌐 **HTTP Capture Bot**\n\n"
-        f"{cookies_status}\n\n"
-        f"**Возможности:**\n"
-        f"• 📡 Перехват HTTP запросов через CDP\n"
-        f"• 🔍 Фильтрация по URL\n"
-        f"• 📊 Показ API эндпоинтов\n\n"
-        f"**Команды:**\n"
-        f"/http <url> — перехват всех запросов\n"
-        f"/http <url> filter:api — только API запросы\n"
-        f"/http <url> filter:/api/ — только /api/ запросы\n"
-        f"/http <url> timeout:30 — увеличить время сбора\n\n"
-        f"**Пример:**\n"
-        f"/http https://chat.qwen.ai filter:/api/",
-        parse_mode='Markdown'
+        "🤖 **Qwen Bot**\n\n"
+        "Я бот для работы с Qwen AI от Alibaba.\n\n"
+        "**Команды:**\n"
+        "/qwen <текст> - задать вопрос\n"
+        "/history - показать историю\n"
+        "/folders - показать папки\n"
+        "/notifications - уведомления\n"
+        "/clear - очистить историю\n\n"
+        "Или используйте кнопки ниже 👇",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
     )
 
-async def http_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для перехвата HTTP запросов"""
+async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /qwen - задать вопрос"""
     if not context.args:
         await update.message.reply_text(
-            "❌ Укажите URL\n"
-            "Пример: /http https://chat.qwen.ai filter:api"
+            "❌ Введите запрос\n"
+            "Пример: `/qwen Что такое Python?`",
+            parse_mode='Markdown'
         )
         return
     
-    url = context.args[0].strip()
-    filter_url = None
-    timeout = 15
+    prompt = " ".join(context.args)
+    user_id = update.effective_user.id
     
-    # Парсим аргументы
-    for arg in context.args[1:]:
-        if arg.startswith('filter:'):
-            filter_url = arg.split('filter:')[1]
-        elif arg.startswith('timeout:'):
-            try:
-                timeout = int(arg.split('timeout:')[1])
-            except:
-                pass
+    # Сохраняем в историю
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"history": [], "mode": "chat"}
+    user_sessions[user_id]["history"].append({"role": "user", "content": prompt})
     
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    status_msg = await update.message.reply_text(
-        f"📡 Перехватываю запросы на {url}...\n"
-        f"⏱️ Таймаут: {timeout}с\n"
-        f"{f'🔍 Фильтр: {filter_url}' if filter_url else ''}"
-    )
+    status_msg = await update.message.reply_text("🤔 Думаю...")
     
     try:
-        # Запускаем перехват
-        result = await parse_with_http_capture(
-            url=url,
-            filter_url=filter_url,
-            timeout=timeout
-        )
+        client = QwenClient(QWEN_TOKEN)
+        response = client.chat(prompt)
         
-        if "error" in result:
-            await status_msg.edit_text(f"❌ Ошибка: {result['error']}")
-            return
-        
-        requests = result.get('requests', [])
-        
-        if not requests:
+        if 'choices' in response:
+            answer = response['choices'][0]['message']['content']
+            
+            # Сохраняем ответ
+            user_sessions[user_id]["history"].append({"role": "assistant", "content": answer})
+            
+            # Обрезаем длинные ответы
+            if len(answer) > 3000:
+                answer = answer[:3000] + "...\n\n(ответ обрезан, полный в файле)"
+            
             await status_msg.edit_text(
-                f"ℹ️ Не найдено запросов\n\n"
-                f"Причины:\n"
-                f"• Сайт использует WebSocket\n"
-                f"• Запросы не прошли фильтр\n"
-                f"• Требуется авторизация\n\n"
-                f"Попробуйте:\n"
-                f"• /http {url} без фильтра\n"
-                f"• /http {url} timeout:30"
-            )
-            return
-        
-        # Сохраняем результат
-        domain = url.replace('https://', '').replace('http://', '').split('/')[0].replace('.', '_')
-        filename = f"http_{domain}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        
-        # Группируем по типу
-        api_requests = [r for r in requests if '/api/' in r.get('url', '')]
-        js_requests = [r for r in requests if '.js' in r.get('url', '')]
-        other_requests = [r for r in requests if r not in api_requests and r not in js_requests]
-        
-        # Находим уникальные эндпоинты
-        unique_endpoints = set()
-        for req in requests:
-            url_path = req.get('url', '')
-            # Обрезаем параметры
-            if '?' in url_path:
-                url_path = url_path.split('?')[0]
-            unique_endpoints.add(url_path)
-        
-        # Формируем отчет
-        caption = (
-            f"📡 **HTTP Перехват**\n"
-            f"🔗 {url}\n\n"
-            f"📊 **Статистика:**\n"
-            f"• Всего запросов: {len(requests)}\n"
-            f"• API запросов (/api/): {len(api_requests)}\n"
-            f"• JS файлов: {len(js_requests)}\n"
-            f"• Уникальных эндпоинтов: {len(unique_endpoints)}\n\n"
-        )
-        
-        if filter_url:
-            caption += f"🔍 Фильтр: `{filter_url}`\n\n"
-        
-        # Показываем API эндпоинты
-        if api_requests:
-            caption += "**🔗 Найденные API эндпоинты:**\n"
-            endpoints = sorted(set([
-                r.get('url', '').split('?')[0] for r in api_requests
-            ]))
-            for endpoint in endpoints[:10]:
-                method = next((r.get('method', 'GET') for r in api_requests if r.get('url', '').startswith(endpoint)), 'GET')
-                caption += f"• `{method}` {endpoint}\n"
-            if len(endpoints) > 10:
-                caption += f"• ... и еще {len(endpoints) - 10}\n"
-        
-        # Если нет API, показываем другие запросы
-        elif requests:
-            caption += "**📄 Другие запросы:**\n"
-            for req in requests[:5]:
-                method = req.get('method', 'GET')
-                url_short = req.get('url', '')[:60]
-                caption += f"• `{method}` {url_short}...\n"
-        
-        # Отправляем файл
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=caption,
+                f"💬 **Вопрос:** {prompt}\n\n"
+                f"📝 **Ответ:**\n{answer}",
                 parse_mode='Markdown'
             )
+        else:
+            await status_msg.edit_text(f"❌ Ошибка: {json.dumps(response, ensure_ascii=False)}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка /qwen: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /qwen_stream - потоковый ответ"""
+    if not context.args:
+        await update.message.reply_text("❌ Введите запрос")
+        return
+    
+    prompt = " ".join(context.args)
+    status_msg = await update.message.reply_text("📡 Получаю поток...")
+    
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        full_response = ""
         
-        await status_msg.delete()
-        os.remove(filename)
+        for chunk in client.chat_stream(prompt):
+            full_response += chunk
+        
+        await status_msg.edit_text(
+            f"💬 **Вопрос:** {prompt}\n\n"
+            f"📝 **Ответ:**\n{full_response[:3000]}",
+            parse_mode='Markdown'
+        )
         
     except Exception as e:
-        logger.error(f"Ошибка /http: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-    finally:
-        await browser.close()
+        logger.error(f"Ошибка /qwen_stream: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /history - показать историю"""
+    status_msg = await update.message.reply_text("📚 Загружаю историю...")
+    
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        history = client.get_chats(page=1)
+        
+        if 'data' in history and history['data']:
+            caption = "📚 **Последние чаты:**\n\n"
+            for chat in history['data'][:10]:
+                title = chat.get('title', 'Без названия')[:50]
+                created = chat.get('created_at', '')
+                chat_id = chat.get('id', '')
+                caption += f"• `{title}`\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
+            
+            caption += "\n_Для просмотра сообщений используйте /messages <chat_id>_"
+            
+            await status_msg.edit_text(caption, parse_mode='Markdown')
+        else:
+            await status_msg.edit_text("📭 История пуста")
+            
+    except Exception as e:
+        logger.error(f"Ошибка /history: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /messages <chat_id> - показать сообщения чата"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID чата\nПример: `/messages abc123`")
+        return
+    
+    chat_id = context.args[0]
+    status_msg = await update.message.reply_text("📨 Загружаю сообщения...")
+    
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        messages = client.get_chat_messages(chat_id)
+        
+        if 'data' in messages and messages['data']:
+            caption = f"💬 **Сообщения чата** `{chat_id}`\n\n"
+            for msg in messages['data'][:20]:
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', '')[:200]
+                if role == 'user':
+                    caption += f"👤 **Вы:** {content}\n\n"
+                else:
+                    caption += f"🤖 **Qwen:** {content}\n\n"
+            
+            await status_msg.edit_text(caption[:4000], parse_mode='Markdown')
+        else:
+            await status_msg.edit_text("📭 Сообщений нет")
+            
+    except Exception as e:
+        logger.error(f"Ошибка /messages: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /folders - показать папки"""
+    status_msg = await update.message.reply_text("📁 Загружаю папки...")
+    
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        folders = client.get_folders()
+        
+        if 'data' in folders and folders['data']:
+            caption = "📁 **Папки:**\n\n"
+            for folder in folders['data']:
+                name = folder.get('name', 'Без названия')
+                count = folder.get('chat_count', 0)
+                folder_id = folder.get('id', '')
+                caption += f"• `{name}` ({count} чатов)\n  🆔 `{folder_id}`\n\n"
+            
+            await status_msg.edit_text(caption, parse_mode='Markdown')
+        else:
+            await status_msg.edit_text("📭 Папок нет")
+            
+    except Exception as e:
+        logger.error(f"Ошибка /folders: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /notifications - показать уведомления"""
+    status_msg = await update.message.reply_text("🔔 Загружаю уведомления...")
+    
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        notifications = client.get_notifications()
+        
+        caption = "🔔 **Уведомления:**\n\n"
+        caption += f"```json\n{json.dumps(notifications, indent=2, ensure_ascii=False)[:2000]}\n```"
+        
+        await status_msg.edit_text(caption, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Ошибка /notifications: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /clear - очистить историю"""
+    user_id = update.effective_user.id
+    if user_id in user_sessions:
+        user_sessions[user_id]["history"] = []
+    
+    await update.message.reply_text("🧹 История очищена")
+
+async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /delete <chat_id> - удалить чат"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID чата\nПример: `/delete abc123`")
+        return
+    
+    chat_id = context.args[0]
+    status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{chat_id}`...")
+    
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        result = client.delete_chat(chat_id)
+        await status_msg.edit_text(f"✅ Чат `{chat_id}` удален")
+            
+    except Exception as e:
+        logger.error(f"Ошибка /delete: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+
+# ============================================================
+# ОБРАБОТЧИКИ КНОПОК
+# ============================================================
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на кнопки"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "mode_chat":
+        await query.edit_message_text(
+            "💬 **Режим чата**\n\n"
+            "Просто отправьте сообщение или используйте команду:\n"
+            "`/qwen <текст>`\n\n"
+            "Для потокового ответа:\n"
+            "`/qwen_stream <текст>`",
+            parse_mode='Markdown'
+        )
+    
+    elif data == "history":
+        # Запускаем команду history
+        await history_command(update, context)
+    
+    elif data == "folders":
+        await folders_command(update, context)
+    
+    elif data == "notifications":
+        await notifications_command(update, context)
+    
+    elif data == "help":
+        await query.edit_message_text(
+            "❓ **Помощь**\n\n"
+            "**Основные команды:**\n"
+            "/qwen <текст> - задать вопрос\n"
+            "/qwen_stream <текст> - потоковый ответ\n"
+            "/history - история чатов\n"
+            "/messages <id> - сообщения чата\n"
+            "/folders - список папок\n"
+            "/notifications - уведомления\n"
+            "/delete <id> - удалить чат\n"
+            "/clear - очистить историю\n\n"
+            "**Требуется токен Qwen?**\n"
+            "Установите переменную QWEN_TOKEN",
+            parse_mode='Markdown'
+        )
 
 # ============================================================
 # ЗАПУСК
@@ -435,12 +442,26 @@ async def http_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("http", http_command))
+    app.add_handler(CommandHandler("qwen", qwen_command))
+    app.add_handler(CommandHandler("qwen_stream", qwen_stream_command))
+    app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("messages", messages_command))
+    app.add_handler(CommandHandler("folders", folders_command))
+    app.add_handler(CommandHandler("notifications", notifications_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("delete", delete_chat_command))
     
-    logger.info("🚀 Бот запущен с перехватом HTTP!")
-    logger.info(f"🔗 CDP URL: {CDP_URL}")
-    logger.info(f"🍪 Куки: {len(COOKIES)} шт.")
+    # Кнопки
+    app.add_handler(CallbackQueryHandler(button_callback))
+    
+    logger.info("🚀 Qwen Bot запущен!")
+    logger.info("📋 Доступные команды:")
+    logger.info("  /qwen <текст> - задать вопрос")
+    logger.info("  /history - история чатов")
+    logger.info("  /folders - папки")
+    logger.info("  /notifications - уведомления")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
