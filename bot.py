@@ -5,6 +5,7 @@ import asyncio
 import logging
 import uuid
 import httpx
+import re
 from datetime import datetime
 from typing import Optional, Dict, List, Generator, AsyncGenerator
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -38,6 +39,15 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================
+
+def escape_markdown(text: str) -> str:
+    """Экранирует спецсимволы Markdown"""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
+
+# ============================================================
 # QWEN КЛИЕНТ (на httpx)
 # ============================================================
 
@@ -47,6 +57,7 @@ class QwenClient:
     def __init__(self, token: Optional[str] = None):
         self.base_url = "https://chat.qwen.ai/api/v2"
         self.client = httpx.Client(timeout=60.0)
+        self.current_chat_id = None  # Храним ID текущего чата
         
         # Заголовки из перехваченных запросов
         self.headers = {
@@ -116,23 +127,7 @@ class QwenClient:
         
         logger.info(f"🍪 Итого установлено: {len(all_cookies)} уникальных кук")
         
-        # 4. Блокируем автоматическое обновление кук из ответов сервера
-        self.client.cookies.jar = self.client.cookies.jar
-        # Делаем копию jar, чтобы httpx не добавлял Set-Cookie автоматически
-        original_jar = self.client.cookies.jar
-        
-        class NoUpdateJar(type(original_jar)):
-            def set_cookie(self, cookie):
-                # Игнорируем попытки добавить дубликаты
-                for existing in self:
-                    if existing.name == cookie.name:
-                        return  # Пропускаем дубликат
-                super().set_cookie(cookie)
-        
-        # К сожалению, httpx не позволяет просто так заменить jar
-        # Поэтому используем другой подход - перехватываем на уровне клиента
-        
-        # Сохраняем оригинальный метод send
+        # 4. Перехватываем ответы для удаления дубликатов
         original_send = self.client.send
         
         def safe_send(request, **kwargs):
@@ -200,7 +195,7 @@ class QwenClient:
             
             response.raise_for_status()
             
-            # Сохраняем куки (опционально)
+            # Сохраняем куки
             try:
                 self._save_cookies()
             except:
@@ -212,22 +207,65 @@ class QwenClient:
             logger.error(f"❌ Ошибка запроса: {e}")
             raise Exception(f"Ошибка запроса: {e}")
     
-    def chat(self, prompt: str, stream: bool = False, **kwargs) -> Dict:
-        """Отправка запроса к модели"""
+    def create_chat(self) -> str:
+        """Создаёт новый чат и возвращает его ID"""
         payload = {
             "model": "qwen-turbo",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": "Привет"}],
+            "stream": False,
+            "temperature": 0.7,
+            "max_tokens": 10
+        }
+        
+        result = self._request("POST", "/chat/completions", json=payload)
+        
+        # Пробуем получить chat_id из ответа
+        if 'chat_id' in result:
+            self.current_chat_id = result['chat_id']
+        elif 'data' in result and 'chat_id' in result['data']:
+            self.current_chat_id = result['data']['chat_id']
+        else:
+            # Если нет chat_id, создаём чат через API
+            logger.info("Создаём новый чат...")
+            new_chat = self._request("POST", "/chats/", json={"title": "New Chat"})
+            if 'data' in new_chat and 'id' in new_chat['data']:
+                self.current_chat_id = new_chat['data']['id']
+            else:
+                raise Exception("Не удалось создать чат")
+        
+        logger.info(f"📝 Chat ID: {self.current_chat_id}")
+        return self.current_chat_id
+    
+    def chat(self, prompt: str, stream: bool = False, chat_id: Optional[str] = None, **kwargs) -> Dict:
+        """Отправка запроса к модели"""
+        # Если нет chat_id, создаём новый чат
+        if not chat_id and not self.current_chat_id:
+            self.create_chat()
+        
+        chat_id = chat_id or self.current_chat_id
+        
+        payload = {
+            "chat_id": chat_id,
+            "model": "qwen-turbo",
+            "query": prompt,
             "stream": stream,
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 2000)
         }
+        
         return self._request("POST", "/chat/completions", json=payload)
     
-    def chat_stream(self, prompt: str, **kwargs) -> Generator:
+    def chat_stream(self, prompt: str, chat_id: Optional[str] = None, **kwargs) -> Generator:
         """Потоковый чат (синхронный генератор)"""
+        if not chat_id and not self.current_chat_id:
+            self.create_chat()
+        
+        chat_id = chat_id or self.current_chat_id
+        
         payload = {
+            "chat_id": chat_id,
             "model": "qwen-turbo",
-            "messages": [{"role": "user", "content": prompt}],
+            "query": prompt,
             "stream": True,
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 2000)
@@ -285,7 +323,7 @@ class QwenClient:
 # СОСТОЯНИЯ
 # ============================================================
 
-user_sessions = {}  # {user_id: {"history": [], "mode": "chat"}}
+user_sessions = {}  # {user_id: {"history": [], "mode": "chat", "chat_id": None}}
 
 # ============================================================
 # КОМАНДЫ БОТА
@@ -306,14 +344,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 **Qwen Bot**\n\n"
         "Я бот для работы с Qwen AI от Alibaba.\n\n"
         "**Команды:**\n"
-        "/qwen <текст> - задать вопрос\n"
-        "/history - показать историю\n"
-        "/folders - показать папки\n"
-        "/notifications - уведомления\n"
-        "/clear - очистить историю\n\n"
+        "/qwen \\<текст\\> \\- задать вопрос\n"
+        "/history \\- показать историю\n"
+        "/folders \\- показать папки\n"
+        "/notifications \\- уведомления\n"
+        "/clear \\- очистить историю\n\n"
         "Или используйте кнопки ниже 👇",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
+        parse_mode='MarkdownV2'
     )
 
 async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,7 +367,8 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"history": [], "mode": "chat"}
+        user_sessions[user_id] = {"history": [], "mode": "chat", "chat_id": None}
+    
     user_sessions[user_id]["history"].append({"role": "user", "content": prompt})
     
     status_msg = await update.message.reply_text("🤔 Думаю...")
@@ -338,26 +376,34 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = None
     try:
         client = QwenClient(QWEN_TOKEN)
-        response = client.chat(prompt)
+        
+        # Используем сохранённый chat_id или создаём новый
+        chat_id = user_sessions[user_id].get("chat_id")
+        response = client.chat(prompt, chat_id=chat_id)
+        
+        # Сохраняем chat_id для следующих сообщений
+        if client.current_chat_id:
+            user_sessions[user_id]["chat_id"] = client.current_chat_id
         
         if 'choices' in response:
             answer = response['choices'][0]['message']['content']
             user_sessions[user_id]["history"].append({"role": "assistant", "content": answer})
             
-            if len(answer) > 3000:
-                answer = answer[:3000] + "...\n\n(ответ обрезан)"
+            # Экранируем текст для Markdown
+            safe_answer = escape_markdown(answer[:3000])
+            safe_prompt = escape_markdown(prompt)
             
             await status_msg.edit_text(
-                f"💬 **Вопрос:** {prompt}\n\n"
-                f"📝 **Ответ:**\n{answer}",
+                f"💬 **Вопрос:** {safe_prompt}\n\n"
+                f"📝 **Ответ:**\n{safe_answer}",
                 parse_mode='Markdown'
             )
         else:
-            await status_msg.edit_text(f"❌ Ошибка: {json.dumps(response, ensure_ascii=False)}")
+            await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(response))}")
             
     except Exception as e:
         logger.error(f"Ошибка /qwen: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -369,30 +415,43 @@ async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     prompt = " ".join(context.args)
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"history": [], "mode": "chat", "chat_id": None}
+    
     status_msg = await update.message.reply_text("📡 Получаю поток...")
     
     client = None
     try:
         client = QwenClient(QWEN_TOKEN)
+        chat_id = user_sessions[user_id].get("chat_id")
         full_response = ""
         
-        for chunk in client.chat_stream(prompt):
+        for chunk in client.chat_stream(prompt, chat_id=chat_id):
             full_response += chunk
             if len(full_response) % 100 < 20:
+                safe_text = escape_markdown(full_response[:500])
                 await status_msg.edit_text(
-                    f"📡 **Генерация:**\n{full_response[:500]}...",
+                    f"📡 **Генерация:**\n{safe_text}...",
                     parse_mode='Markdown'
                 )
         
+        if client.current_chat_id:
+            user_sessions[user_id]["chat_id"] = client.current_chat_id
+        
+        safe_answer = escape_markdown(full_response[:3000])
+        safe_prompt = escape_markdown(prompt)
+        
         await status_msg.edit_text(
-            f"💬 **Вопрос:** {prompt}\n\n"
-            f"📝 **Ответ:**\n{full_response[:3000]}",
+            f"💬 **Вопрос:** {safe_prompt}\n\n"
+            f"📝 **Ответ:**\n{safe_answer}",
             parse_mode='Markdown'
         )
         
     except Exception as e:
         logger.error(f"Ошибка /qwen_stream: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -409,19 +468,19 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'data' in history and history['data']:
             caption = "📚 **Последние чаты:**\n\n"
             for chat in history['data'][:10]:
-                title = chat.get('title', 'Без названия')[:50]
-                created = chat.get('created_at', '')
-                chat_id = chat.get('id', '')
-                caption += f"• `{title}`\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
+                title = escape_markdown(chat.get('title', 'Без названия')[:50])
+                created = escape_markdown(str(chat.get('created_at', '')))
+                chat_id = escape_markdown(str(chat.get('id', '')))
+                caption += f"• {title}\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
             
-            caption += "\n_Для просмотра сообщений используйте /messages <chat_id>_"
-            await status_msg.edit_text(caption, parse_mode='Markdown')
+            caption += "\nДля просмотра сообщений используйте /messages \\<chat\\_id\\>"
+            await status_msg.edit_text(caption, parse_mode='MarkdownV2')
         else:
             await status_msg.edit_text("📭 История пуста")
             
     except Exception as e:
         logger.error(f"Ошибка /history: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -441,10 +500,10 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         messages = client.get_chat_messages(chat_id)
         
         if 'data' in messages and messages['data']:
-            caption = f"💬 **Сообщения чата** `{chat_id}`\n\n"
+            caption = f"💬 **Сообщения чата** `{escape_markdown(chat_id)}`\n\n"
             for msg in messages['data'][:20]:
                 role = msg.get('role', 'unknown')
-                content = msg.get('content', '')[:200]
+                content = escape_markdown(str(msg.get('content', ''))[:200])
                 if role == 'user':
                     caption += f"👤 **Вы:** {content}\n\n"
                 else:
@@ -456,7 +515,7 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Ошибка /messages: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -473,10 +532,10 @@ async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 'data' in folders and folders['data']:
             caption = "📁 **Папки:**\n\n"
             for folder in folders['data']:
-                name = folder.get('name', 'Без названия')
+                name = escape_markdown(folder.get('name', 'Без названия'))
                 count = folder.get('chat_count', 0)
-                folder_id = folder.get('id', '')
-                caption += f"• `{name}` ({count} чатов)\n  🆔 `{folder_id}`\n\n"
+                folder_id = escape_markdown(str(folder.get('id', '')))
+                caption += f"• {name} ({count} чатов)\n  🆔 `{folder_id}`\n\n"
             
             await status_msg.edit_text(caption, parse_mode='Markdown')
         else:
@@ -484,7 +543,7 @@ async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Ошибка /folders: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -504,7 +563,7 @@ async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TY
             
     except Exception as e:
         logger.error(f"Ошибка /notifications: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -513,7 +572,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /clear - очистить историю"""
     user_id = update.effective_user.id
     if user_id in user_sessions:
-        user_sessions[user_id]["history"] = []
+        user_sessions[user_id] = {"history": [], "mode": "chat", "chat_id": None}
     
     await update.message.reply_text("🧹 История очищена")
 
@@ -524,17 +583,17 @@ async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     chat_id = context.args[0]
-    status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{chat_id}`...", parse_mode='Markdown')
+    status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{escape_markdown(chat_id)}`...", parse_mode='Markdown')
     
     client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         result = client.delete_chat(chat_id)
-        await status_msg.edit_text(f"✅ Чат `{chat_id}` удален", parse_mode='Markdown')
+        await status_msg.edit_text(f"✅ Чат `{escape_markdown(chat_id)}` удален", parse_mode='Markdown')
             
     except Exception as e:
         logger.error(f"Ошибка /delete: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
     finally:
         if client:
             client.close()
@@ -561,7 +620,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "history":
-        # Создаем фейковое сообщение для history_command
         class FakeUpdate:
             def __init__(self, effective_user, message):
                 self.effective_user = effective_user
@@ -585,17 +643,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "❓ **Помощь**\n\n"
             "**Основные команды:**\n"
-            "/qwen <текст> - задать вопрос\n"
-            "/qwen_stream <текст> - потоковый ответ\n"
-            "/history - история чатов\n"
-            "/messages <id> - сообщения чата\n"
-            "/folders - список папок\n"
-            "/notifications - уведомления\n"
-            "/delete <id> - удалить чат\n"
-            "/clear - очистить историю\n\n"
+            "/qwen \\<текст\\> \\- задать вопрос\n"
+            "/qwen\\_stream \\<текст\\> \\- потоковый ответ\n"
+            "/history \\- история чатов\n"
+            "/messages \\<id\\> \\- сообщения чата\n"
+            "/folders \\- список папок\n"
+            "/notifications \\- уведомления\n"
+            "/delete \\<id\\> \\- удалить чат\n"
+            "/clear \\- очистить историю\n\n"
             "**Требуется токен Qwen?**\n"
-            "Установите переменную QWEN_TOKEN",
-            parse_mode='Markdown'
+            "Установите переменную QWEN\\_TOKEN",
+            parse_mode='MarkdownV2'
         )
 
 # ============================================================
