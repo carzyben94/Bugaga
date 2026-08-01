@@ -1,4 +1,5 @@
 # cookies.py
+import json
 
 COOKIES = [
     # === X.com cookies ===
@@ -350,45 +351,52 @@ COOKIES = [
 ]
 
 # ============================================================
-# АВТОМАТИЧЕСКОЕ УДАЛЕНИЕ ДУБЛИКАТОВ
+# АВТОМАТИЧЕСКОЕ УДАЛЕНИЕ ВСЕХ ДУБЛИКАТОВ
 # ============================================================
 
-def remove_duplicates(cookies_list):
-    """Удаляет все дубликаты кук"""
+def deduplicate_cookies(cookies_list):
+    """
+    Полностью удаляет все дубликаты.
+    Оставляет только уникальные комбинации (name, domain, path)
+    """
     seen = set()
-    unique = []
+    result = []
+    
     for c in cookies_list:
-        # Ключ = (имя, домен, путь) - максимальная уникальность
+        # Создаем ключ из name, domain, path
         key = (c.get("name"), c.get("domain"), c.get("path"))
+        
         if key not in seen:
             seen.add(key)
-            unique.append(c)
-    return unique
-
-# Применяем очистку
-COOKIES = remove_duplicates(COOKIES)
-
-# Создаем список уникальных кук для быстрого доступа
-COOKIES_UNIQUE = COOKIES
+            result.append(c)
+        else:
+            print(f"⚠️ Удален дубликат: {c.get('name')} для {c.get('domain')}")
+    
+    return result
 
 def get_cookies_for_domain(domain: str) -> list:
     """
-    Возвращает уникальные куки для конкретного домена.
-    Автоматически убирает дубликаты по имени.
+    Возвращает куки для конкретного домена.
+    Убирает дубликаты по имени внутри домена.
     """
     # Фильтруем по домену
     filtered = [c for c in COOKIES_UNIQUE if domain in c.get("domain", "")]
     
-    # Убираем дубликаты по имени (для одного домена)
+    # Убираем дубликаты по имени (оставляем только первую запись)
     seen_names = set()
-    unique = []
+    result = []
     for c in filtered:
         name = c.get("name")
         if name not in seen_names:
             seen_names.add(name)
-            unique.append(c)
+            result.append(c)
+        else:
+            print(f"⚠️ Удален дубликат в домене {domain}: {name}")
     
-    return unique
+    return result
+
+# Очищаем глобальный список
+COOKIES_UNIQUE = deduplicate_cookies(COOKIES)
 
 # ============================================================
 # ТЕСТ
@@ -396,12 +404,19 @@ def get_cookies_for_domain(domain: str) -> list:
 
 if __name__ == "__main__":
     print(f"✅ Всего кук: {len(COOKIES)}")
+    print(f"✅ Уникальных кук: {len(COOKIES_UNIQUE)}")
     
+    print("\n🔍 Куки для chat.qwen.ai:")
     qwen_cookies = get_cookies_for_domain("chat.qwen.ai")
-    print(f"✅ Кук для chat.qwen.ai: {len(qwen_cookies)}")
-    print("  Имена:", [c["name"] for c in qwen_cookies])
+    print(f"  ✅ Всего: {len(qwen_cookies)}")
     
-    # Проверяем все проблемные имена
-    for name in ["acw_tc", "_c_WBKFRo", "token", "x-ap"]:
+    # Показываем все имена
+    names = [c["name"] for c in qwen_cookies]
+    print(f"  📋 Имена: {', '.join(names)}")
+    
+    # Проверяем дубликаты
+    print("\n🔍 Проверка дубликатов:")
+    for name in ["acw_tc", "_c_WBKFRo", "token", "x-ap", "sca", "cna"]:
         count = len([c for c in qwen_cookies if c["name"] == name])
-        print(f"✅ {name}: {count}")
+        status = "✅" if count <= 1 else "❌"
+        print(f"  {status} {name}: {count}")
