@@ -6,6 +6,7 @@ import logging
 import uuid
 import httpx
 import re
+import time
 from datetime import datetime
 from typing import Optional, Dict, List, Generator, AsyncGenerator
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -170,7 +171,6 @@ class QwenClient:
             
             if response.status_code == 429:
                 logger.warning("⚠️ Rate limit, ждем 5 секунд...")
-                import time
                 time.sleep(5)
                 return self._request(method, endpoint, **kwargs)
             
@@ -181,6 +181,12 @@ class QwenClient:
             if response.status_code == 401:
                 logger.error(f"❌ Не авторизован: {response.text}")
                 raise Exception("Не авторизован. Обновите куки.")
+            
+            # Проверяем на капчу/защиту
+            if 'RGV587_ERROR' in response.text or 'punish' in response.text:
+                logger.warning("🛡️ Обнаружена защита Cloudflare, ждем 10 секунд...")
+                time.sleep(10)
+                return self._request(method, endpoint, **kwargs)
             
             response.raise_for_status()
             
@@ -205,7 +211,6 @@ class QwenClient:
             "max_tokens": kwargs.get("max_tokens", 2000)
         }
         
-        # Если есть chat_id, добавляем его
         if chat_id:
             payload["chat_id"] = chat_id
         
@@ -250,7 +255,6 @@ class QwenClient:
                                     content = chunk['choices'][0].get('delta', {}).get('content', '')
                                     if content:
                                         yield content
-                                # Сохраняем chat_id из потока
                                 if 'chat_id' in chunk:
                                     self.current_chat_id = chunk['chat_id']
                             except json.JSONDecodeError:
@@ -341,11 +345,20 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         client = QwenClient(QWEN_TOKEN)
         
-        # Используем сохранённый chat_id или None для нового чата
         chat_id = user_sessions[user_id].get("chat_id")
-        response = client.chat(prompt, chat_id=chat_id)
         
-        # Сохраняем chat_id для следующих сообщений
+        # Пробуем до 3 раз при ошибке капчи
+        for attempt in range(3):
+            try:
+                response = client.chat(prompt, chat_id=chat_id)
+                break
+            except Exception as e:
+                if 'RGV587' in str(e) or 'punish' in str(e):
+                    logger.warning(f"🔄 Попытка {attempt + 1}/3 после капчи...")
+                    time.sleep(5)
+                    continue
+                raise e
+        
         if client.current_chat_id:
             user_sessions[user_id]["chat_id"] = client.current_chat_id
         
@@ -353,7 +366,6 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = response['choices'][0]['message']['content']
             user_sessions[user_id]["history"].append({"role": "assistant", "content": answer})
             
-            # Экранируем текст для Markdown
             safe_answer = escape_markdown(answer[:3000])
             safe_prompt = escape_markdown(prompt)
             
@@ -367,7 +379,11 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Ошибка /qwen: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
+        error_text = str(e)
+        if 'RGV587' in error_text or 'punish' in error_text:
+            await status_msg.edit_text("🛡️ Сработала защита от ботов. Попробуйте позже или обновите куки.")
+        else:
+            await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(error_text)}")
     finally:
         if client:
             client.close()
@@ -429,18 +445,32 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = QwenClient(QWEN_TOKEN)
         history = client.get_chats(page=1)
         
-        if 'data' in history and history['data']:
-            caption = "📚 **Последние чаты:**\n\n"
-            for chat in history['data'][:10]:
-                title = escape_markdown(chat.get('title', 'Без названия')[:50])
-                created = escape_markdown(str(chat.get('created_at', '')))
-                chat_id = escape_markdown(str(chat.get('id', '')))
-                caption += f"• {title}\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
+        if 'data' in history:
+            data = history['data']
+            # Проверяем формат данных
+            if isinstance(data, list):
+                chats = data
+            elif isinstance(data, dict) and 'items' in data:
+                chats = data['items']
+            elif isinstance(data, dict) and 'chats' in data:
+                chats = data['chats']
+            else:
+                chats = []
             
-            caption += "\nДля просмотра сообщений используйте /messages \\<chat\\_id\\>"
-            await status_msg.edit_text(caption, parse_mode='MarkdownV2')
+            if chats:
+                caption = "📚 **Последние чаты:**\n\n"
+                for chat in chats[:10]:
+                    title = escape_markdown(str(chat.get('title', 'Без названия'))[:50])
+                    created = escape_markdown(str(chat.get('created_at', '')))
+                    chat_id = escape_markdown(str(chat.get('id', '')))
+                    caption += f"• {title}\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
+                
+                caption += "\nДля просмотра сообщений используйте /messages \\<chat\\_id\\>"
+                await status_msg.edit_text(caption, parse_mode='MarkdownV2')
+            else:
+                await status_msg.edit_text("📭 История пуста")
         else:
-            await status_msg.edit_text("📭 История пуста")
+            await status_msg.edit_text(f"❌ Неожиданный формат ответа: {escape_markdown(str(history))[:500]}")
             
     except Exception as e:
         logger.error(f"Ошибка /history: {e}")
@@ -463,9 +493,25 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = QwenClient(QWEN_TOKEN)
         messages = client.get_chat_messages(chat_id)
         
-        if 'data' in messages and messages['data']:
+        # Проверяем разные форматы ответа
+        msg_list = []
+        if 'data' in messages:
+            data = messages['data']
+            if isinstance(data, list):
+                msg_list = data
+            elif isinstance(data, dict):
+                # Ищем список сообщений в разных ключах
+                for key in ['messages', 'items', 'records', 'list']:
+                    if key in data and isinstance(data[key], list):
+                        msg_list = data[key]
+                        break
+                # Если не нашли, может сам data - это одно сообщение
+                if not msg_list and 'content' in data:
+                    msg_list = [data]
+        
+        if msg_list:
             caption = f"💬 **Сообщения чата** `{escape_markdown(chat_id)}`\n\n"
-            for msg in messages['data'][:20]:
+            for msg in msg_list[:20]:
                 role = msg.get('role', 'unknown')
                 content = escape_markdown(str(msg.get('content', ''))[:200])
                 if role == 'user':
@@ -473,9 +519,12 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     caption += f"🤖 **Qwen:** {content}\n\n"
             
-            await status_msg.edit_text(caption[:4000], parse_mode='Markdown')
+            if len(caption) > 4000:
+                caption = caption[:4000] + "\n\n...(сообщение обрезано)"
+            
+            await status_msg.edit_text(caption, parse_mode='Markdown')
         else:
-            await status_msg.edit_text("📭 Сообщений нет")
+            await status_msg.edit_text(f"📭 Сообщений нет или не удалось распарсить ответ.\n\nОтвет API: {escape_markdown(str(messages))[:500]}")
             
     except Exception as e:
         logger.error(f"Ошибка /messages: {e}")
@@ -493,10 +542,19 @@ async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = QwenClient(QWEN_TOKEN)
         folders = client.get_folders()
         
-        if 'data' in folders and folders['data']:
+        # Проверяем формат
+        folder_list = []
+        if 'data' in folders:
+            data = folders['data']
+            if isinstance(data, list):
+                folder_list = data
+            elif isinstance(data, dict) and 'folders' in data:
+                folder_list = data['folders']
+        
+        if folder_list:
             caption = "📁 **Папки:**\n\n"
-            for folder in folders['data']:
-                name = escape_markdown(folder.get('name', 'Без названия'))
+            for folder in folder_list:
+                name = escape_markdown(str(folder.get('name', 'Без названия')))
                 count = folder.get('chat_count', 0)
                 folder_id = escape_markdown(str(folder.get('id', '')))
                 caption += f"• {name} ({count} чатов)\n  🆔 `{folder_id}`\n\n"
