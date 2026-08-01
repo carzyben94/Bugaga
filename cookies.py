@@ -124,7 +124,7 @@ COOKIES = [
         "value": "rgpecDD.nJZW.PDvUwZ7PnWS.JOBSsUHl1uwuBvlvm0-1784475398.7921503-1.0.1.1-Jh7pm287WlmOXhd1JOwAVbsFYWkIh._GtcIsZAf_n.vP8Os7kJAOjJ.Jg2Rw9cOwixM4iLu0WsOC2uyC6lJfG_cb4Sl1H6fr5jYvSYUr6rNJ.w_I8aFoDCu12CVOpnev"
     },
 
-    # === chat.z.ai cookies (только важные, без дубликатов) ===
+    # === chat.z.ai cookies (только важные) ===
     {
         "domain": ".chat.z.ai",
         "hostOnly": False,
@@ -158,19 +158,8 @@ COOKIES = [
         "session": True,
         "value": "GA1.1.1016160882.1785287466"
     },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "token",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjdjNGM2OWEwLWI5M2ItNDVmNS05ZDllLTk1NThiMGMwMmM4YyIsImVtYWlsIjoia3VmYzQxOTBAZ21haWwuY29tIn0.1iN6DbuWvbyGU3pj7dGi2iggs9OpMjgxtXK1TdsM89R366-yqTzzr9LWDi4U12NcJHnDJRsm1p3xVJHotif9Zg"
-    },
 
-    # === chat.qwen.ai cookies (все, без дубликатов) ===
+    # === chat.qwen.ai cookies ===
     {
         "domain": ".chat.qwen.ai",
         "hostOnly": False,
@@ -361,7 +350,7 @@ COOKIES = [
 ]
 
 # ============================================================
-# УНИКАЛЬНЫЕ КУКИ
+# УНИКАЛЬНЫЕ КУКИ (убираем дубликаты)
 # ============================================================
 
 COOKIES_UNIQUE = []
@@ -373,8 +362,19 @@ for c in COOKIES:
         COOKIES_UNIQUE.append(c)
 
 def get_cookies_for_domain(domain: str) -> list:
-    """Возвращает куки для конкретного домена"""
-    return [c for c in COOKIES_UNIQUE if domain in c.get("domain", "")]
+    """Возвращает уникальные куки для конкретного домена"""
+    filtered = [c for c in COOKIES_UNIQUE if domain in c.get("domain", "")]
+    
+    # Убираем дубликаты по имени внутри домена
+    seen_names = set()
+    unique = []
+    for c in filtered:
+        name = c.get("name")
+        if name not in seen_names:
+            seen_names.add(name)
+            unique.append(c)
+    
+    return unique
 
 # ============================================================
 # ТЕСТ
@@ -387,3 +387,8 @@ if __name__ == "__main__":
     qwen_cookies = get_cookies_for_domain("chat.qwen.ai")
     print(f"✅ Кук для chat.qwen.ai: {len(qwen_cookies)}")
     print("  Имена:", [c["name"] for c in qwen_cookies])
+    
+    # Проверяем дубликаты
+    for name in ["acw_tc", "_c_WBKFRo", "token"]:
+        count = len([c for c in qwen_cookies if c["name"] == name])
+        print(f"✅ {name}: {count}")
