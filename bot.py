@@ -57,9 +57,8 @@ class QwenClient:
     def __init__(self, token: Optional[str] = None):
         self.base_url = "https://chat.qwen.ai/api/v2"
         self.client = httpx.Client(timeout=60.0)
-        self.current_chat_id = None  # Храним ID текущего чата
+        self.current_chat_id = None
         
-        # Заголовки из перехваченных запросов
         self.headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/150.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -76,14 +75,12 @@ class QwenClient:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
         
-        # Загружаем куки ОДИН РАЗ без дубликатов
         self._load_cookies_once()
     
     def _load_cookies_once(self):
         """Загружаем куки из всех источников, убираем дубликаты"""
         all_cookies = {}
         
-        # 1. Загружаем из cookies.py
         if COOKIES:
             for cookie in COOKIES:
                 name = cookie.get("name")
@@ -99,7 +96,6 @@ class QwenClient:
                     }
             logger.info(f"📦 Из cookies.py: {len(COOKIES)} кук")
         
-        # 2. Загружаем из qwen_cookies.json (перезаписывает дубликаты)
         try:
             with open("qwen_cookies.json", "r") as f:
                 json_cookies = json.load(f)
@@ -113,7 +109,6 @@ class QwenClient:
         except FileNotFoundError:
             pass
         
-        # 3. Устанавливаем уникальные куки в клиент
         for name, data in all_cookies.items():
             try:
                 self.client.cookies.set(
@@ -127,26 +122,20 @@ class QwenClient:
         
         logger.info(f"🍪 Итого установлено: {len(all_cookies)} уникальных кук")
         
-        # 4. Перехватываем ответы для удаления дубликатов
+        # Защита от дубликатов в ответах
         original_send = self.client.send
         
         def safe_send(request, **kwargs):
-            """Обёртка для безопасной отправки запросов"""
             response = original_send(request, **kwargs)
-            
-            # Убираем дубликаты кук после ответа
             seen = set()
             unique_cookies = []
             for cookie in response.cookies.jar:
                 if cookie.name not in seen:
                     seen.add(cookie.name)
                     unique_cookies.append(cookie)
-            
-            # Очищаем и перезагружаем без дубликатов
             response.cookies.jar.clear()
             for cookie in unique_cookies:
                 response.cookies.jar.set_cookie(cookie)
-            
             return response
         
         self.client.send = safe_send
@@ -195,7 +184,6 @@ class QwenClient:
             
             response.raise_for_status()
             
-            # Сохраняем куки
             try:
                 self._save_cookies()
             except:
@@ -207,45 +195,9 @@ class QwenClient:
             logger.error(f"❌ Ошибка запроса: {e}")
             raise Exception(f"Ошибка запроса: {e}")
     
-    def create_chat(self) -> str:
-        """Создаёт новый чат и возвращает его ID"""
-        payload = {
-            "model": "qwen-turbo",
-            "messages": [{"role": "user", "content": "Привет"}],
-            "stream": False,
-            "temperature": 0.7,
-            "max_tokens": 10
-        }
-        
-        result = self._request("POST", "/chat/completions", json=payload)
-        
-        # Пробуем получить chat_id из ответа
-        if 'chat_id' in result:
-            self.current_chat_id = result['chat_id']
-        elif 'data' in result and 'chat_id' in result['data']:
-            self.current_chat_id = result['data']['chat_id']
-        else:
-            # Если нет chat_id, создаём чат через API
-            logger.info("Создаём новый чат...")
-            new_chat = self._request("POST", "/chats/", json={"title": "New Chat"})
-            if 'data' in new_chat and 'id' in new_chat['data']:
-                self.current_chat_id = new_chat['data']['id']
-            else:
-                raise Exception("Не удалось создать чат")
-        
-        logger.info(f"📝 Chat ID: {self.current_chat_id}")
-        return self.current_chat_id
-    
     def chat(self, prompt: str, stream: bool = False, chat_id: Optional[str] = None, **kwargs) -> Dict:
         """Отправка запроса к модели"""
-        # Если нет chat_id, создаём новый чат
-        if not chat_id and not self.current_chat_id:
-            self.create_chat()
-        
-        chat_id = chat_id or self.current_chat_id
-        
         payload = {
-            "chat_id": chat_id,
             "model": "qwen-turbo",
             "query": prompt,
             "stream": stream,
@@ -253,23 +205,32 @@ class QwenClient:
             "max_tokens": kwargs.get("max_tokens", 2000)
         }
         
-        return self._request("POST", "/chat/completions", json=payload)
+        # Если есть chat_id, добавляем его
+        if chat_id:
+            payload["chat_id"] = chat_id
+        
+        result = self._request("POST", "/chat/completions", json=payload)
+        
+        # Сохраняем chat_id из ответа
+        if 'chat_id' in result:
+            self.current_chat_id = result['chat_id']
+        elif 'data' in result and isinstance(result['data'], dict) and 'chat_id' in result['data']:
+            self.current_chat_id = result['data']['chat_id']
+        
+        return result
     
     def chat_stream(self, prompt: str, chat_id: Optional[str] = None, **kwargs) -> Generator:
         """Потоковый чат (синхронный генератор)"""
-        if not chat_id and not self.current_chat_id:
-            self.create_chat()
-        
-        chat_id = chat_id or self.current_chat_id
-        
         payload = {
-            "chat_id": chat_id,
             "model": "qwen-turbo",
             "query": prompt,
             "stream": True,
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 2000)
         }
+        
+        if chat_id:
+            payload["chat_id"] = chat_id
         
         url = f"{self.base_url}/chat/completions"
         self.headers["X-Request-Id"] = str(uuid.uuid4())
@@ -289,6 +250,9 @@ class QwenClient:
                                     content = chunk['choices'][0].get('delta', {}).get('content', '')
                                     if content:
                                         yield content
+                                # Сохраняем chat_id из потока
+                                if 'chat_id' in chunk:
+                                    self.current_chat_id = chunk['chat_id']
                             except json.JSONDecodeError:
                                 continue
     
@@ -377,7 +341,7 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         client = QwenClient(QWEN_TOKEN)
         
-        # Используем сохранённый chat_id или создаём новый
+        # Используем сохранённый chat_id или None для нового чата
         chat_id = user_sessions[user_id].get("chat_id")
         response = client.chat(prompt, chat_id=chat_id)
         
