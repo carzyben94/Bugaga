@@ -65,9 +65,7 @@ class QwenClient:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
         
-        # ============================================================
-        # ЗАГРУЗКА КУК ИЗ cookies.py
-        # ============================================================
+        # Загрузка кук из cookies.py
         if COOKIES:
             for cookie in COOKIES:
                 name = cookie.get("name")
@@ -77,7 +75,6 @@ class QwenClient:
                 
                 if name and value:
                     self.client.cookies.set(name, value, domain=domain, path=path)
-                    logger.debug(f"🍪 Установлена кука: {name}")
             
             logger.info(f"✅ Установлено {len(COOKIES)} кук")
         else:
@@ -101,7 +98,6 @@ class QwenClient:
         cookies = dict(self.client.cookies)
         with open("qwen_cookies.json", "w") as f:
             json.dump(cookies, f)
-        logger.info(f"💾 Сохранено {len(cookies)} кук")
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
         """Универсальный метод для запросов"""
@@ -116,7 +112,6 @@ class QwenClient:
                 **kwargs
             )
             
-            # Логируем для отладки
             logger.info(f"📤 {method} {endpoint} -> {response.status_code}")
             
             if response.status_code == 429:
@@ -211,10 +206,17 @@ class QwenClient:
         self.client.close()
 
 # ============================================================
+# СОСТОЯНИЯ
+# ============================================================
+
+user_sessions = {}  # {user_id: {"history": [], "mode": "chat"}}
+
+# ============================================================
 # КОМАНДЫ БОТА
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /start"""
     keyboard = [
         [InlineKeyboardButton("💬 Чат", callback_data="mode_chat")],
         [InlineKeyboardButton("📚 История", callback_data="history")],
@@ -284,6 +286,41 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if client:
             client.close()
 
+async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /qwen_stream - потоковый ответ"""
+    if not context.args:
+        await update.message.reply_text("❌ Введите запрос")
+        return
+    
+    prompt = " ".join(context.args)
+    status_msg = await update.message.reply_text("📡 Получаю поток...")
+    
+    client = None
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        full_response = ""
+        
+        for chunk in client.chat_stream(prompt):
+            full_response += chunk
+            if len(full_response) % 100 < 20:
+                await status_msg.edit_text(
+                    f"📡 **Генерация:**\n{full_response[:500]}...",
+                    parse_mode='Markdown'
+                )
+        
+        await status_msg.edit_text(
+            f"💬 **Вопрос:** {prompt}\n\n"
+            f"📝 **Ответ:**\n{full_response[:3000]}",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка /qwen_stream: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
+
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /history - показать историю"""
     status_msg = await update.message.reply_text("📚 Загружаю историю...")
@@ -308,6 +345,41 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Ошибка /history: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
+
+async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /messages <chat_id> - показать сообщения чата"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID чата\nПример: `/messages abc123`", parse_mode='Markdown')
+        return
+    
+    chat_id = context.args[0]
+    status_msg = await update.message.reply_text("📨 Загружаю сообщения...")
+    
+    client = None
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        messages = client.get_chat_messages(chat_id)
+        
+        if 'data' in messages and messages['data']:
+            caption = f"💬 **Сообщения чата** `{chat_id}`\n\n"
+            for msg in messages['data'][:20]:
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', '')[:200]
+                if role == 'user':
+                    caption += f"👤 **Вы:** {content}\n\n"
+                else:
+                    caption += f"🤖 **Qwen:** {content}\n\n"
+            
+            await status_msg.edit_text(caption[:4000], parse_mode='Markdown')
+        else:
+            await status_msg.edit_text("📭 Сообщений нет")
+            
+    except Exception as e:
+        logger.error(f"Ошибка /messages: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
     finally:
         if client:
@@ -361,27 +433,127 @@ async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TY
         if client:
             client.close()
 
-# ... остальные команды (messages, delete, clear, button_callback) ...
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /clear - очистить историю"""
+    user_id = update.effective_user.id
+    if user_id in user_sessions:
+        user_sessions[user_id]["history"] = []
+    
+    await update.message.reply_text("🧹 История очищена")
+
+async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /delete <chat_id> - удалить чат"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ID чата\nПример: `/delete abc123`", parse_mode='Markdown')
+        return
+    
+    chat_id = context.args[0]
+    status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{chat_id}`...", parse_mode='Markdown')
+    
+    client = None
+    try:
+        client = QwenClient(QWEN_TOKEN)
+        result = client.delete_chat(chat_id)
+        await status_msg.edit_text(f"✅ Чат `{chat_id}` удален", parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Ошибка /delete: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
+
+# ============================================================
+# ОБРАБОТЧИК КНОПОК
+# ============================================================
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на кнопки"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "mode_chat":
+        await query.edit_message_text(
+            "💬 **Режим чата**\n\n"
+            "Просто отправьте сообщение или используйте команду:\n"
+            "`/qwen <текст>`\n\n"
+            "Для потокового ответа:\n"
+            "`/qwen_stream <текст>`",
+            parse_mode='Markdown'
+        )
+    
+    elif data == "history":
+        # Создаем фейковое сообщение для history_command
+        class FakeUpdate:
+            def __init__(self, effective_user, message):
+                self.effective_user = effective_user
+                self.message = message
+        
+        fake_msg = await query.message.reply_text("📚 Загружаю историю...")
+        fake_update = FakeUpdate(update.effective_user, fake_msg)
+        await history_command(fake_update, context)
+    
+    elif data == "folders":
+        fake_msg = await query.message.reply_text("📁 Загружаю папки...")
+        fake_update = FakeUpdate(update.effective_user, fake_msg)
+        await folders_command(fake_update, context)
+    
+    elif data == "notifications":
+        fake_msg = await query.message.reply_text("🔔 Загружаю уведомления...")
+        fake_update = FakeUpdate(update.effective_user, fake_msg)
+        await notifications_command(fake_update, context)
+    
+    elif data == "help":
+        await query.edit_message_text(
+            "❓ **Помощь**\n\n"
+            "**Основные команды:**\n"
+            "/qwen <текст> - задать вопрос\n"
+            "/qwen_stream <текст> - потоковый ответ\n"
+            "/history - история чатов\n"
+            "/messages <id> - сообщения чата\n"
+            "/folders - список папок\n"
+            "/notifications - уведомления\n"
+            "/delete <id> - удалить чат\n"
+            "/clear - очистить историю\n\n"
+            "**Требуется токен Qwen?**\n"
+            "Установите переменную QWEN_TOKEN",
+            parse_mode='Markdown'
+        )
 
 # ============================================================
 # ЗАПУСК
 # ============================================================
 
-user_sessions = {}
-
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("qwen", qwen_command))
+    app.add_handler(CommandHandler("qwen_stream", qwen_stream_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("messages", messages_command))
     app.add_handler(CommandHandler("folders", folders_command))
     app.add_handler(CommandHandler("notifications", notifications_command))
+    app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("delete", delete_chat_command))
     
+    # Кнопки
     app.add_handler(CallbackQueryHandler(button_callback))
     
     logger.info("🚀 Qwen Bot запущен!")
     logger.info(f"🍪 Загружено кук: {len(COOKIES)}")
+    logger.info("📋 Доступные команды:")
+    logger.info("  /qwen <текст> - задать вопрос")
+    logger.info("  /qwen_stream <текст> - потоковый ответ")
+    logger.info("  /history - история чатов")
+    logger.info("  /messages <id> - сообщения чата")
+    logger.info("  /folders - папки")
+    logger.info("  /notifications - уведомления")
+    logger.info("  /delete <id> - удалить чат")
+    logger.info("  /clear - очистить историю")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
