@@ -65,7 +65,14 @@ class QwenClient:
         if token:
             self.headers["Authorization"] = f"Bearer {token}"
         
-        # Загрузка кук из cookies.py
+        # Загружаем куки ОДИН РАЗ без дубликатов
+        self._load_cookies_once()
+    
+    def _load_cookies_once(self):
+        """Загружаем куки из всех источников, убираем дубликаты"""
+        all_cookies = {}
+        
+        # 1. Загружаем из cookies.py
         if COOKIES:
             for cookie in COOKIES:
                 name = cookie.get("name")
@@ -74,30 +81,93 @@ class QwenClient:
                 path = cookie.get("path", "/")
                 
                 if name and value:
-                    self.client.cookies.set(name, value, domain=domain, path=path)
-            
-            logger.info(f"✅ Установлено {len(COOKIES)} кук")
-        else:
-            logger.warning("⚠️ Куки не загружены")
+                    all_cookies[name] = {
+                        "value": value, 
+                        "domain": domain, 
+                        "path": path
+                    }
+            logger.info(f"📦 Из cookies.py: {len(COOKIES)} кук")
         
-        self._load_cookies_file()
-    
-    def _load_cookies_file(self):
-        """Дополнительная загрузка кук из JSON файла"""
+        # 2. Загружаем из qwen_cookies.json (перезаписывает дубликаты)
         try:
             with open("qwen_cookies.json", "r") as f:
-                cookies = json.load(f)
-                for name, value in cookies.items():
-                    self.client.cookies.set(name, value)
-                logger.info(f"✅ Загружено {len(cookies)} кук из qwen_cookies.json")
+                json_cookies = json.load(f)
+                for name, value in json_cookies.items():
+                    all_cookies[name] = {
+                        "value": value,
+                        "domain": ".qwen.ai",
+                        "path": "/"
+                    }
+                logger.info(f"📦 Из qwen_cookies.json: {len(json_cookies)} кук")
         except FileNotFoundError:
             pass
+        
+        # 3. Устанавливаем уникальные куки в клиент
+        for name, data in all_cookies.items():
+            try:
+                self.client.cookies.set(
+                    name,
+                    data["value"],
+                    domain=data["domain"],
+                    path=data["path"]
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось установить куку {name}: {e}")
+        
+        logger.info(f"🍪 Итого установлено: {len(all_cookies)} уникальных кук")
+        
+        # 4. Блокируем автоматическое обновление кук из ответов сервера
+        self.client.cookies.jar = self.client.cookies.jar
+        # Делаем копию jar, чтобы httpx не добавлял Set-Cookie автоматически
+        original_jar = self.client.cookies.jar
+        
+        class NoUpdateJar(type(original_jar)):
+            def set_cookie(self, cookie):
+                # Игнорируем попытки добавить дубликаты
+                for existing in self:
+                    if existing.name == cookie.name:
+                        return  # Пропускаем дубликат
+                super().set_cookie(cookie)
+        
+        # К сожалению, httpx не позволяет просто так заменить jar
+        # Поэтому используем другой подход - перехватываем на уровне клиента
+        
+        # Сохраняем оригинальный метод send
+        original_send = self.client.send
+        
+        def safe_send(request, **kwargs):
+            """Обёртка для безопасной отправки запросов"""
+            response = original_send(request, **kwargs)
+            
+            # Убираем дубликаты кук после ответа
+            seen = set()
+            unique_cookies = []
+            for cookie in response.cookies.jar:
+                if cookie.name not in seen:
+                    seen.add(cookie.name)
+                    unique_cookies.append(cookie)
+            
+            # Очищаем и перезагружаем без дубликатов
+            response.cookies.jar.clear()
+            for cookie in unique_cookies:
+                response.cookies.jar.set_cookie(cookie)
+            
+            return response
+        
+        self.client.send = safe_send
     
     def _save_cookies(self):
         """Сохраняем куки в файл"""
-        cookies = dict(self.client.cookies)
-        with open("qwen_cookies.json", "w") as f:
-            json.dump(cookies, f)
+        try:
+            cookies_dict = {}
+            for cookie in self.client.cookies.jar:
+                cookies_dict[cookie.name] = cookie.value
+            
+            with open("qwen_cookies.json", "w") as f:
+                json.dump(cookies_dict, f)
+            logger.info(f"💾 Сохранено {len(cookies_dict)} кук")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось сохранить куки: {e}")
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
         """Универсальный метод для запросов"""
@@ -129,7 +199,13 @@ class QwenClient:
                 raise Exception("Не авторизован. Обновите куки.")
             
             response.raise_for_status()
-            self._save_cookies()
+            
+            # Сохраняем куки (опционально)
+            try:
+                self._save_cookies()
+            except:
+                pass
+            
             return response.json()
             
         except httpx.RequestError as e:
