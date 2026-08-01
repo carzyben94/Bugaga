@@ -124,7 +124,7 @@ COOKIES = [
         "value": "rgpecDD.nJZW.PDvUwZ7PnWS.JOBSsUHl1uwuBvlvm0-1784475398.7921503-1.0.1.1-Jh7pm287WlmOXhd1JOwAVbsFYWkIh._GtcIsZAf_n.vP8Os7kJAOjJ.Jg2Rw9cOwixM4iLu0WsOC2uyC6lJfG_cb4Sl1H6fr5jYvSYUr6rNJ.w_I8aFoDCu12CVOpnev"
     },
 
-    # === chat.z.ai cookies ===
+    # === chat.z.ai cookies (только важные, без дубликатов) ===
     {
         "domain": ".chat.z.ai",
         "hostOnly": False,
@@ -136,18 +136,6 @@ COOKIES = [
         "session": True,
         "value": "2ff6319617852874661382491e2022a3810e56e1c8bc489c8c4978fac9"
     },
-    # УДАЛЯЕМ ДУБЛИКАТ acw_tc для chat.z.ai
-    # {
-    #     "domain": ".chat.z.ai",
-    #     "hostOnly": False,
-    #     "httpOnly": False,
-    #     "name": "acw_tc",
-    #     "path": "/",
-    #     "sameSite": "unspecified",
-    #     "secure": False,
-    #     "session": True,
-    #     "value": "0a094e8917852874662242982e62b94b6d9fc3825ceca0a19628dc54ab1e3e"
-    # },
     {
         "domain": ".chat.z.ai",
         "hostOnly": False,
@@ -174,105 +162,6 @@ COOKIES = [
         "domain": ".chat.z.ai",
         "hostOnly": False,
         "httpOnly": False,
-        "name": "_twpid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "tw.1785287468891.165870973531453544"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_fbp",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "fb.1.1785287470174.783280790214800417.AQYAAQIB"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_clck",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1d845js%5E2%5Eg85%5E0%5E2401"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_c_WBKFRo",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "A8vjfrQNoknQJjsZrwLZGxLrKiTznLhU1lwFORBD"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_nb_ioWEgULi",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": ""
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_rdt_uuid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1785287468631.89982e06-9f7a-42ea-a367-98f6f6e01425"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_rdt_pn",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": ":225~c9d9e850eb9a7f3cb20334b0e30ba690b16c5647b2b824a0eab9cbcb6d529e70|225~d7427b1bce950ab05be400d8851b3c6e0c663cd608ba6589fd11083282a5ec71|225~c31f60bdaed93efbc0a2d82f9848476a6cc57a9b0dc33c8f84061e3e5500d9df|225~bf466a96e7e62458d5123ae1c06c6962d4c35405a799a62813e5ccac23140be6|225~a58c016336b29872df90f9a8913c6a28fa09c8c5db8001a3838593ee66c1532c"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_uetsid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "6268b9a08aea11f195c041cd269f2442"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_uetvid",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "626946408aea11f1ba93395577367566"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
         "name": "token",
         "path": "/",
         "sameSite": "unspecified",
@@ -280,85 +169,8 @@ COOKIES = [
         "session": True,
         "value": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjdjNGM2OWEwLWI5M2ItNDVmNS05ZDllLTk1NThiMGMwMmM4YyIsImVtYWlsIjoia3VmYzQxOTBAZ21haWwuY29tIn0.1iN6DbuWvbyGU3pj7dGi2iggs9OpMjgxtXK1TdsM89R366-yqTzzr9LWDi4U12NcJHnDJRsm1p3xVJHotif9Zg"
     },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_rdt_em",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": ":cba219eebbae54c1fb068db360721c5edc4396543718735a6c2b16a84e106b34,dd857c1b1c5690722a6077a99b9334c438cc0576e36ab511688b1e094fb776fe,3caad8cd6a488c3154abd9f4bf082bc16dcd117ccfc83fde02c6ca76f5d090fa,03a9fa71d7d6571490e5f7d1d60610dde00cf57a818686aefc7f2afa10dd1c1c"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_clsk",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "hhcjd6%5E1785287877200%5E9%5E0%5Ev.clarity.ms%2Fcollect"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_ga_9HHB4R5K1T",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "GS2.1.s1785287466$o1$g1$t1785287877$j8$l0$h0"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_ga_SF8X67RPF9",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "GS2.1.s1785287468$o1$g1$t1785287877$j8$l0$h0"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "_ga_Z8QTHYBHP3",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "GS2.1.s1785287466$o1$g1$t1785287924$j35$l0$h0"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "ssxmod_itna",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1-iqmxuD0i0=KeqRx4uxRx7IeYK0K07DpoaDBP01G8DuxiK08D6iDB_2jqDtjmtdBDciDy4tCfQmqExBK0qDst\/r4GCDfqKDEDWPo7gi0wu4eV_SD3w3tWSGGTcVCt02OtVKBerzgtQl9x5lgI12E57=xDTDmKDUaPDBxDYbY2WzDD8CnetmDiTbDDk34qD5PWm140iUxii7cooeGvjmDI6gr_xCmDqKQ04LOiPYWr2e6iTLoc8GxdeLrHj54Yom40kFq0OG4bmDmewzQqoCbiCUhvhgUDxCiK5qaxoVjjNxPX0BWhxuHjIj5mgPdtcpcnekr4ggp8adxD"
-    },
-    {
-        "domain": ".chat.z.ai",
-        "hostOnly": False,
-        "httpOnly": False,
-        "name": "ssxmod_itna2",
-        "path": "/",
-        "sameSite": "unspecified",
-        "secure": False,
-        "session": True,
-        "value": "1-iqmxuD0i0=KeqRx4uxRx7IeYK0K07DpoaDBP01G8DuxiK08D6iDB_2jqDtjmtdBDciDy4tCfQmqExBKi4iT3olu2Nbe_D7psCFG1hq0eD055j0CGc0NR7rmzCyuE5YKvOnKQWV\/lZRbLv1ROD1a7KxXg5_fE7s2hvzVC78tYImqbypi8oseRIkg2gGS=ivnhYASOikD39fGz3LKQKfZgKj_hIkqAvUZgLxCmLjazkLK5fXVjKRSOQ7tuSDnhl7Ro5xaGG7KN=y7hIqe7ZDK3THdWx5BQFO0lw1h\/UMtWFxHrMwpRY7IoEvL8inbFnx7qeTU_aTohq45QeNO8bKA4_8rWerYjFu87Yl8kSQV0=0Y77hqeAbQ0Q1hrwuQL8wiATLrbseQ9g3MM5noxy2izR4\/d=4d5fmbgbmMqtbmtNfN8fap3a_rwSxrk47Lx7f_G_8T4RL13iRjrNGjLhzoR1d_tA=W=pr2Orrb_tQGB2hAxh=wwA2kMc7BG_ROHQqC5ThP9=sgkG8kqYUWxd5EY_rKpxQUr3ZDxl7OaG57hxUOdpE4Wwb9MD7ODY7_qkFBOxwU0_ufnCDCEbhLprzhOzYErkGdYq=nDs_3I_U2xgOBEOdd77QsaZ9h0fdeGqAgmSlcNtn85CYAocwckuxpMlWEHGODSz_PjzSFCPQMaYOCBxwrCaY1g8YMvBDxg4ShHCiYrGdrUmDqate1FDMiGgiPn1_uRiDmGtr4CKv6QlGNeeq2Z1eyyK8_KDt7PEY4YDD"
-    },
 
-    # === chat.qwen.ai cookies ===
+    # === chat.qwen.ai cookies (все, без дубликатов) ===
     {
         "domain": ".chat.qwen.ai",
         "hostOnly": False,
@@ -549,7 +361,7 @@ COOKIES = [
 ]
 
 # ============================================================
-# УНИКАЛЬНЫЕ КУКИ (убираем дубликаты по name + domain)
+# УНИКАЛЬНЫЕ КУКИ
 # ============================================================
 
 COOKIES_UNIQUE = []
@@ -561,23 +373,8 @@ for c in COOKIES:
         COOKIES_UNIQUE.append(c)
 
 def get_cookies_for_domain(domain: str) -> list:
-    """
-    Возвращает уникальные куки для конкретного домена.
-    Убирает дубликаты по имени в пределах одного домена.
-    """
-    # Фильтруем по домену
-    filtered = [c for c in COOKIES_UNIQUE if domain in c.get("domain", "")]
-    
-    # Убираем дубликаты по имени (для одного домена)
-    seen_names = set()
-    unique = []
-    for c in filtered:
-        name = c.get("name")
-        if name not in seen_names:
-            seen_names.add(name)
-            unique.append(c)
-    
-    return unique
+    """Возвращает куки для конкретного домена"""
+    return [c for c in COOKIES_UNIQUE if domain in c.get("domain", "")]
 
 # ============================================================
 # ТЕСТ
@@ -590,7 +387,3 @@ if __name__ == "__main__":
     qwen_cookies = get_cookies_for_domain("chat.qwen.ai")
     print(f"✅ Кук для chat.qwen.ai: {len(qwen_cookies)}")
     print("  Имена:", [c["name"] for c in qwen_cookies])
-    
-    # Проверяем дубликаты acw_tc
-    acw_tc_cookies = [c for c in qwen_cookies if c["name"] == "acw_tc"]
-    print(f"✅ acw_tc кук: {len(acw_tc_cookies)}")
