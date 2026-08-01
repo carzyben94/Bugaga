@@ -1,13 +1,14 @@
-# bot.py - улучшенная версия с отслеживанием новых элементов
+# bot.py
 import os
 import json
 import asyncio
 import logging
 import httpx
 import warnings
-from datetime import datetime
+import time
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
+from typing import Optional, Dict, Any, List
 
 warnings.filterwarnings("ignore")
 
@@ -23,8 +24,13 @@ if not TELEGRAM_TOKEN:
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
 )
+
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("telegram").setLevel(logging.CRITICAL)
+logging.getLogger("websockets").setLevel(logging.CRITICAL)
 
 logger = logging.getLogger(__name__)
 
@@ -37,92 +43,20 @@ try:
     logger.info(f"✅ Загружено {len(COOKIES)} кук")
 except ImportError:
     COOKIES = []
-    logger.warning("⚠️ cookies.py не найден")
+    logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
 
 # ============================================================
-# СЕЛЕКТОРЫ
-# ============================================================
-
-TEXTAREA_SELECTOR = ".message-input-textarea"
-SEND_BUTTON_SELECTOR = ".omni-button-content-btn"
-
-# ============================================================
-# ФИЛЬТРЫ СИСТЕМНЫХ СООБЩЕНИЙ
-# ============================================================
-
-SYSTEM_PATTERNS = [
-    'All chats', 'Today', 'Projects', 'New Project',
-    'What can I do for you?', 'Voice Chat', 'Video Chat',
-    'AutoChoose', 'Get Started', 'Please enter',
-    'Что бы вы хотели', 'Log in', 'Sign up',
-    'Скачать приложение', 'Войти', 'Завершено размышление',
-    'Thinking completed', 'Выберите', 'Ваш выбор',
-    'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
-    'Все чаты', 'Используя Qwen Studio',
-    'Пользовательские условия', 'Политика конфиденциальности',
-    'Сообщить', 'Первое изображение', 'Выберите один из образцов',
-    'Welcome', 'Login', 'Sign up', 'Menu', 'Settings',
-    'Profile', 'History', 'New Chat', 'Delete', 'Edit',
-    'Share', 'Copy', 'Regenerate', 'Stop generating'
-]
-
-class A11YSnapshot:
-    """Снимок Accessibility Tree для сравнения"""
-    def __init__(self, elements):
-        self.elements = elements
-        self.texts = {el['text']: el for el in elements}
-        self.timestamp = datetime.now()
-    
-    def find_new_elements(self, new_snapshot):
-        """Найти элементы, которых не было в предыдущем снимке"""
-        new_elements = []
-        for el in new_snapshot.elements:
-            # Проверяем, есть ли такой текст в предыдущем снимке
-            if el['text'] not in self.texts:
-                # Дополнительная проверка: не похож ли на существующий (похожие тексты)
-                is_duplicate = False
-                for existing_text in self.texts.keys():
-                    # Если тексты сильно похожи (>80% совпадения)
-                    if self._similarity(el['text'], existing_text) > 0.8:
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate:
-                    new_elements.append(el)
-        
-        return new_elements
-    
-    @staticmethod
-    def _similarity(text1, text2):
-        """Простая проверка похожести текстов"""
-        if not text1 or not text2:
-            return 0
-        # Берем первые 50 символов для сравнения
-        t1 = text1[:50].lower()
-        t2 = text2[:50].lower()
-        
-        # Считаем совпадающие слова
-        words1 = set(t1.split())
-        words2 = set(t2.split())
-        
-        if not words1 or not words2:
-            return 0
-        
-        intersection = words1.intersection(words2)
-        union = words1.union(words2)
-        
-        return len(intersection) / len(union)
-
-# ============================================================
-# BROWSER HARNESS
+# BROWSER HARNESS С ПОДДЕРЖКОЙ SHADOW DOM И HTTP ПЕРЕХВАТА
 # ============================================================
 
 class BrowserHarness:
     def __init__(self, cdp_url="http://localhost:9222"):
         self.cdp_url = cdp_url
         self.ws_url = None
-        self.last_snapshot = None
-    
+        self.http_requests = []
+        self.http_responses = []
+        self._request_id_map = {}
+        
     def _get_ws_url(self):
         try:
             resp = httpx.get(f"{self.cdp_url}/json/list", timeout=5)
@@ -133,7 +67,7 @@ class BrowserHarness:
             logger.error(f"Ошибка подключения к CDP: {e}")
         return None
     
-    async def _send_cdp(self, method, params=None):
+    async def _send_cdp(self, method, params=None, session_id=None):
         import websockets
         
         if not self.ws_url:
@@ -146,10 +80,45 @@ class BrowserHarness:
             max_size=10_000_000,
             write_limit=10_000_000
         ) as ws:
-            message = {"id": 1, "method": method, "params": params or {}}
+            message = {
+                "id": 1,
+                "method": method,
+                "params": params or {}
+            }
+            if session_id:
+                message["sessionId"] = session_id
+                
             await ws.send(json.dumps(message))
             response = await ws.recv()
             return json.loads(response)
+    
+    async def enable_network_monitoring(self):
+        """Включаем мониторинг сетевых запросов"""
+        # Включаем Network домен
+        await self._send_cdp("Network.enable", {})
+        
+        # Подписываемся на события
+        # requestWillBeSent
+        # responseReceived
+        # loadingFinished
+        
+    async def get_http_requests(self, filter_url=None):
+        """Получить все HTTP запросы"""
+        if filter_url:
+            return [req for req in self.http_requests if filter_url in req.get('url', '')]
+        return self.http_requests
+    
+    async def get_http_responses(self, filter_url=None):
+        """Получить все HTTP ответы"""
+        if filter_url:
+            return [res for res in self.http_responses if filter_url in res.get('url', '')]
+        return self.http_responses
+    
+    async def clear_http_logs(self):
+        """Очистить логи HTTP"""
+        self.http_requests = []
+        self.http_responses = []
+        self._request_id_map = {}
     
     async def set_cookies(self, cookies):
         if not cookies:
@@ -164,7 +133,6 @@ class BrowserHarness:
             logger.error(f"Ошибка установки кук: {e}")
     
     async def navigate(self, url):
-        logger.info(f"🌐 Переход на {url}")
         result = await self._send_cdp("Page.navigate", {"url": url})
         return result.get("result", {})
     
@@ -175,481 +143,589 @@ class BrowserHarness:
         })
         return result.get("result", {}).get("result", {}).get("value")
     
-    async def wait_for_load(self, timeout=3):
-        logger.info(f"⏳ Ожидание {timeout}с...")
-        await asyncio.sleep(timeout)
-    
-    async def click_at_coords(self, x, y):
-        await self._send_cdp("Input.dispatchMouseEvent", {
-            "type": "mouseMoved",
-            "x": x,
-            "y": y
-        })
-        await asyncio.sleep(0.05)
-        
-        await self._send_cdp("Input.dispatchMouseEvent", {
-            "type": "mousePressed",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        })
-        await asyncio.sleep(0.05)
-        
-        await self._send_cdp("Input.dispatchMouseEvent", {
-            "type": "mouseReleased",
-            "x": x,
-            "y": y,
-            "button": "left",
-            "clickCount": 1
-        })
-        return True
-    
-    async def click_element(self, selector):
-        js = f"""
-        (function() {{
-            var el = document.querySelector('{selector}');
-            if (!el) return {{found: false}};
-            if (el.offsetParent === null) return {{found: false, hidden: true}};
-            if (el.disabled) return {{found: true, disabled: true}};
-            var rect = el.getBoundingClientRect();
-            return {{
-                found: true,
-                x: Math.round(rect.left + rect.width / 2),
-                y: Math.round(rect.top + rect.height / 2)
-            }};
-        }})()
-        """
-        result = await self.evaluate(js)
-        
-        if result and result.get('found') and not result.get('disabled'):
-            x, y = result['x'], result['y']
-            return await self.click_at_coords(x, y)
-        return False
-    
-    async def set_text(self, selector, text):
-        js = f"""
-        (function() {{
-            var el = document.querySelector('{selector}');
-            if (!el) return {{success: false, error: 'Элемент не найден'}};
-            el.focus();
-            el.click();
-            el.value = '';
-            el.value = '{text.replace("'", "\\'")}';
-            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('keydown', {{ bubbles: true }}));
-            el.dispatchEvent(new Event('keyup', {{ bubbles: true }}));
-            return {{success: true, value: el.value}};
-        }})()
-        """
-        return await self.evaluate(js)
-    
-    async def get_text_value(self, selector):
-        js = f"""
-        (function() {{
-            var el = document.querySelector('{selector}');
-            return el ? el.value : null;
-        }})()
-        """
-        return await self.evaluate(js)
-    
-    async def parse_a11y_tree(self):
-        """Парсинг Accessibility Tree на лету (улучшенная версия)"""
-        js = """
-        (function() {
-            var results = [];
-            var allElements = document.querySelectorAll('[role], div, span, p, h1, h2, h3, h4, h5, h6, li, td, th, label, button, a, article, section');
-            
-            for (var i = 0; i < allElements.length; i++) {
-                var el = allElements[i];
-                if (el.offsetParent === null) continue;
-                
-                var text = (el.textContent || '').trim();
-                if (!text || text.length < 2) continue;
-                
-                var role = el.getAttribute('role') || el.tagName.toLowerCase();
-                var ariaLabel = el.getAttribute('aria-label') || '';
-                var className = el.className || '';
-                var id = el.id || '';
-                
-                // Определяем тип элемента
-                var elementType = 'text';
-                if (role === 'button' || el.tagName === 'BUTTON') elementType = 'button';
-                else if (role === 'input' || el.tagName === 'INPUT') elementType = 'input';
-                else if (role === 'textarea' || el.tagName === 'TEXTAREA') elementType = 'textarea';
-                else if (role === 'img' || el.tagName === 'IMG') elementType = 'image';
-                else if (role === 'link' || el.tagName === 'A') elementType = 'link';
-                else if (role === 'article' || el.tagName === 'ARTICLE') elementType = 'article';
-                else if (role === 'section' || el.tagName === 'SECTION') elementType = 'section';
-                
-                // Собираем селектор
-                var selector = '';
-                if (id) {
-                    selector = '#' + id;
-                } else if (className && typeof className === 'string') {
-                    var classes = className.split(' ').filter(c => c && c.length > 0);
-                    if (classes.length > 0) {
-                        selector = '.' + classes.join('.');
-                    }
-                }
-                
-                // Проверяем на системные сообщения
-                var systemPatterns = [
-                    'All chats', 'Today', 'Projects', 'New Project',
-                    'What can I do for you?', 'Voice Chat', 'Video Chat',
-                    'AutoChoose', 'Get Started', 'Please enter',
-                    'Что бы вы хотели', 'Log in', 'Sign up',
-                    'Скачать приложение', 'Войти', 'Завершено размышление',
-                    'Thinking completed', 'Выберите', 'Ваш выбор',
-                    'Qwen3.7-Plus', 'Новый чат', 'Сообщество', 'Coder',
-                    'Все чаты', 'Используя Qwen Studio',
-                    'Пользовательские условия', 'Политика конфиденциальности',
-                    'Сообщить', 'Первое изображение', 'Выберите один из образцов',
-                    'Welcome', 'Login', 'Menu', 'Settings',
-                    'Profile', 'History', 'New Chat', 'Delete', 'Edit',
-                    'Share', 'Copy', 'Regenerate', 'Stop generating'
-                ];
-                
-                var isSystem = false;
-                for (var p of systemPatterns) {
-                    if (text.includes(p)) {
-                        isSystem = true;
-                        break;
-                    }
-                }
-                
-                // Также проверяем по aria-label
-                if (!isSystem) {
-                    for (var p of systemPatterns) {
-                        if (ariaLabel.includes(p)) {
-                            isSystem = true;
-                            break;
+    async def wait_for_load(self, timeout=30):
+        """Ожидание загрузки страницы"""
+        start = time.time()
+        while time.time() - start < timeout:
+            body_check = await self.evaluate("document.body ? document.body.children.length : 0")
+            if body_check and body_check > 0:
+                await asyncio.sleep(3)
+                visible_check = await self.evaluate("""
+                    (function() {
+                        var els = document.querySelectorAll('*');
+                        var count = 0;
+                        for (var el of els) {
+                            var rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0 && el.textContent.trim()) {
+                                count++;
+                                if (count > 10) break;
+                            }
                         }
-                    }
-                }
-                
-                if (!isSystem) {
-                    results.push({
-                        text: text.slice(0, 500),
-                        length: text.length,
-                        role: role,
-                        elementType: elementType,
-                        selector: selector || el.tagName.toLowerCase(),
-                        ariaLabel: ariaLabel.slice(0, 100),
-                        className: className.slice(0, 100),
-                        id: id
-                    });
-                }
-            }
-            
-            // Убираем дубликаты по тексту
-            var unique = [];
-            var seen = new Set();
-            for (var i = 0; i < results.length; i++) {
-                var key = results[i].text.slice(0, 50) + results[i].role;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    unique.push(results[i]);
-                }
-            }
-            
-            // Сортируем по длине текста (самые длинные сверху)
-            unique.sort(function(a, b) { return b.length - a.length; });
-            return unique;
-        })()
-        """
-        return await self.evaluate(js)
-    
-    async def get_snapshot(self):
-        """Получить снимок A11Y"""
-        elements = await self.parse_a11y_tree()
-        return A11YSnapshot(elements)
-    
-    async def find_response_in_a11y(self, previous_snapshot=None, max_wait=60):
-        """
-        Найти ответ в A11Y дереве с отслеживанием новых элементов
-        
-        Args:
-            previous_snapshot: Снимок ДО отправки вопроса
-            max_wait: Максимальное время ожидания в секундах
-        
-        Returns:
-            tuple: (ответ, найденные_элементы) или (None, None)
-        """
-        logger.info("🔍 Анализирую Accessibility Tree...")
-        
-        for attempt in range(max_wait):
+                        return count;
+                    })();
+                """)
+                if visible_check and visible_check > 5:
+                    logger.info(f"✅ Страница загружена (найдено {visible_check} видимых элементов)")
+                    return
             await asyncio.sleep(1)
-            
-            # Получаем текущий снимок
-            current_snapshot = await self.get_snapshot()
-            logger.info(f"📝 A11Y элементов сейчас: {len(current_snapshot.elements)}")
-            
-            # Если есть предыдущий снимок - ищем новые элементы
-            if previous_snapshot:
-                new_elements = previous_snapshot.find_new_elements(current_snapshot)
-                
-                if new_elements:
-                    logger.info(f"🆕 Найдено {len(new_elements)} новых элементов")
-                    
-                    # Сортируем новые элементы по длине и типу
-                    # Приоритет: article > section > text
-                    priority_order = {'article': 3, 'section': 2, 'text': 1}
-                    
-                    sorted_elements = sorted(
-                        new_elements,
-                        key=lambda x: (
-                            priority_order.get(x['elementType'], 0),
-                            x['length']
-                        ),
-                        reverse=True
-                    )
-                    
-                    # Ищем ответ среди новых элементов
-                    for el in sorted_elements:
-                        # Исключаем системные элементы
-                        if el['elementType'] in ['button', 'input', 'textarea', 'link', 'image']:
-                            continue
-                        
-                        # Проверяем на системные паттерны
-                        is_system = False
-                        for pattern in SYSTEM_PATTERNS:
-                            if pattern.lower() in el['text'].lower():
-                                is_system = True
-                                break
-                        
-                        if is_system:
-                            continue
-                        
-                        # Ответ должен быть достаточно длинным
-                        if el['length'] > 30:
-                            logger.info(f"✅ Найден потенциальный ответ:")
-                            logger.info(f"   Текст: {el['text'][:100]}...")
-                            logger.info(f"   Тип: {el['elementType']}, Роль: {el['role']}")
-                            logger.info(f"   Длина: {el['length']}")
-                            return el['text'], new_elements
-            
-            # Если прошло больше половины времени, проверяем все элементы (не только новые)
-            if attempt > max_wait // 2 and not previous_snapshot:
-                # Ищем самый длинный не-системный текст
-                for el in current_snapshot.elements:
-                    if el['elementType'] in ['button', 'input', 'textarea', 'link', 'image']:
-                        continue
-                    
-                    is_system = False
-                    for pattern in SYSTEM_PATTERNS:
-                        if pattern.lower() in el['text'].lower():
-                            is_system = True
-                            break
-                    
-                    if not is_system and el['length'] > 50:
-                        return el['text'], current_snapshot.elements
-            
-            if attempt % 10 == 0:
-                logger.info(f"⏳ Ожидание ответа... {attempt}/{max_wait}с")
-        
-        return None, None
-    
-    async def send_enter(self):
-        await self._send_cdp("Input.dispatchKeyEvent", {
-            "type": "keyDown",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-        })
-        await asyncio.sleep(0.05)
-        await self._send_cdp("Input.dispatchKeyEvent", {
-            "type": "keyUp",
-            "key": "Enter",
-            "code": "Enter",
-            "windowsVirtualKeyCode": 13,
-        })
-        return True
-    
-    async def ask_qwen(self, question):
-        """Задать вопрос и найти ответ через A11Y с отслеживанием новых элементов"""
-        try:
-            # ШАГ 1: Переход на сайт
-            logger.info("🚀 Переход на chat.qwen.ai...")
-            await self.navigate("https://chat.qwen.ai/")
-            await self.wait_for_load(5)
-            
-            # ШАГ 2: Установка кук
-            if COOKIES:
-                await self.set_cookies(COOKIES)
-                await self.wait_for_load(2)
-                await self.navigate("https://chat.qwen.ai/")
-                await self.wait_for_load(5)
-            
-            # ШАГ 3: Сохраняем снимок A11y ДО отправки
-            logger.info("📸 Сохраняю снимок A11Y ДО отправки...")
-            previous_snapshot = await self.get_snapshot()
-            logger.info(f"📦 Сохранено {len(previous_snapshot.elements)} элементов до отправки")
-            
-            # ШАГ 4: Ввод текста
-            logger.info(f"📌 Ввод текста: {question[:30]}...")
-            result = await self.set_text(TEXTAREA_SELECTOR, question)
-            
-            if not result or not result.get('success'):
-                return None, "Не удалось ввести текст"
-            
-            await self.wait_for_load(0.5)
-            
-            # ШАГ 5: Отправка
-            logger.info("📤 Отправка сообщения...")
-            
-            # Пробуем кнопку отправки
-            clicked = await self.click_element(SEND_BUTTON_SELECTOR)
-            
-            if not clicked:
-                logger.info("⌨️ Кнопка не нажалась, пробую Enter...")
-                await self.send_enter()
-            
-            await self.wait_for_load(2)
-            
-            # ШАГ 6: Поиск ответа через A11Y с отслеживанием новых элементов
-            logger.info("⏳ Ожидание ответа...")
-            response, new_elements = await self.find_response_in_a11y(
-                previous_snapshot=previous_snapshot,
-                max_wait=60
-            )
-            
-            if response:
-                return response, None
-            
-            return None, "Таймаут ожидания ответа (новых элементов не найдено)"
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка: {e}")
-            return None, str(e)
+        logger.warning("⚠️ Таймаут ожидания загрузки страницы")
 
 browser = BrowserHarness(CDP_URL)
+
+# ============================================================
+# SHADOW DOM ПАРСЕР
+# ============================================================
+
+def get_shadow_dom_parser_js():
+    """JavaScript для парсинга Shadow DOM"""
+    return """
+(function() {
+    function walkShadowDOM(node, arr, path) {
+        if (!node) return;
+        
+        // Проверяем, является ли элемент Shadow Host
+        if (node.shadowRoot) {
+            var shadowInfo = {
+                type: 'shadow_root',
+                host: node.tagName.toLowerCase(),
+                hostId: node.id || '',
+                hostClass: node.className || '',
+                mode: node.shadowRoot.mode,
+                children: []
+            };
+            
+            // Обрабатываем детей внутри Shadow DOM
+            var shadowChildren = node.shadowRoot.children;
+            for (var i = 0; i < shadowChildren.length; i++) {
+                var childData = walkShadowDOM(shadowChildren[i], null, path + ' > shadow');
+                if (childData) {
+                    shadowInfo.children.push(childData);
+                }
+            }
+            
+            // Добавляем shadow root в результаты
+            if (arr !== null) {
+                arr.push(shadowInfo);
+            }
+            return shadowInfo;
+        }
+        
+        // Обычный элемент
+        var data = {
+            tag: node.tagName.toLowerCase(),
+            id: node.id || '',
+            className: node.className || '',
+            text: (node.textContent || '').trim().slice(0, 200),
+            path: path,
+            children: []
+        };
+        
+        // Проверяем, есть ли у элемента свой shadow root
+        if (node.shadowRoot) {
+            var shadowInfo = walkShadowDOM(node, null, path + ' > ' + data.tag);
+            if (shadowInfo) {
+                data.shadowRoot = shadowInfo;
+            }
+        }
+        
+        // Обрабатываем обычных детей
+        var kids = node.children;
+        for (var i = 0; i < kids.length; i++) {
+            var childData = walkShadowDOM(kids[i], null, path + ' > ' + data.tag);
+            if (childData) {
+                data.children.push(childData);
+            }
+        }
+        
+        if (arr !== null) {
+            arr.push(data);
+        }
+        return data;
+    }
+    
+    var shadowElements = [];
+    walkShadowDOM(document.documentElement, shadowElements, 'root');
+    
+    return JSON.stringify({
+        page: {
+            url: window.location.href,
+            domain: window.location.hostname,
+            title: document.title || ''
+        },
+        shadowElements: shadowElements,
+        stats: {
+            totalShadowRoots: document.querySelectorAll('*').filter(el => el.shadowRoot).length
+        }
+    });
+})();
+"""
+
+# ============================================================
+# УЛУЧШЕННЫЙ DOM ПАРСЕР С SHADOW DOM И IFrame
+# ============================================================
+
+def get_enhanced_dom_parser_js():
+    """JavaScript для глубокого парсинга DOM с Shadow DOM"""
+    return """
+(function() {
+    function walkEnhanced(node, arr, depth) {
+        if (!node || node.nodeType !== 1 || depth > 30) return;
+        
+        var el = node;
+        var data = {
+            t: el.tagName.toLowerCase(),
+            id: el.id || '',
+            cl: (typeof el.className === 'string' ? el.className : ''),
+            tx: (el.textContent || '').trim().slice(0, 300),
+            v: el.value || '',
+            ph: el.getAttribute('placeholder') || '',
+            hr: el.getAttribute('href') || '',
+            sr: el.getAttribute('src') || '',
+            nm: el.getAttribute('name') || '',
+            tp: el.getAttribute('type') || '',
+            rl: el.getAttribute('role') || '',
+            ds: !!el.disabled,
+            vs: !!(el.offsetParent || el.getClientRects().length),
+            hasShadowRoot: !!el.shadowRoot,
+            shadowRootMode: el.shadowRoot ? el.shadowRoot.mode : null,
+            children: [],
+            shadowChildren: []
+        };
+        
+        // Обычные дети
+        var kids = el.children;
+        for (var i = 0; i < kids.length; i++) {
+            var childData = {};
+            walkEnhanced(kids[i], [childData], depth + 1);
+            if (Object.keys(childData).length) {
+                data.children.push(childData);
+            }
+        }
+        
+        // Shadow DOM дети
+        if (el.shadowRoot) {
+            var shadowKids = el.shadowRoot.children;
+            for (var i = 0; i < shadowKids.length; i++) {
+                var shadowData = {};
+                walkEnhanced(shadowKids[i], [shadowData], depth + 1);
+                if (Object.keys(shadowData).length) {
+                    data.shadowChildren.push(shadowData);
+                }
+            }
+        }
+        
+        // iframe
+        if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentDocument) {
+            var iframeData = {};
+            walkEnhanced(el.contentDocument.documentElement, [iframeData], depth + 1);
+            if (Object.keys(iframeData).length) {
+                data.iframeContent = iframeData;
+            }
+        }
+        
+        arr.push(data);
+    }
+    
+    var elements = [];
+    walkEnhanced(document.documentElement, elements, 0);
+    
+    // Статистика
+    var totalElements = 0;
+    var shadowRoots = 0;
+    
+    function countElements(data) {
+        if (!data) return;
+        totalElements++;
+        if (data.hasShadowRoot) shadowRoots++;
+        if (data.children) {
+            for (var child of data.children) countElements(child);
+        }
+        if (data.shadowChildren) {
+            for (var child of data.shadowChildren) countElements(child);
+        }
+    }
+    
+    for (var el of elements) countElements(el);
+    
+    return JSON.stringify({
+        page: {
+            url: window.location.href,
+            domain: window.location.hostname,
+            title: document.title || '',
+            desc: (document.querySelector('meta[name="description"]') || {}).content || ''
+        },
+        stats: {
+            total: totalElements,
+            shadowRoots: shadowRoots
+        },
+        elements: elements
+    });
+})();
+"""
+
+# ============================================================
+# HTTP ПЕРЕХВАТЧИК
+# ============================================================
+
+async def capture_http_requests(url, max_requests=50):
+    """Перехват HTTP запросов на странице"""
+    try:
+        # Включаем Network
+        await browser._send_cdp("Network.enable", {})
+        
+        # Создаем обработчики через evaluate
+        capture_js = """
+        (function() {
+            var requests = [];
+            var originalFetch = window.fetch;
+            
+            window.fetch = function(...args) {
+                var request = {
+                    url: args[0],
+                    method: args[1]?.method || 'GET',
+                    headers: args[1]?.headers || {},
+                    body: args[1]?.body || null,
+                    timestamp: Date.now()
+                };
+                requests.push(request);
+                
+                // Сохраняем в глобальную переменную для доступа извне
+                window.__captured_requests = requests;
+                
+                return originalFetch.apply(this, args);
+            };
+            
+            // Перехватываем XMLHttpRequest
+            var originalXHROpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url, ...args) {
+                this._url = url;
+                this._method = method;
+                return originalXHROpen.apply(this, [method, url, ...args]);
+            };
+            
+            var originalXHRSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function(body) {
+                var request = {
+                    url: this._url,
+                    method: this._method || 'GET',
+                    body: body,
+                    timestamp: Date.now()
+                };
+                window.__captured_requests = window.__captured_requests || [];
+                window.__captured_requests.push(request);
+                return originalXHRSend.apply(this, [body]);
+            };
+            
+            return 'Network capture enabled';
+        })();
+        """
+        
+        await browser.evaluate(capture_js)
+        
+        # Ждем немного для сбора запросов
+        await asyncio.sleep(3)
+        
+        # Получаем захваченные запросы
+        result = await browser.evaluate("return window.__captured_requests || []")
+        
+        return result[:max_requests] if result else []
+        
+    except Exception as e:
+        logger.error(f"Ошибка перехвата HTTP: {e}")
+        return []
+
+# ============================================================
+# ОСНОВНОЙ ПАРСЕР
+# ============================================================
+
+async def parse_dom_enhanced(url, capture_http=False):
+    """Улучшенный парсинг DOM с поддержкой Shadow DOM и HTTP"""
+    try:
+        if COOKIES:
+            await browser.set_cookies(COOKIES)
+        
+        await browser.navigate(url)
+        await browser.wait_for_load(30)
+        
+        # Парсим DOM с Shadow DOM
+        dom_js = get_enhanced_dom_parser_js()
+        dom_result = await browser.evaluate(dom_js)
+        
+        # Парсим Shadow DOM отдельно
+        shadow_js = get_shadow_dom_parser_js()
+        shadow_result = await browser.evaluate(shadow_js)
+        
+        # Перехватываем HTTP запросы
+        http_requests = []
+        if capture_http:
+            http_requests = await capture_http_requests(url)
+        
+        dom_data = json.loads(dom_result) if dom_result else None
+        shadow_data = json.loads(shadow_result) if shadow_result else None
+        
+        # Если DOM пустой, пробуем еще раз
+        if dom_data and dom_data.get('stats', {}).get('total', 0) == 0:
+            logger.warning("⚠️ DOM пустой, пробуем еще раз...")
+            await asyncio.sleep(5)
+            dom_result = await browser.evaluate(dom_js)
+            dom_data = json.loads(dom_result) if dom_result else None
+        
+        result = {
+            "dom": dom_data,
+            "shadowDom": shadow_data,
+            "httpRequests": http_requests,
+            "timestamp": time.time(),
+            "url": url
+        }
+        
+        return result, None
+        
+    except Exception as e:
+        logger.error(f"Ошибка парсинга: {e}")
+        return None, str(e)
 
 # ============================================================
 # КОМАНДЫ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: НЕ ЗАГРУЖЕНЫ!"
+    cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: не загружены"
     
     await update.message.reply_text(
-        f"🤖 **Qwen Bot v2 (A11Y + Diff)**\n\n"
+        f"🌐 **Enhanced DOM Parser Bot**\n\n"
         f"{cookies_status}\n\n"
-        f"✅ Отслеживает НОВЫЕ элементы в A11Y\n"
-        f"✅ Сравнивает снимки до и после отправки\n"
-        f"✅ Фильтрует системные сообщения\n\n"
-        f"📌 /debug — состояние\n"
-        f"📌 /a11y — показать A11Y дерево\n"
-        f"📌 /snapshot — показать снимок A11Y",
+        f"**Расширенные возможности:**\n"
+        f"• **Shadow DOM** парсинг 🌑\n"
+        f"• **HTTP запросы** перехват 📡\n"
+        f"• React Fiber / Props\n"
+        f"• Все атрибуты и стили\n"
+        f"• iframe и вложенные документы\n"
+        f"• **Accessibility Tree** ♿\n\n"
+        f"**Использование:**\n"
+        f"/dom <url> — парсинг DOM + Shadow DOM\n"
+        f"/dom <url> --http — парсинг + HTTP перехват\n"
+        f"/dom <url> --a11y — парсинг + Accessibility\n"
+        f"/dom <url> --all — все режимы\n"
+        f"/http <url> — только HTTP запросы\n"
+        f"/shadow <url> — только Shadow DOM\n"
+        f"/a11y <url> — только Accessibility Tree",
         parse_mode='Markdown'
     )
 
-async def a11y_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать Accessibility Tree"""
-    try:
-        elements = await browser.parse_a11y_tree()
-        
-        if not elements:
-            await update.message.reply_text("Нет элементов в A11Y дереве")
-            return
-        
-        msg = f"🌳 **Accessibility Tree ({len(elements)} элементов)**\n\n"
-        
-        for i, el in enumerate(elements[:15]):
-            msg += f"{i+1}. [{el['elementType']}] {el['text'][:80]}...\n"
-            msg += f"   Роль: {el['role']}\n"
-            msg += f"   Длина: {el['length']}\n\n"
-        
-        if len(elements) > 15:
-            msg += f"... и еще {len(elements) - 15} элементов"
-        
-        await update.message.reply_text(msg[:4000], parse_mode='Markdown')
-        
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-async def snapshot_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать снимок A11Y"""
-    try:
-        snapshot = await browser.get_snapshot()
-        
-        msg = f"📸 **Снимок A11Y ({len(snapshot.elements)} элементов)**\n\n"
-        
-        # Показываем топ-10 самых длинных текстов
-        sorted_elements = sorted(snapshot.elements, key=lambda x: x['length'], reverse=True)
-        
-        for i, el in enumerate(sorted_elements[:10]):
-            msg += f"{i+1}. {el['text'][:80]}...\n"
-            msg += f"   Тип: {el['elementType']}, Длина: {el['length']}\n\n"
-        
-        await update.message.reply_text(msg[:4000], parse_mode='Markdown')
-        
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        title = await browser.evaluate("document.title")
-        textarea_value = await browser.get_text_value(TEXTAREA_SELECTOR)
-        
-        # Получаем текущий снимок
-        snapshot = await browser.get_snapshot()
-        
-        # Ищем потенциальный ответ (самый длинный текст)
-        potential_answer = None
-        for el in sorted(snapshot.elements, key=lambda x: x['length'], reverse=True):
-            if el['length'] > 30 and el['elementType'] not in ['button', 'input', 'textarea']:
-                potential_answer = el['text']
-                break
-        
-        msg = f"🔍 **Отладка**\n\n"
-        msg += f"Заголовок: {title}\n"
-        msg += f"📝 Текст в поле: {textarea_value or 'пусто'}\n"
-        msg += f"🌳 A11Y элементов: {len(snapshot.elements)}\n"
-        msg += f"💬 Потенциальный ответ: {potential_answer[:200] if potential_answer else 'нет'}\n"
-        msg += f"🍪 Кук: {len(COOKIES)}\n"
-        msg += f"📸 Последний снимок: {snapshot.timestamp.strftime('%H:%M:%S')}\n"
-        
-        await update.message.reply_text(msg, parse_mode='Markdown')
-        
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    question = update.message.text
+async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("❌ Укажите URL\nПример: /dom https://example.com")
+        return
     
-    status_msg = await update.message.reply_text("🚀 Отправляю запрос...")
+    url = context.args[0].strip()
+    capture_http = '--http' in context.args or '--all' in context.args
+    include_a11y = '--a11y' in context.args or '--all' in context.args
+    
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    status_msg = await update.message.reply_text(f"🌐 Загружаю {url}...")
     
     try:
-        response, error = await browser.ask_qwen(question)
+        result, error = await parse_dom_enhanced(url, capture_http=capture_http)
         
         if error:
-            await status_msg.edit_text(f"❌ {error}")
+            await status_msg.edit_text(f"❌ Ошибка: {error}")
             return
         
-        if not response:
-            await status_msg.edit_text("❌ Нет ответа (возможно, Qwen еще думает)")
+        if not result or not result.get('dom'):
+            await status_msg.edit_text("❌ Не удалось получить данные")
             return
         
-        if len(response) > 4000:
-            response = response[:4000] + "..."
+        dom_data = result['dom']
+        shadow_data = result.get('shadowDom')
+        http_requests = result.get('httpRequests', [])
         
-        await status_msg.edit_text(f"💬 **Qwen:**\n\n{response}", parse_mode='Markdown')
+        # Проверка на пустой результат
+        if dom_data.get('stats', {}).get('total', 0) == 0:
+            await status_msg.edit_text(
+                "⚠️ Страница загружена, но DOM пуст.\n"
+                "Это SPA (React/Vue/Angular).\n"
+                "Попробуйте:\n"
+                "• /dom <url> --http для перехвата запросов\n"
+                "• /shadow <url> для Shadow DOM\n"
+                "• /a11y <url> для Accessibility"
+            )
+            return
+        
+        domain = dom_data['page']['domain'].replace('.', '_')
+        filename = f"enhanced_dom_{domain}.json"
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        
+        stats = dom_data.get('stats', {})
+        shadow_stats = shadow_data.get('stats', {}) if shadow_data else {}
+        
+        caption = (
+            f"📊 **DOM страницы**\n"
+            f"🔗 {dom_data['page']['url']}\n"
+            f"📝 {dom_data['page']['title'][:100]}\n"
+            f"📦 Всего элементов: {stats.get('total', 0)}\n"
+            f"🌑 Shadow DOM: {stats.get('shadowRoots', 0)}\n"
+            f"📡 HTTP запросов: {len(http_requests)}\n"
+        )
+        
+        if http_requests and capture_http:
+            caption += "\n**Последние HTTP запросы:**\n"
+            for req in http_requests[:5]:
+                method = req.get('method', 'GET')
+                req_url = req.get('url', '')[:60]
+                caption += f"• {method} {req_url}...\n"
+        
+        with open(filename, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=caption,
+                parse_mode='Markdown'
+            )
+        
+        await status_msg.delete()
+        os.remove(filename)
         
     except Exception as e:
+        logger.error(f"Ошибка команды /dom: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def shadow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для парсинга Shadow DOM"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите URL\nПример: /shadow https://example.com")
+        return
+    
+    url = context.args[0].strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    status_msg = await update.message.reply_text(f"🌑 Ищу Shadow DOM на {url}...")
+    
+    try:
+        if COOKIES:
+            await browser.set_cookies(COOKIES)
+        
+        await browser.navigate(url)
+        await browser.wait_for_load(30)
+        
+        shadow_js = get_shadow_dom_parser_js()
+        result = await browser.evaluate(shadow_js)
+        
+        if not result:
+            await status_msg.edit_text("❌ Не удалось получить Shadow DOM")
+            return
+        
+        shadow_data = json.loads(result)
+        
+        shadow_count = shadow_data.get('stats', {}).get('totalShadowRoots', 0)
+        
+        if shadow_count == 0:
+            await status_msg.edit_text("ℹ️ На странице не найдено Shadow DOM элементов")
+            return
+        
+        domain = shadow_data['page']['domain'].replace('.', '_')
+        filename = f"shadow_{domain}.json"
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(shadow_data, f, ensure_ascii=False, indent=2)
+        
+        caption = (
+            f"🌑 **Shadow DOM анализ**\n"
+            f"🔗 {shadow_data['page']['url']}\n"
+            f"📦 Найдено Shadow DOM: {shadow_count}\n"
+        )
+        
+        with open(filename, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=caption,
+                parse_mode='Markdown'
+            )
+        
+        await status_msg.delete()
+        os.remove(filename)
+        
+    except Exception as e:
+        logger.error(f"Ошибка /shadow: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def http_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для перехвата HTTP запросов"""
+    if not context.args:
+        await update.message.reply_text("❌ Укажите URL\nПример: /http https://example.com")
+        return
+    
+    url = context.args[0].strip()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    status_msg = await update.message.reply_text(f"📡 Перехватываю HTTP запросы на {url}...")
+    
+    try:
+        if COOKIES:
+            await browser.set_cookies(COOKIES)
+        
+        await browser.navigate(url)
+        await browser.wait_for_load(10)
+        
+        # Включаем перехват
+        http_requests = await capture_http_requests(url, max_requests=100)
+        
+        if not http_requests:
+            await status_msg.edit_text("ℹ️ Не удалось перехватить HTTP запросы")
+            return
+        
+        domain = url.replace('https://', '').replace('http://', '').split('/')[0].replace('.', '_')
+        filename = f"http_{domain}.json"
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(http_requests, f, ensure_ascii=False, indent=2)
+        
+        caption = (
+            f"📡 **HTTP запросы**\n"
+            f"🔗 {url}\n"
+            f"📦 Всего запросов: {len(http_requests)}\n\n"
+            f"**Примеры запросов:**\n"
+        )
+        
+        for req in http_requests[:10]:
+            method = req.get('method', 'GET')
+            req_url = req.get('url', '')[:60]
+            caption += f"• {method} {req_url}...\n"
+        
+        with open(filename, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption=caption,
+                parse_mode='Markdown'
+            )
+        
+        await status_msg.delete()
+        os.remove(filename)
+        
+    except Exception as e:
+        logger.error(f"Ошибка /http: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("debug", debug_command))
-    app.add_handler(CommandHandler("a11y", a11y_command))
-    app.add_handler(CommandHandler("snapshot", snapshot_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("dom", dom_command))
+    app.add_handler(CommandHandler("shadow", shadow_command))
+    app.add_handler(CommandHandler("http", http_command))
     
-    logger.info("🚀 Qwen Bot v2 запущен!")
+    logger.info("🚀 Бот запущен с поддержкой Shadow DOM и HTTP перехвата!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
