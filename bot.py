@@ -4,9 +4,9 @@ import json
 import asyncio
 import logging
 import uuid
-import requests
+import httpx
 from datetime import datetime
-from typing import Optional, Dict, List, Generator
+from typing import Optional, Dict, List, Generator, AsyncGenerator
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
@@ -27,18 +27,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# QWEN АВТОМАТИЗАЦИЯ
+# QWEN КЛИЕНТ (на httpx)
 # ============================================================
 
 class QwenClient:
-    """Клиент для работы с Qwen API"""
+    """Клиент для работы с Qwen API на httpx"""
     
     def __init__(self, token: Optional[str] = None):
         self.base_url = "https://chat.qwen.ai/api/v2"
-        self.session = requests.Session()
+        self.client = httpx.Client(timeout=60.0)
         
         # Заголовки из перехваченных запросов
-        self.session.headers.update({
+        self.headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/150.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "ru-RU,ru;q=0.9",
@@ -49,33 +49,40 @@ class QwenClient:
             "Content-Type": "application/json",
             "X-Request-Id": str(uuid.uuid4()),
             "Timezone": datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0000")
-        })
+        }
         
         if token:
-            self.session.headers["Authorization"] = f"Bearer {token}"
+            self.headers["Authorization"] = f"Bearer {token}"
         
         self._load_cookies()
     
     def _load_cookies(self):
+        """Загружаем куки из файла"""
         try:
             with open("qwen_cookies.json", "r") as f:
                 cookies = json.load(f)
-                for name, value in cookies.items():
-                    self.session.cookies.set(name, value)
+                self.client.cookies.update(cookies)
         except FileNotFoundError:
             pass
     
     def _save_cookies(self):
-        cookies = {name: value for name, value in self.session.cookies.items()}
+        """Сохраняем куки в файл"""
+        cookies = dict(self.client.cookies)
         with open("qwen_cookies.json", "w") as f:
             json.dump(cookies, f)
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
+        """Универсальный метод для запросов"""
         url = f"{self.base_url}{endpoint}"
-        self.session.headers["X-Request-Id"] = str(uuid.uuid4())
+        self.headers["X-Request-Id"] = str(uuid.uuid4())
         
         try:
-            response = self.session.request(method, url, **kwargs)
+            response = self.client.request(
+                method, 
+                url, 
+                headers=self.headers,
+                **kwargs
+            )
             
             if response.status_code == 429:
                 time.sleep(5)
@@ -88,7 +95,7 @@ class QwenClient:
             self._save_cookies()
             return response.json()
             
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             raise Exception(f"Ошибка запроса: {e}")
     
     def chat(self, prompt: str, stream: bool = False, **kwargs) -> Dict:
@@ -103,7 +110,7 @@ class QwenClient:
         return self._request("POST", "/chat/completions", json=payload)
     
     def chat_stream(self, prompt: str, **kwargs) -> Generator:
-        """Потоковый чат"""
+        """Потоковый чат (синхронный генератор)"""
         payload = {
             "model": "qwen-turbo",
             "messages": [{"role": "user", "content": prompt}],
@@ -113,15 +120,45 @@ class QwenClient:
         }
         
         url = f"{self.base_url}/chat/completions"
-        self.session.headers["X-Request-Id"] = str(uuid.uuid4())
+        self.headers["X-Request-Id"] = str(uuid.uuid4())
         
-        with self.session.post(url, json=payload, stream=True, timeout=60) as response:
+        with self.client.stream("POST", url, headers=self.headers, json=payload) as response:
             response.raise_for_status()
             
             for line in response.iter_lines():
                 if line:
                     line = line.decode('utf-8')
                     if line.startswith('data: '):
+                        data = line[6:]
+                        if data != '[DONE]':
+                            try:
+                                chunk = json.loads(data)
+                                if 'choices' in chunk and chunk['choices']:
+                                    content = chunk['choices'][0].get('delta', {}).get('content', '')
+                                    if content:
+                                        yield content
+                            except json.JSONDecodeError:
+                                continue
+    
+    async def chat_stream_async(self, prompt: str, **kwargs) -> AsyncGenerator:
+        """Асинхронный потоковый чат"""
+        payload = {
+            "model": "qwen-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens", 2000)
+        }
+        
+        url = f"{self.base_url}/chat/completions"
+        self.headers["X-Request-Id"] = str(uuid.uuid4())
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("POST", url, headers=self.headers, json=payload) as response:
+                response.raise_for_status()
+                
+                async for line in response.aiter_lines():
+                    if line and line.startswith('data: '):
                         data = line[6:]
                         if data != '[DONE]':
                             try:
@@ -155,6 +192,10 @@ class QwenClient:
     def delete_chat(self, chat_id: str) -> Dict:
         """Удаление чата"""
         return self._request("DELETE", f"/chats/{chat_id}")
+    
+    def close(self):
+        """Закрываем клиент"""
+        self.client.close()
 
 # ============================================================
 # СОСТОЯНИЯ ДЛЯ ДИАЛОГОВ
@@ -211,6 +252,7 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await update.message.reply_text("🤔 Думаю...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         response = client.chat(prompt)
@@ -236,6 +278,9 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка /qwen: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /qwen_stream - потоковый ответ"""
@@ -246,12 +291,20 @@ async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     prompt = " ".join(context.args)
     status_msg = await update.message.reply_text("📡 Получаю поток...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         full_response = ""
         
+        # Используем синхронный генератор в асинхронной функции
         for chunk in client.chat_stream(prompt):
             full_response += chunk
+            # Обновляем каждые 100 символов
+            if len(full_response) % 100 < 20:
+                await status_msg.edit_text(
+                    f"📡 **Генерация:**\n{full_response[:500]}...",
+                    parse_mode='Markdown'
+                )
         
         await status_msg.edit_text(
             f"💬 **Вопрос:** {prompt}\n\n"
@@ -262,11 +315,15 @@ async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Ошибка /qwen_stream: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /history - показать историю"""
     status_msg = await update.message.reply_text("📚 Загружаю историю...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         history = client.get_chats(page=1)
@@ -288,6 +345,9 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка /history: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /messages <chat_id> - показать сообщения чата"""
@@ -298,6 +358,7 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.args[0]
     status_msg = await update.message.reply_text("📨 Загружаю сообщения...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         messages = client.get_chat_messages(chat_id)
@@ -319,11 +380,15 @@ async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка /messages: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /folders - показать папки"""
     status_msg = await update.message.reply_text("📁 Загружаю папки...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         folders = client.get_folders()
@@ -343,11 +408,15 @@ async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка /folders: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /notifications - показать уведомления"""
     status_msg = await update.message.reply_text("🔔 Загружаю уведомления...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         notifications = client.get_notifications()
@@ -360,6 +429,9 @@ async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Ошибка /notifications: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /clear - очистить историю"""
@@ -378,6 +450,7 @@ async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = context.args[0]
     status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{chat_id}`...")
     
+    client = None
     try:
         client = QwenClient(QWEN_TOKEN)
         result = client.delete_chat(chat_id)
@@ -386,6 +459,9 @@ async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Ошибка /delete: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
+    finally:
+        if client:
+            client.close()
 
 # ============================================================
 # ОБРАБОТЧИКИ КНОПОК
