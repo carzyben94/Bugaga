@@ -204,35 +204,62 @@ class QwenClient:
     def _create_chat(self) -> Optional[str]:
         """Создаёт новый чат и возвращает его ID"""
         try:
-            # Пробуем создать чат через API чатов
-            payload = {
-                "title": "Новый чат"
-            }
-            result = self._request("POST", "/chats/", json=payload)
+            # Пробуем разные варианты создания чата
+            logger.info("🔧 Пытаемся создать новый чат...")
             
-            if 'data' in result and 'id' in result['data']:
-                chat_id = result['data']['id']
-                logger.info(f"✅ Создан новый чат: {chat_id}")
-                return chat_id
-            
-            # Если не получилось, пробуем получить список чатов и взять последний
-            chats = self.get_chats()
-            if 'data' in chats:
-                data = chats['data']
-                if isinstance(data, list) and data:
-                    chat_id = data[0].get('id')
-                    if chat_id:
-                        logger.info(f"📋 Используем существующий чат: {chat_id}")
+            # Вариант 1: POST /chats/
+            try:
+                payload = {"title": "Новый чат"}
+                result = self._request("POST", "/chats/", json=payload)
+                logger.info(f"Ответ на создание чата: {json.dumps(result, ensure_ascii=False)[:500]}")
+                
+                if 'data' in result:
+                    if isinstance(result['data'], dict) and 'id' in result['data']:
+                        chat_id = result['data']['id']
+                        logger.info(f"✅ Чат создан (вариант 1): {chat_id}")
                         return chat_id
-                elif isinstance(data, dict):
-                    for key in ['items', 'chats', 'list']:
-                        if key in data and isinstance(data[key], list) and data[key]:
-                            chat_id = data[key][0].get('id')
-                            if chat_id:
-                                logger.info(f"📋 Используем существующий чат: {chat_id}")
-                                return chat_id
+                    elif isinstance(result['data'], str):
+                        logger.info(f"✅ Чат создан (вариант 1, строка): {result['data']}")
+                        return result['data']
+            except Exception as e:
+                logger.warning(f"Вариант 1 не сработал: {e}")
             
-            logger.error("❌ Не удалось создать или найти чат")
+            # Вариант 2: GET /chats/ и берём первый
+            try:
+                chats = self.get_chats()
+                logger.info(f"Список чатов: {json.dumps(chats, ensure_ascii=False)[:500]}")
+                
+                if 'data' in chats:
+                    data = chats['data']
+                    if isinstance(data, list) and data:
+                        chat_id = data[0].get('id')
+                        if chat_id:
+                            logger.info(f"✅ Используем существующий чат: {chat_id}")
+                            return chat_id
+            except Exception as e:
+                logger.warning(f"Вариант 2 не сработал: {e}")
+            
+            # Вариант 3: Отправляем запрос к /chat/completions без chat_id
+            try:
+                logger.info("Пробуем отправить запрос без chat_id...")
+                payload = {
+                    "model": "qwen-turbo",
+                    "query": "тест",
+                    "stream": False,
+                    "temperature": 0.7,
+                    "max_tokens": 10
+                }
+                result = self._request("POST", "/chat/completions", json=payload)
+                logger.info(f"Ответ без chat_id: {json.dumps(result, ensure_ascii=False)[:500]}")
+                
+                if 'chat_id' in result:
+                    return result['chat_id']
+                if 'data' in result and isinstance(result['data'], dict) and 'chat_id' in result['data']:
+                    return result['data']['chat_id']
+            except Exception as e:
+                logger.warning(f"Вариант 3 не сработал: {e}")
+            
+            logger.error("❌ Все варианты создания чата не сработали")
             return None
             
         except Exception as e:
@@ -243,9 +270,11 @@ class QwenClient:
         """Отправка запроса к модели"""
         # Если нет chat_id, создаём новый чат
         if not chat_id:
+            logger.info("📝 chat_id отсутствует, создаём новый чат...")
             chat_id = self._create_chat()
             if not chat_id:
-                raise Exception("Не удалось создать чат")
+                raise Exception("Не удалось создать чат. Попробуйте позже.")
+            logger.info(f"📝 Используем chat_id: {chat_id}")
         
         payload = {
             "chat_id": chat_id,
@@ -255,6 +284,8 @@ class QwenClient:
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 2000)
         }
+        
+        logger.info(f"📤 Отправляем запрос с payload: {json.dumps(payload, ensure_ascii=False)[:200]}")
         
         result = self._request("POST", "/chat/completions", json=payload)
         
@@ -267,9 +298,11 @@ class QwenClient:
         """Потоковый чат (синхронный генератор)"""
         # Если нет chat_id, создаём новый чат
         if not chat_id:
+            logger.info("📝 chat_id отсутствует, создаём новый чат...")
             chat_id = self._create_chat()
             if not chat_id:
-                raise Exception("Не удалось создать чат")
+                raise Exception("Не удалось создать чат. Попробуйте позже.")
+            logger.info(f"📝 Используем chat_id: {chat_id}")
         
         payload = {
             "chat_id": chat_id,
@@ -391,6 +424,7 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = QwenClient(QWEN_TOKEN)
         
         chat_id = user_sessions[user_id].get("chat_id")
+        logger.info(f"📋 chat_id из сессии: {chat_id}")
         
         # Если нет chat_id, он создастся автоматически в client.chat()
         response = client.chat(prompt, chat_id=chat_id)
@@ -398,6 +432,7 @@ async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем chat_id для следующих сообщений
         if client.current_chat_id:
             user_sessions[user_id]["chat_id"] = client.current_chat_id
+            logger.info(f"💾 Сохранили chat_id: {client.current_chat_id}")
         
         if 'choices' in response:
             answer = response['choices'][0]['message']['content']
