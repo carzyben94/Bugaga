@@ -1,5 +1,4 @@
-# bot.py (исправленная версия с CDP перехватом)
-
+# bot.py
 import os
 import json
 import asyncio
@@ -47,7 +46,7 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден, куки не будут установлены")
 
 # ============================================================
-# BROWSER HARNESS С CDP ПЕРЕХВАТОМ
+# BROWSER HARNESS С ПЕРЕХВАТОМ HTTP
 # ============================================================
 
 class BrowserHarness:
@@ -56,7 +55,9 @@ class BrowserHarness:
         self.ws_url = None
         self._ws = None
         self._message_id = 0
-        self._pending_requests = {}
+        self._requests = []
+        self._responses = []
+        self._capturing = False
         
     def _get_ws_url(self):
         try:
@@ -92,7 +93,6 @@ class BrowserHarness:
         }
         await ws.send(json.dumps(message))
         
-        # Ждем ответ
         while True:
             response = await ws.recv()
             data = json.loads(response)
@@ -100,47 +100,64 @@ class BrowserHarness:
                 return data
     
     async def enable_network(self):
-        """Включаем Network домен для перехвата запросов"""
-        # Включаем Network
+        """Включаем Network домен"""
         await self._send_cdp("Network.enable", {})
-        
-        # Подписываемся на события
-        await self._send_cdp("Network.setRequestInterception", {
-            "patterns": [{"urlPattern": "*"}]
-        })
-        
-    async def get_network_requests(self, url_filter=None, timeout=10):
-        """Получаем все сетевые запросы через CDP"""
-        requests = []
-        responses = []
+        self._capturing = True
+        logger.info("📡 Network capturing enabled")
+    
+    async def disable_network(self):
+        """Отключаем Network домен"""
+        await self._send_cdp("Network.disable", {})
+        self._capturing = False
+        logger.info("📡 Network capturing disabled")
+    
+    async def clear_network_logs(self):
+        """Очищаем логи"""
+        self._requests = []
+        self._responses = []
+    
+    async def get_network_logs(self):
+        """Получаем собранные логи"""
+        return {
+            "requests": self._requests,
+            "responses": self._responses,
+            "total": len(self._requests)
+        }
+    
+    async def listen_network(self, timeout=15, filter_url=None):
+        """Слушаем сетевые события"""
+        self._requests = []
+        self._responses = []
         
         # Включаем Network
         await self.enable_network()
         
-        # Начинаем перехват
+        ws = await self._connect()
         start_time = time.time()
         
-        ws = await self._connect()
-        
-        # Собираем запросы
         while time.time() - start_time < timeout:
             try:
                 response = await asyncio.wait_for(ws.recv(), timeout=1)
                 data = json.loads(response)
                 
-                # Обрабатываем события
                 if "method" in data:
                     method = data["method"]
                     params = data.get("params", {})
                     
+                    # Перехват запросов
                     if method == "Network.requestWillBeSent":
                         request = params.get("request", {})
                         url = request.get("url", "")
                         
-                        if url_filter and url_filter not in url:
+                        # Фильтрация по URL
+                        if filter_url and filter_url not in url:
                             continue
-                            
-                        requests.append({
+                        
+                        # Пропускаем статику
+                        if any(ext in url for ext in ['.css', '.js', '.png', '.jpg', '.svg', '.woff', '.ttf']):
+                            continue
+                        
+                        self._requests.append({
                             "url": url,
                             "method": request.get("method", "GET"),
                             "headers": request.get("headers", {}),
@@ -148,14 +165,20 @@ class BrowserHarness:
                             "timestamp": time.time()
                         })
                         
+                        logger.info(f"📤 {request.get('method', 'GET')} {url[:100]}")
+                    
+                    # Перехват ответов
                     elif method == "Network.responseReceived":
                         response_data = params.get("response", {})
                         url = response_data.get("url", "")
                         
-                        if url_filter and url_filter not in url:
+                        if filter_url and filter_url not in url:
                             continue
-                            
-                        responses.append({
+                        
+                        if any(ext in url for ext in ['.css', '.js', '.png', '.jpg', '.svg', '.woff', '.ttf']):
+                            continue
+                        
+                        self._responses.append({
                             "url": url,
                             "status": response_data.get("status", 0),
                             "statusText": response_data.get("statusText", ""),
@@ -164,17 +187,16 @@ class BrowserHarness:
                             "timestamp": time.time()
                         })
                         
+                        logger.info(f"📥 {response_data.get('status', 0)} {url[:100]}")
+                        
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
                 logger.error(f"Ошибка чтения: {e}")
                 break
         
-        return {
-            "requests": requests,
-            "responses": responses,
-            "total": len(requests)
-        }
+        await self.disable_network()
+        return self._requests, self._responses
     
     async def set_cookies(self, cookies):
         if not cookies:
@@ -203,24 +225,9 @@ class BrowserHarness:
             try:
                 body_check = await self.evaluate("document.body ? document.body.children.length : 0")
                 if body_check and body_check > 0:
-                    await asyncio.sleep(3)
-                    visible_check = await self.evaluate("""
-                        (function() {
-                            var els = document.querySelectorAll('*');
-                            var count = 0;
-                            for (var el of els) {
-                                var rect = el.getBoundingClientRect();
-                                if (rect.width > 0 && rect.height > 0 && el.textContent.trim()) {
-                                    count++;
-                                    if (count > 10) break;
-                                }
-                            }
-                            return count;
-                        })();
-                    """)
-                    if visible_check and visible_check > 5:
-                        logger.info(f"✅ Страница загружена")
-                        return
+                    await asyncio.sleep(2)
+                    logger.info("✅ Страница загружена")
+                    return
             except:
                 pass
             await asyncio.sleep(1)
@@ -234,131 +241,176 @@ class BrowserHarness:
 browser = BrowserHarness(CDP_URL)
 
 # ============================================================
-# HTTP ПЕРЕХВАТ ЧЕРЕЗ CDP
+# ФУНКЦИИ ПАРСИНГА
 # ============================================================
 
-async def capture_http_cdp(url, filter_url=None, timeout=15):
-    """Перехват HTTP запросов через CDP"""
+async def parse_with_http_capture(url, filter_url=None, timeout=15):
+    """Парсинг с перехватом HTTP запросов"""
     try:
-        # Открываем страницу
+        if COOKIES:
+            await browser.set_cookies(COOKIES)
+        
         await browser.navigate(url)
         await browser.wait_for_load(5)
         
-        # Включаем перехват
-        network_data = await browser.get_network_requests(
-            url_filter=filter_url,
-            timeout=timeout
+        # Запускаем перехват
+        requests, responses = await browser.listen_network(
+            timeout=timeout,
+            filter_url=filter_url
         )
         
-        return network_data
+        return {
+            "url": url,
+            "requests": requests,
+            "responses": responses,
+            "total_requests": len(requests),
+            "total_responses": len(responses),
+            "timestamp": time.time()
+        }
         
     except Exception as e:
-        logger.error(f"Ошибка перехвата HTTP: {e}")
-        return {"requests": [], "responses": [], "total": 0}
+        logger.error(f"Ошибка парсинга: {e}")
+        return {"error": str(e)}
 
 # ============================================================
-# КОМАНДЫ
+# КОМАНДЫ БОТА
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cookies_status = f"🍪 Куки: {len(COOKIES)} шт." if COOKIES else "🍪 Куки: не загружены"
     
     await update.message.reply_text(
-        f"🌐 **Enhanced DOM Parser Bot**\n\n"
+        f"🌐 **HTTP Capture Bot**\n\n"
         f"{cookies_status}\n\n"
-        f"**Расширенные возможности:**\n"
-        f"• **HTTP запросы** перехват через CDP 📡\n"
-        f"• **Shadow DOM** парсинг 🌑\n"
-        f"• React Fiber / Props\n"
-        f"• Все атрибуты и стили\n"
-        f"• iframe и вложенные документы\n\n"
-        f"**Использование:**\n"
-        f"/dom <url> — парсинг DOM\n"
-        f"/http <url> — HTTP запросы (CDP)\n"
-        f"/http <url> filter:api — фильтр по URL\n"
-        f"/shadow <url> — Shadow DOM\n"
-        f"/a11y <url> — Accessibility",
+        f"**Возможности:**\n"
+        f"• 📡 Перехват HTTP запросов через CDP\n"
+        f"• 🔍 Фильтрация по URL\n"
+        f"• 📊 Показ API эндпоинтов\n\n"
+        f"**Команды:**\n"
+        f"/http <url> — перехват всех запросов\n"
+        f"/http <url> filter:api — только API запросы\n"
+        f"/http <url> filter:/api/ — только /api/ запросы\n"
+        f"/http <url> timeout:30 — увеличить время сбора\n\n"
+        f"**Пример:**\n"
+        f"/http https://chat.qwen.ai filter:/api/",
         parse_mode='Markdown'
     )
 
 async def http_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для перехвата HTTP запросов через CDP"""
+    """Команда для перехвата HTTP запросов"""
     if not context.args:
         await update.message.reply_text(
             "❌ Укажите URL\n"
-            "Пример: /http https://chat.qwen.ai\n"
-            "Фильтр: /http https://chat.qwen.ai filter:api"
+            "Пример: /http https://chat.qwen.ai filter:api"
         )
         return
     
     url = context.args[0].strip()
     filter_url = None
+    timeout = 15
     
-    # Проверяем фильтр
+    # Парсим аргументы
     for arg in context.args[1:]:
         if arg.startswith('filter:'):
             filter_url = arg.split('filter:')[1]
+        elif arg.startswith('timeout:'):
+            try:
+                timeout = int(arg.split('timeout:')[1])
+            except:
+                pass
     
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
     
-    status_msg = await update.message.reply_text(f"📡 Перехватываю HTTP запросы на {url}...")
+    status_msg = await update.message.reply_text(
+        f"📡 Перехватываю запросы на {url}...\n"
+        f"⏱️ Таймаут: {timeout}с\n"
+        f"{f'🔍 Фильтр: {filter_url}' if filter_url else ''}"
+    )
     
     try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
+        # Запускаем перехват
+        result = await parse_with_http_capture(
+            url=url,
+            filter_url=filter_url,
+            timeout=timeout
+        )
         
-        # Перехватываем запросы
-        network_data = await capture_http_cdp(url, filter_url=filter_url, timeout=20)
+        if "error" in result:
+            await status_msg.edit_text(f"❌ Ошибка: {result['error']}")
+            return
         
-        requests = network_data.get('requests', [])
-        responses = network_data.get('responses', [])
+        requests = result.get('requests', [])
         
         if not requests:
             await status_msg.edit_text(
-                f"ℹ️ Не найдено HTTP запросов\n\n"
+                f"ℹ️ Не найдено запросов\n\n"
                 f"Причины:\n"
-                f"• Сайт использует WebSocket (не HTTP)\n"
-                f"• Запросы уходят до перехвата\n"
+                f"• Сайт использует WebSocket\n"
+                f"• Запросы не прошли фильтр\n"
                 f"• Требуется авторизация\n\n"
                 f"Попробуйте:\n"
-                f"• /http {url} filter:api\n"
-                f"• Открыть сайт в браузере с DevTools"
+                f"• /http {url} без фильтра\n"
+                f"• /http {url} timeout:30"
             )
             return
         
+        # Сохраняем результат
         domain = url.replace('https://', '').replace('http://', '').split('/')[0].replace('.', '_')
         filename = f"http_{domain}.json"
         
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(network_data, f, ensure_ascii=False, indent=2)
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        
+        # Группируем по типу
+        api_requests = [r for r in requests if '/api/' in r.get('url', '')]
+        js_requests = [r for r in requests if '.js' in r.get('url', '')]
+        other_requests = [r for r in requests if r not in api_requests and r not in js_requests]
+        
+        # Находим уникальные эндпоинты
+        unique_endpoints = set()
+        for req in requests:
+            url_path = req.get('url', '')
+            # Обрезаем параметры
+            if '?' in url_path:
+                url_path = url_path.split('?')[0]
+            unique_endpoints.add(url_path)
         
         # Формируем отчет
         caption = (
-            f"📡 **HTTP запросы (CDP)**\n"
-            f"🔗 {url}\n"
-            f"📦 Всего запросов: {len(requests)}\n"
-            f"📨 Ответов: {len(responses)}\n\n"
+            f"📡 **HTTP Перехват**\n"
+            f"🔗 {url}\n\n"
+            f"📊 **Статистика:**\n"
+            f"• Всего запросов: {len(requests)}\n"
+            f"• API запросов (/api/): {len(api_requests)}\n"
+            f"• JS файлов: {len(js_requests)}\n"
+            f"• Уникальных эндпоинтов: {len(unique_endpoints)}\n\n"
         )
         
         if filter_url:
-            caption += f"🔍 Фильтр: {filter_url}\n\n"
+            caption += f"🔍 Фильтр: `{filter_url}`\n\n"
         
-        # Показываем уникальные URL
-        unique_urls = set()
-        for req in requests[:20]:
-            req_url = req.get('url', '')
-            if req_url:
-                # Обрезаем длинные URL
-                if len(req_url) > 80:
-                    req_url = req_url[:80] + '...'
-                unique_urls.add(req_url)
+        # Показываем API эндпоинты
+        if api_requests:
+            caption += "**🔗 Найденные API эндпоинты:**\n"
+            endpoints = sorted(set([
+                r.get('url', '').split('?')[0] for r in api_requests
+            ]))
+            for endpoint in endpoints[:10]:
+                method = next((r.get('method', 'GET') for r in api_requests if r.get('url', '').startswith(endpoint)), 'GET')
+                caption += f"• `{method}` {endpoint}\n"
+            if len(endpoints) > 10:
+                caption += f"• ... и еще {len(endpoints) - 10}\n"
         
-        if unique_urls:
-            caption += "**Найденные запросы:**\n"
-            for req_url in list(unique_urls)[:10]:
-                caption += f"• {req_url}\n"
+        # Если нет API, показываем другие запросы
+        elif requests:
+            caption += "**📄 Другие запросы:**\n"
+            for req in requests[:5]:
+                method = req.get('method', 'GET')
+                url_short = req.get('url', '')[:60]
+                caption += f"• `{method}` {url_short}...\n"
         
+        # Отправляем файл
         with open(filename, 'rb') as f:
             await update.message.reply_document(
                 document=f,
@@ -376,202 +428,6 @@ async def http_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         await browser.close()
 
-async def shadow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для парсинга Shadow DOM"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажите URL\nПример: /shadow https://example.com")
-        return
-    
-    url = context.args[0].strip()
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    status_msg = await update.message.reply_text(f"🌑 Ищу Shadow DOM на {url}...")
-    
-    try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
-        
-        await browser.navigate(url)
-        await browser.wait_for_load(10)
-        
-        # JS для поиска Shadow DOM
-        shadow_js = """
-        (function() {
-            function findShadowRoots(node, path) {
-                var results = [];
-                if (!node) return results;
-                
-                if (node.shadowRoot) {
-                    results.push({
-                        host: node.tagName.toLowerCase(),
-                        id: node.id || '',
-                        className: node.className || '',
-                        mode: node.shadowRoot.mode,
-                        path: path,
-                        children: node.shadowRoot.children.length
-                    });
-                }
-                
-                var kids = node.children;
-                for (var i = 0; i < kids.length; i++) {
-                    var childResults = findShadowRoots(kids[i], path + ' > ' + node.tagName.toLowerCase());
-                    results = results.concat(childResults);
-                }
-                
-                return results;
-            }
-            
-            var shadowRoots = findShadowRoots(document.documentElement, 'root');
-            
-            return JSON.stringify({
-                url: window.location.href,
-                domain: window.location.hostname,
-                title: document.title || '',
-                shadowRoots: shadowRoots,
-                total: shadowRoots.length
-            });
-        })();
-        """
-        
-        result = await browser.evaluate(shadow_js)
-        
-        if not result:
-            await status_msg.edit_text("❌ Не удалось получить Shadow DOM")
-            return
-        
-        shadow_data = json.loads(result)
-        
-        if shadow_data.get('total', 0) == 0:
-            await status_msg.edit_text("ℹ️ На странице не найдено Shadow DOM элементов")
-            return
-        
-        domain = shadow_data['domain'].replace('.', '_')
-        filename = f"shadow_{domain}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(shadow_data, f, ensure_ascii=False, indent=2)
-        
-        caption = (
-            f"🌑 **Shadow DOM анализ**\n"
-            f"🔗 {shadow_data['url']}\n"
-            f"📦 Найдено Shadow DOM: {shadow_data['total']}\n\n"
-        )
-        
-        for sr in shadow_data['shadowRoots'][:5]:
-            caption += f"• <{sr['host']}> mode: {sr['mode']}, детей: {sr['children']}\n"
-        
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=caption,
-                parse_mode='Markdown'
-            )
-        
-        await status_msg.delete()
-        os.remove(filename)
-        
-    except Exception as e:
-        logger.error(f"Ошибка /shadow: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-    finally:
-        await browser.close()
-
-async def dom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Базовая команда DOM парсинга"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажите URL\nПример: /dom https://example.com")
-        return
-    
-    url = context.args[0].strip()
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    status_msg = await update.message.reply_text(f"🌐 Загружаю {url}...")
-    
-    try:
-        if COOKIES:
-            await browser.set_cookies(COOKIES)
-        
-        await browser.navigate(url)
-        await browser.wait_for_load(10)
-        
-        # Простой DOM парсинг
-        dom_js = """
-        (function() {
-            var stats = {
-                total: document.querySelectorAll('*').length,
-                tags: {}
-            };
-            
-            document.querySelectorAll('*').forEach(function(el) {
-                var tag = el.tagName.toLowerCase();
-                stats.tags[tag] = (stats.tags[tag] || 0) + 1;
-            });
-            
-            return JSON.stringify({
-                url: window.location.href,
-                domain: window.location.hostname,
-                title: document.title || '',
-                stats: stats
-            });
-        })();
-        """
-        
-        result = await browser.evaluate(dom_js)
-        
-        if not result:
-            await status_msg.edit_text("❌ Не удалось получить данные")
-            return
-        
-        dom_data = json.loads(result)
-        
-        if dom_data['stats']['total'] == 0:
-            await status_msg.edit_text(
-                "⚠️ DOM пуст. Это SPA.\n"
-                "Попробуйте:\n"
-                "• /http <url> для перехвата запросов\n"
-                "• /shadow <url> для Shadow DOM"
-            )
-            return
-        
-        domain = dom_data['domain'].replace('.', '_')
-        filename = f"dom_{domain}.json"
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(dom_data, f, ensure_ascii=False, indent=2)
-        
-        caption = (
-            f"📊 **DOM страницы**\n"
-            f"🔗 {dom_data['url']}\n"
-            f"📝 {dom_data['title'][:100]}\n"
-            f"📦 Всего элементов: {dom_data['stats']['total']}\n\n"
-        )
-        
-        # Топ тегов
-        top_tags = sorted(dom_data['stats']['tags'].items(), key=lambda x: x[1], reverse=True)[:10]
-        caption += "**Топ тегов:**\n"
-        for tag, count in top_tags:
-            caption += f"• <{tag}>: {count}\n"
-        
-        with open(filename, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename=filename,
-                caption=caption,
-                parse_mode='Markdown'
-            )
-        
-        await status_msg.delete()
-        os.remove(filename)
-        
-    except Exception as e:
-        logger.error(f"Ошибка /dom: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-    finally:
-        await browser.close()
-
 # ============================================================
 # ЗАПУСК
 # ============================================================
@@ -580,11 +436,12 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("dom", dom_command))
     app.add_handler(CommandHandler("http", http_command))
-    app.add_handler(CommandHandler("shadow", shadow_command))
     
-    logger.info("🚀 Бот запущен с поддержкой CDP перехвата!")
+    logger.info("🚀 Бот запущен с перехватом HTTP!")
+    logger.info(f"🔗 CDP URL: {CDP_URL}")
+    logger.info(f"🍪 Куки: {len(COOKIES)} шт.")
+    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
