@@ -350,22 +350,36 @@ COOKIES = [
 ]
 
 # ============================================================
-# УНИКАЛЬНЫЕ КУКИ (убираем дубликаты)
+# АВТОМАТИЧЕСКОЕ УДАЛЕНИЕ ДУБЛИКАТОВ
 # ============================================================
 
-COOKIES_UNIQUE = []
-seen = set()
-for c in COOKIES:
-    key = (c["name"], c["domain"])
-    if key not in seen:
-        seen.add(key)
-        COOKIES_UNIQUE.append(c)
+def remove_duplicates(cookies_list):
+    """Удаляет все дубликаты кук"""
+    seen = set()
+    unique = []
+    for c in cookies_list:
+        # Ключ = (имя, домен, путь) - максимальная уникальность
+        key = (c.get("name"), c.get("domain"), c.get("path"))
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+    return unique
+
+# Применяем очистку
+COOKIES = remove_duplicates(COOKIES)
+
+# Создаем список уникальных кук для быстрого доступа
+COOKIES_UNIQUE = COOKIES
 
 def get_cookies_for_domain(domain: str) -> list:
-    """Возвращает уникальные куки для конкретного домена"""
+    """
+    Возвращает уникальные куки для конкретного домена.
+    Автоматически убирает дубликаты по имени.
+    """
+    # Фильтруем по домену
     filtered = [c for c in COOKIES_UNIQUE if domain in c.get("domain", "")]
     
-    # Убираем дубликаты по имени внутри домена
+    # Убираем дубликаты по имени (для одного домена)
     seen_names = set()
     unique = []
     for c in filtered:
@@ -382,13 +396,12 @@ def get_cookies_for_domain(domain: str) -> list:
 
 if __name__ == "__main__":
     print(f"✅ Всего кук: {len(COOKIES)}")
-    print(f"✅ Уникальных кук: {len(COOKIES_UNIQUE)}")
     
     qwen_cookies = get_cookies_for_domain("chat.qwen.ai")
     print(f"✅ Кук для chat.qwen.ai: {len(qwen_cookies)}")
     print("  Имена:", [c["name"] for c in qwen_cookies])
     
-    # Проверяем дубликаты
-    for name in ["acw_tc", "_c_WBKFRo", "token"]:
+    # Проверяем все проблемные имена
+    for name in ["acw_tc", "_c_WBKFRo", "token", "x-ap"]:
         count = len([c for c in qwen_cookies if c["name"] == name])
         print(f"✅ {name}: {count}")
