@@ -1,15 +1,12 @@
 FROM python:3.12-slim
 
-# Устанавливаем зависимости
+# Устанавливаем зависимости для Chromium, Node.js (нужен для Prime Agent) и других инструментов
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
     git \
     gnupg \
-    && rm -rf /var/lib/apt/lists/*
-
-# УСТАНАВЛИВАЕМ NODE.JS 22 (исправлено)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,8 +22,13 @@ RUN pip install --no-cache-dir uv
 # Устанавливаем browser-harness как CLI-инструмент
 RUN uv tool install --python 3.12 --upgrade --force browser-harness
 
-# УСТАНОВКА PRIME AGENT (теперь с Node.js 22)
+# УСТАНОВКА PRIME AGENT
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
+
+# ============================================================
+# УСТАНОВКА LITELLM (добавлено)
+# ============================================================
+RUN pip install 'litellm[proxy]'
 
 # Проверяем версию Node.js и Prime Agent
 RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
@@ -41,7 +43,17 @@ COPY . .
 # Создаём папку для данных Prime Agent
 RUN mkdir -p /root/.prime-agent
 
-CMD sh -c "echo '🚀 Запуск Chromium...' && \
+CMD sh -c "echo '🚀 Запуск LiteLLM прокси...' && \
+    litellm --config /app/litellm_config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 & \
+    echo '⏳ Ожидание инициализации LiteLLM...' && \
+    for i in 1 2 3 4 5 6 7 8 9 10; do \
+        if curl -s http://localhost:4000/health > /dev/null 2>&1; then \
+            echo '✅ LiteLLM готов!'; \
+            break; \
+        fi; \
+        echo -n '.' && sleep 2; \
+    done && \
+    echo '🚀 Запуск Chromium...' && \
     /usr/bin/chromium \
         --headless \
         --no-sandbox \
@@ -54,7 +66,7 @@ CMD sh -c "echo '🚀 Запуск Chromium...' && \
     echo '⏳ Ожидание инициализации Chromium...' && \
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
         if curl -s http://localhost:9222/json/version > /dev/null 2>&1; then \
-            echo '✅ Chromium готов!' && \
+            echo '✅ Chromium готов!'; \
             break; \
         fi; \
         echo -n '.' && sleep 1; \
