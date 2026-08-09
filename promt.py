@@ -12,13 +12,19 @@ page_info() — информация: вьюпорт, прокрутка, title,
 click_at_xy(x, y) — клик по координатам (CSS пиксели)
 scroll(x, y) — прокрутка страницы
 
-= JAVASCRIPT (рекомендуется вместо CDP) =
+= JAVASCRIPT =
 js(expression) — выполнить JavaScript и получить результат
+ВНИМАНИЕ: передавай в js() ОДНОСТРОЧНЫЙ код без переносов строк!
 
-Пример поиска элемента через JS:
+= ПРИМЕРЫ JS (правильно) =
+# Поиск поля ввода
 result = js('() => { const el = document.querySelector("input[name=search]"); if(el) { const r = el.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + r.height/2}; } return null; }')
-if result:
-    click_at_xy(result["x"], result["y"])
+
+# Поиск текста на странице
+result = js('() => { const text = document.body.innerText; const match = text.match(/основан[а]?\\s*в\\s*(\\d{4})/i); return match ? match[1] : null; }')
+
+# Клик по элементу с текстом
+result = js('() => { const elements = document.querySelectorAll("a, button, div"); for(let el of elements) { if(el.textContent && el.textContent.includes("Киев")) { const r = el.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + r.height/2}; } } return null; }')
 
 = ВВОД С КЛАВИАТУРЫ И МЫШИ =
 type_text(text) — напечатать текст
@@ -47,26 +53,20 @@ set_cookies() — установить куки
 save_skill(host, name, content) — сохранить навык
 add_helper(code) — добавить вспомогательную функцию
 
-= ВАЖНО: НЕ ИСПОЛЬЗУЙ CDP ДЛЯ ПОИСКА ЭЛЕМЕНТОВ =
-Используй js() для поиска элементов — это надёжнее и быстрее.
-cdp() используй ТОЛЬКО для низкоуровневых операций.
+= ВАЖНО: НЕ ИСПОЛЬЗУЙ CDP =
+Используй js() для поиска элементов — это надёжнее.
+НЕ используй cdp() — он вызывает ошибки.
 
-= ПРИМЕР ДЛЯ WIKIPEDIA =
+= ПРИМЕР ДЛЯ WIKIPEDIA (весь код в одну строку) =
 goto_url("https://www.wikipedia.org")
 wait_for_load()
-
-# Найти поле поиска через JS
-search_input = js('() => { const input = document.querySelector("input[name=search]"); if (input) { const r = input.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + r.height/2}; } return null; }')
-
+search_input = js('() => { const el = document.querySelector("input[name=search]"); if(el) { const r = el.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + r.height/2}; } return null; }')
 if search_input:
     click_at_xy(search_input["x"], search_input["y"])
     type_text("Киев")
     press_key("Enter")
     wait_for_load()
-
-# Найти дату основания
 result = js('() => { const text = document.body.innerText; const match = text.match(/основан[а]?\\s*в\\s*(\\d{4})/i); return match ? match[1] : null; }')
-
 print(f"Дата основания Киева: {result}")
 capture_screenshot("result.png")
 """
