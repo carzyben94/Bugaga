@@ -11,41 +11,19 @@ page_info() — информация: вьюпорт, прокрутка, title,
 = КООРДИНАТЫ И КЛИКИ =
 click_at_xy(x, y) — клик по координатам (CSS пиксели)
 scroll(x, y) — прокрутка страницы
-cdp(command) — доступ к Chrome DevTools Protocol (низкий уровень)
 
-= РАБОТА С КООРДИНАТАМИ (рекомендуемый подход) =
-1. Сделай скриншот: capture_screenshot("page.png")
-2. Определи координаты на скриншоте
-3. Кликни: click_at_xy(x, y)
-4. Проверь: снова сделай скриншот
+= JAVASCRIPT (рекомендуется вместо CDP) =
+js(expression) — выполнить JavaScript и получить результат
 
-= ПОИСК КООРДИНАТ ЧЕРЕЗ CDP =
-# Найти все доступные элементы
-ax_tree = cdp("Accessibility.getFullAXTree")
-# Найти координаты элемента по тексту
-# Использовать DOM.getBoxModel для получения bounding box
-# Вычислить центр: (x + width/2, y + height/2)
-# Кликнуть: click_at_xy(x_center, y_center)
-
-= ПРИМЕР: НАЙТИ И КЛИКНУТЬ ПО ТЕКСТУ =
-# Найти элемент с текстом "Войти"
-ax_nodes = cdp("Accessibility.getFullAXTree")["nodes"]
-for node in ax_nodes:
-    if "Войти" in node.get("name", ""):
-        node_id = node["nodeId"]
-        box = cdp("DOM.getBoxModel", {"nodeId": node_id})
-        x = box["content"][0] + box["content"][2] // 2  # центр
-        y = box["content"][1] + box["content"][3] // 2
-        click_at_xy(x, y)
-        break
-
-= JAVASCRIPT =
-js(expression) — выполнить JavaScript
+Пример поиска элемента через JS:
+result = js('() => { const el = document.querySelector("input[name=search]"); if(el) { const r = el.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + r.height/2}; } return null; }')
+if result:
+    click_at_xy(result["x"], result["y"])
 
 = ВВОД С КЛАВИАТУРЫ И МЫШИ =
 type_text(text) — напечатать текст
-press_key(key) — нажать клавишу
-fill_input(selector, text) — заполнить поле ввода (если селектор найден)
+press_key(key) — нажать клавишу (Enter, Escape, Tab и т.д.)
+fill_input(selector, text) — заполнить поле ввода
 
 = СКРОЛЛИНГ =
 scroll(x, y) — прокрутка
@@ -58,6 +36,7 @@ close_tab(index) — закрыть вкладку
 current_tab() — текущая вкладка
 
 = ОЖИДАНИЕ =
+wait_for_load(timeout) — ждать загрузки страницы
 wait_for_element(selector, timeout) — ждать появления элемента
 ensure_real_tab() — убедиться, что вкладка существует
 
@@ -68,27 +47,26 @@ set_cookies() — установить куки
 save_skill(host, name, content) — сохранить навык
 add_helper(code) — добавить вспомогательную функцию
 
-= ВАЖНО: СЕЛЕКТОРЫ ДЛЯ ПОИСКА =
-Google: "textarea[name='q']" или "input[aria-label='Найти']"
-Яндекс: "input[name='text']"
-Wikipedia: "input[name='search']"
+= ВАЖНО: НЕ ИСПОЛЬЗУЙ CDP ДЛЯ ПОИСКА ЭЛЕМЕНТОВ =
+Используй js() для поиска элементов — это надёжнее и быстрее.
+cdp() используй ТОЛЬКО для низкоуровневых операций.
 
-= ПРИМЕР ДЛЯ GOOGLE (через координаты) =
-goto_url("https://www.google.com")
+= ПРИМЕР ДЛЯ WIKIPEDIA =
+goto_url("https://www.wikipedia.org")
 wait_for_load()
-# Найти поле поиска через координаты
-ax_tree = cdp("Accessibility.getFullAXTree")
-for node in ax_tree["nodes"]:
-    if "Поиск" in node.get("name", ""):
-        node_id = node["nodeId"]
-        box = cdp("DOM.getBoxModel", {"nodeId": node_id})
-        x = box["content"][0] + box["content"][2] // 2
-        y = box["content"][1] + box["content"][3] // 2
-        click_at_xy(x, y)
-        break
-type_text("погода в москве")
-press_key("Enter")
-wait_for_load()
-print(js("document.title"))
+
+# Найти поле поиска через JS
+search_input = js('() => { const input = document.querySelector("input[name=search]"); if (input) { const r = input.getBoundingClientRect(); return {x: r.x + r.width/2, y: r.y + r.height/2}; } return null; }')
+
+if search_input:
+    click_at_xy(search_input["x"], search_input["y"])
+    type_text("Киев")
+    press_key("Enter")
+    wait_for_load()
+
+# Найти дату основания
+result = js('() => { const text = document.body.innerText; const match = text.match(/основан[а]?\\s*в\\s*(\\d{4})/i); return match ? match[1] : null; }')
+
+print(f"Дата основания Киева: {result}")
 capture_screenshot("result.png")
 """
