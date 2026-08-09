@@ -1,0 +1,7 @@
+model_list:
+  - model_name: agnes-2.0-flash
+    litellm_params:
+      model: openai/agnes-2.0-flash
+      api_base: https://apihub.agnes-ai.com/v1
+      api_key: os.environ/AGNES_API_KEY
+      max_tokens: 65536
