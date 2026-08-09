@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Устанавливаем зависимости
+# Устанавливаем зависимости: Chromium, Node.js, инструменты
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
@@ -16,32 +16,35 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
+# Устанавливаем uv
 RUN pip install --no-cache-dir uv
+
+# Устанавливаем browser-harness
 RUN uv tool install --python 3.12 --upgrade --force browser-harness
 
-# УСТАНОВКА PRIME AGENT
+# Устанавливаем Prime Agent
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
-# УСТАНОВКА LITELLM
+# Устанавливаем LiteLLM
 RUN pip install 'litellm[proxy]'
 
-# Проверка
+# Проверка установки
 RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
 
+# Копируем зависимости и устанавливаем
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Копируем весь проект
 COPY . .
 
+# Создаём нужные папки
 RUN mkdir -p /root/.prime-agent /app/logs /app/screenshots
 
-# ИСПРАВЛЕНО: создаём конфиг через printf или cat
-RUN printf 'model_list:\n  - model_name: agnes-2.0-flash\n    litellm_params:\n      model: openai/agnes-2.0-flash\n      api_base: https://apihub.agnes-ai.com/v1\n      api_key: os.environ/AGNES_API_KEY\n      max_tokens: 65536\n' > /app/config.yaml
-
+# Запускаем всё
 CMD sh -c "
     echo '🚀 Запуск LiteLLM...' && \
-    litellm --config /app/config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 &
-    
+    litellm --config /app/config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 & \
     echo '⏳ Ожидание LiteLLM...' && \
     for i in 1 2 3 4 5 6 7 8 9 10; do \
         if curl -s http://localhost:4000/health > /dev/null 2>&1; then \
@@ -50,7 +53,6 @@ CMD sh -c "
         fi; \
         echo -n '.' && sleep 2; \
     done && \
-    
     echo '🚀 Запуск Chromium...' && \
     /usr/bin/chromium \
         --headless \
@@ -61,7 +63,6 @@ CMD sh -c "
         --remote-debugging-address=0.0.0.0 \
         --user-data-dir=/tmp/chrome-profile \
         about:blank > /tmp/chrome.log 2>&1 & \
-    
     echo '⏳ Ожидание Chromium...' && \
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
         if curl -s http://localhost:9222/json/version > /dev/null 2>&1; then \
@@ -70,7 +71,6 @@ CMD sh -c "
         fi; \
         echo -n '.' && sleep 1; \
     done && \
-    
     echo '🧠 Проверка Prime Agent...' && \
     if command -v prime-agent > /dev/null 2>&1; then \
         echo '✅ Prime Agent готов!'; \
@@ -78,7 +78,6 @@ CMD sh -c "
     else \
         echo '⚠️ Prime Agent не найден'; \
     fi && \
-    
     echo '🚀 Запуск бота...' && \
     python -u bot.py
 "
