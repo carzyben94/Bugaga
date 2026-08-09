@@ -22,7 +22,10 @@ RUN uv tool install --python 3.12 --upgrade --force browser-harness
 # УСТАНОВКА PRIME AGENT
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
-# УСТАНОВКА LITELLM
+# ============================================================
+# ФИКСИМ ВЕРСИИ ДЛЯ LITELLM
+# ============================================================
+RUN pip install 'fastapi>=0.115.0,<0.120.0' 'uvicorn>=0.30.0' 'pydantic>=2.0.0'
 RUN pip install 'litellm[proxy]'
 
 # Проверка
@@ -37,7 +40,6 @@ RUN mkdir -p /root/.prime-agent /app/logs /app/screenshots /root/.prime/agent
 
 COPY config.yaml /app/config.yaml
 
-# ИСПРАВЛЕННЫЙ CMD с проверкой LiteLLM
 CMD sh -c "echo '🚀 Запуск LiteLLM...' && \
     litellm --config /app/config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 & \
     sleep 5 && \
