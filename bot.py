@@ -13,8 +13,7 @@ import httpx
 import warnings
 from typing import Optional
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from promt import SYSTEM_PROMPT
+from telegram.ext import Application, CommandHandler, ContextTypes
 from PIL import Image
 
 # ============================================================
@@ -38,7 +37,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)  # Только консоль
+        logging.StreamHandler(sys.stdout)
     ]
 )
 
@@ -98,7 +97,6 @@ from browser_harness.admin import ensure_daemon
 try:
     from cookies import COOKIES
     import websockets
-    import json
     
     async def set_cookies_async():
         try:
@@ -194,7 +192,6 @@ def set_viewport_global():
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -212,72 +209,39 @@ logger.info("🔄 Устанавливаю размер окна...")
 set_viewport_global()
 
 # ============================================================
-# AGNES LM ДЛЯ DSPy (ИСПРАВЛЕННЫЙ)
+# AGNES LM ДЛЯ DSPy (ЧЕРЕЗ dspy.LM)
 # ============================================================
 
-class AgnesLM:
+class AgnesLM(dspy.LM):
+    """Agnes AI через стандартный dspy.LM"""
+    
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
-        self.model = model
-        self.api_key = api_key or os.environ.get("AGNES_API_KEY")
-        self.kwargs = kwargs
-        self.history = []
-        
-        if not self.api_key:
+        api_key = api_key or os.environ.get("AGNES_API_KEY")
+        if not api_key:
             raise ValueError("AGNES_API_KEY не задан!")
         
-        logger.info(f"✅ Agnes LM инициализирован (model: {model})")
+        # Используем стандартный LM с кастомным api_base
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            api_base="https://apihub.agnes-ai.com/v1",
+            temperature=kwargs.get("temperature", 0.3),
+            max_tokens=kwargs.get("max_tokens", 2000),
+            **kwargs
+        )
+        self.history = []
+        logger.info(f"✅ Agnes LM инициализирован через dspy.LM (model: {model})")
     
     def __call__(self, prompt, **kwargs):
-        """Вызов Agnes AI через API"""
-        # Обработка разных форматов prompt
-        if isinstance(prompt, str):
-            messages = [{"role": "user", "content": prompt}]
-        elif isinstance(prompt, list):
-            messages = prompt
-        else:
-            messages = [{"role": "user", "content": str(prompt)}]
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", self.kwargs.get("temperature", 0.3)),
-            "max_tokens": kwargs.get("max_tokens", self.kwargs.get("max_tokens", 2000))
-        }
-        
-        try:
-            logger.info(f"📤 Запрос к Agnes AI: {str(messages)[:100]}...")
-            response = httpx.post(
-                "https://apihub.agnes-ai.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=kwargs.get("timeout", 45.0)
-            )
-            response.raise_for_status()
-            data = response.json()
-            result = data["choices"][0]["message"]["content"]
-            
-            logger.info(f"📥 Ответ Agnes AI: {result[:100]}...")
-            
-            self.history.append({
-                "prompt": prompt,
-                "response": result,
-                "kwargs": kwargs,
-                "timestamp": time.time()
-            })
-            
-            return result
-            
-        except httpx.TimeoutException:
-            logger.error("❌ Таймаут Agnes AI (45 сек)")
-            return "Ошибка: Превышено время ожидания"
-        except Exception as e:
-            logger.error(f"❌ Ошибка Agnes AI: {e}")
-            return f"Ошибка: {str(e)}"
+        result = super().__call__(prompt, **kwargs)
+        self.history.append({
+            "prompt": prompt,
+            "response": result,
+            "timestamp": time.time()
+        })
+        logger.info(f"📤 Запрос к Agnes AI: {str(prompt)[:100]}...")
+        logger.info(f"📥 Ответ Agnes AI: {str(result)[:100]}...")
+        return result
     
     def get_history(self):
         return self.history
@@ -290,21 +254,18 @@ class AgnesLM:
 # ============================================================
 
 class BrowserPlan(dspy.Signature):
-    """Планирование действий в браузере"""
     user_query = dspy.InputField(desc="Запрос пользователя")
     plan = dspy.OutputField(desc="Пошаговый план действий")
     code = dspy.OutputField(desc="Python код для выполнения")
     explanation = dspy.OutputField(desc="Объяснение решения")
 
 class FixError(dspy.Signature):
-    """Исправление ошибок в коде"""
     error = dspy.InputField(desc="Текст ошибки")
     broken_code = dspy.InputField(desc="Сломанный код")
     fixed_code = dspy.OutputField(desc="Исправленный код")
     explanation = dspy.OutputField(desc="Что было исправлено")
 
 class ExtractSkill(dspy.Signature):
-    """Извлечение навыка из успешного решения"""
     user_query = dspy.InputField(desc="Запрос пользователя")
     code = dspy.InputField(desc="Рабочий код")
     skill_name = dspy.OutputField(desc="Название навыка (одно слово)")
