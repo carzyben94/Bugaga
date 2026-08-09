@@ -5,3 +5,4 @@ model_list:
       api_base: https://apihub.agnes-ai.com/v1
       api_key: os.environ/AGNES_API_KEY
       max_tokens: 65536
+      custom_llm_provider: openai
