@@ -460,21 +460,19 @@ async def ask_agnes(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# PRIME AGENT + BROWSER HARNESS
+# PRIME AGENT + LITELLM + BROWSER HARNESS
 # ============================================================
 
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
-    Prime Agent планирует через -p режим, Agnes генерирует код по плану.
-    Использует SYSTEM_PROMPT из promt.py.
+    Prime Agent планирует через LiteLLM прокси, используя Agnes как провайдера.
     """
     if not PRIME_AVAILABLE:
         return "❌ Prime Agent не доступен", None
     
-    logger.info(f"🧠 Prime Agent планирует: {user_query}")
+    logger.info(f"🧠 Prime Agent планирует через LiteLLM: {user_query}")
     
     try:
-        # ШАГ 1: Prime Agent составляет план через -p
         plan_prompt = (
             "Ты — стратег. Составь пошаговый план для выполнения задачи.\n\n"
             "Задача: " + user_query + "\n\n"
@@ -489,23 +487,23 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # ИСПРАВЛЕНО: используем -p (print mode)
-        result = subprocess.run(
-            ["prime-agent", "-p", plan_prompt],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=agent_workspace
-        )
+        # Используем LiteLLM прокси через api-base
+        result = subprocess.run([
+            "prime-agent", "-p",
+            "--provider", "openai",
+            "--model", "agnes-2.0-flash",
+            "--api-base", "http://localhost:4000",
+            plan_prompt
+        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace)
         
         if result.returncode != 0:
             logger.error(f"❌ Prime Agent CLI ошибка: {result.stderr}")
             return None, None
         
         plan = result.stdout
-        logger.info(f"📋 План от Prime:\n{plan}")
+        logger.info(f"📋 План от Prime через LiteLLM:\n{plan[:300]}...")
         
-        # ШАГ 2: Agnes генерирует код по плану, используя SYSTEM_PROMPT из promt.py
+        # ШАГ 2: Agnes генерирует код по плану напрямую
         code_prompt = (
             SYSTEM_PROMPT + "\n\n"
             "Выполни этот план через Browser Harness:\n\n"
@@ -515,7 +513,6 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "Не используй другие форматы ответа."
         )
         
-        # Используем существующую ask_agnes
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": code_prompt}
@@ -523,7 +520,6 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         
         code_response = await ask_agnes(messages)
         
-        # Извлекаем код
         code_match = re.search(r'```python\n(.*?)\n```', code_response, re.DOTALL)
         if code_match:
             return plan + "\n\n" + code_response, code_match.group(1)
@@ -534,7 +530,7 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         logger.error("❌ Prime Agent CLI: timeout (120 сек)")
         return None, None
     except Exception as e:
-        logger.error(f"❌ Ошибка Prime Agent: {e}")
+        logger.error(f"❌ Ошибка Prime Agent через LiteLLM: {e}")
         return None, None
 
 # ============================================================
@@ -690,10 +686,21 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         harness_status = "❌ Не отвечает (Chromium не запущен)"
     
-    # 5. Проверка Telegram
+    # 5. Проверка LiteLLM прокси
+    litellm_status = "❌ Не доступен"
+    try:
+        resp = httpx.get("http://localhost:4000/health", timeout=3)
+        if resp.status_code == 200:
+            litellm_status = "✅ Работает"
+        else:
+            litellm_status = f"⚠️ Ответ {resp.status_code}"
+    except Exception:
+        litellm_status = "❌ Не отвечает (LiteLLM не запущен)"
+    
+    # 6. Проверка Telegram
     telegram_status = f"✅ {TELEGRAM_TOKEN[:8]}...{TELEGRAM_TOKEN[-4:]}"
     
-    # 6. Проверка cookies
+    # 7. Проверка cookies
     cookies_status = "✅ Загружены" if COOKIES else "❌ Не загружены"
     cookies_count = len(COOKIES) if COOKIES else 0
     
@@ -708,6 +715,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🌐 **Browser Harness:** {harness_status}
 
+⚡ **LiteLLM Proxy:** {litellm_status}
+
 📦 **GitHub:** {github_status}
 
 📱 **Telegram Bot:** {telegram_status}
@@ -721,7 +730,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ---
 💡 **Команды:**
 /ask — Agnes AI + Harness
-/prime — Prime Agent + Harness
+/prime — Prime Agent + LiteLLM + Agnes + Harness
 /status — этот статус
 """
     
@@ -735,7 +744,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузерный агент:**\n"
         "/ask <запрос> — Agnes AI + Harness\n"
-        "/prime <запрос> — Prime Agent + Harness (глубокое мышление)\n"
+        "/prime <запрос> — Prime Agent + Agnes + Harness (глубокое мышление)\n"
         "/status — статус всех компонентов\n\n"
         "📸 **Скриншоты:**\n"
         "/image — последний скриншот\n"
@@ -866,11 +875,11 @@ async def ask(update, context):
 # ============================================================
 
 async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Prime Agent генерирует код, Harness выполняет"""
+    """Prime Agent через LiteLLM генерирует план, Harness выполняет"""
     if not context.args:
         await update.message.reply_text(
-            "🧠 Prime Agent + Browser Harness\n"
-            "Пример: /prime открой google.com и сделай скриншот"
+            "🧠 Prime Agent + LiteLLM + Browser Harness\n"
+            "Пример: /prime открой google.com и найди погоду"
         )
         return
     
@@ -878,10 +887,10 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or "unknown"
     logger.info(f"👤 {username} запросил Prime: {user_query}")
     
-    status_msg = await update.message.reply_text("🧠 Prime Agent думает...")
+    status_msg = await update.message.reply_text("🧠 Prime Agent думает через LiteLLM...")
     
     try:
-        # Получаем ответ от Prime Agent
+        # Получаем план от Prime Agent через LiteLLM
         response, code = await ask_prime_agent(user_query)
         
         if code:
@@ -891,7 +900,7 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if success:
                 await status_msg.edit_text(
-                    f"✅ **Prime Agent + Harness**\n\n"
+                    f"✅ **Prime Agent + LiteLLM + Harness**\n\n"
                     f"📤 Результат:\n```\n{output[:3500]}\n```"
                 )
             else:
@@ -899,7 +908,7 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"❌ Ошибка выполнения:\n```\n{output[:500]}\n```"
                 )
         else:
-            # Если кода нет — пробуем через Agnes
+            # Если кода нет — пробуем через Agnes напрямую
             await status_msg.edit_text("🔄 Prime Agent не сгенерировал код, пробую Agnes...")
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -1052,7 +1061,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    logger.info("🚀 Бот с Prime Agent запущен!")
+    logger.info("🚀 Бот с Prime Agent и LiteLLM запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
