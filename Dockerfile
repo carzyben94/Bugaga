@@ -44,16 +44,16 @@ RUN echo '## Browser Harness Integration' > /root/.prime/agent/APPEND_SYSTEM.md 
     echo '- click_at_xy(x, y) — клик по координатам (CSS пиксели)' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- type_text(text) — ввод текста' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- press_key(key) — нажать клавишу' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '- capture_screenshot(path) — скриншот' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '- capture_screenshot(path) — сделать скриншот (НЕ screenshot!)' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- page_info() — информация о странице' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- js(expression) — выполнить JavaScript' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- scroll(x, y) — прокрутка' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- cdp(command) — доступ к Chrome DevTools Protocol' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '### ПРАВИЛЬНЫЙ ПРИМЕР (без browser.):' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '### ПРАВИЛЬНЫЙ ПРИМЕР:' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'new_tab("https://wikipedia.org")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'wait_for_load()' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo 'capture_screenshot("page.png")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo 'capture_screenshot("page.png")  # ← capture_screenshot, НЕ screenshot!' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'result = js('\''() => { const text = document.body.innerText; const m = text.match(/основан[а]?\\s*в\\s*(\\d{4})/i); return m ? m[1] : null; }'\'')' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'print(f"Результат: {result}")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
@@ -62,7 +62,7 @@ RUN echo '## Browser Harness Integration' > /root/.prime/agent/APPEND_SYSTEM.md 
     echo '2. НЕ используй import!' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '3. Всегда используй new_tab(url) для первого перехода' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '4. После навигации всегда вызывай wait_for_load()' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '5. После каждого действия делай скриншот' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '5. Используй capture_screenshot() для скриншотов (НЕ screenshot!)' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '6. Для поиска элементов используй js()' >> /root/.prime/agent/APPEND_SYSTEM.md
 
 RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
