@@ -527,8 +527,26 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         plan = result.stdout
         logger.info(f"📋 План от Prime через LiteLLM:\n{plan[:300]}...")
         
-        # ШАГ 2: Agnes генерирует код по плану (БЕЗ SYSTEM_PROMPT)
+        # ШАГ 2: Agnes генерирует код по плану с жёстким запретом
         code_prompt = (
+            "⚠️ КРИТИЧЕСКИ ВАЖНО: НЕ ИСПОЛЬЗУЙ СТОРОННИЕ БИБЛИОТЕКИ!\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ selenium, playwright, puppeteer, requests, beautifulsoup!\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ import! Все функции уже доступны!\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ from selenium import webdriver\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ browser. — просто new_tab()\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ browser_harness. — просто new_tab()\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ BrowserHarness()\n"
+            "⚠️ НЕ ИСПОЛЬЗУЙ screenshot() — используй capture_screenshot()\n\n"
+            "ТЫ ДОЛЖЕН ИСПОЛЬЗОВАТЬ ТОЛЬКО ЭТИ ФУНКЦИИ:\n"
+            "- new_tab(url) — открыть новую вкладку\n"
+            "- goto_url(url) — переход по URL\n"
+            "- wait_for_load() — ждать загрузки\n"
+            "- click_at_xy(x, y) — клик по координатам\n"
+            "- type_text(text) — ввод текста\n"
+            "- press_key(key) — нажать клавишу\n"
+            "- capture_screenshot(path) — скриншот\n"
+            "- js(expression) — выполнить JavaScript\n"
+            "- scroll(x, y) — прокрутка\n\n"
             "Выполни этот план через Browser Harness:\n\n"
             + plan + "\n\n"
             "Напиши Python-код для выполнения этого плана.\n"
