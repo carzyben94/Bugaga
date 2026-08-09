@@ -74,7 +74,7 @@ def setup_prime_config():
         config_content = {
             "providers": {
                 "litellm": {
-                    "baseUrl": "http://localhost:4000/v1",
+                    "baseUrl": "http://127.0.0.1:4000/v1",
                     "api": "openai-completions",
                     "apiKey": agnes_key,
                     "models": [{"id": "agnes-2.0-flash"}]
@@ -87,6 +87,7 @@ def setup_prime_config():
         
         logger.info(f"✅ Конфиг Prime Agent создан: {config_file}")
         logger.info(f"   Провайдер: litellm, модель: agnes-2.0-flash")
+        logger.info(f"   baseUrl: http://127.0.0.1:4000/v1")
     except Exception as e:
         logger.error(f"❌ Ошибка создания конфига Prime Agent: {e}")
 
@@ -505,9 +506,10 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # Передаём переменные окружения для Prime Agent
+        # Устанавливаем переменные окружения для Prime Agent
         env = os.environ.copy()
-        env["OPENAI_API_BASE"] = "http://localhost:4000/v1"
+        env["LITELLM_BASE_URL"] = "http://127.0.0.1:4000/v1"
+        env["LITELLM_API_KEY"] = os.environ.get("AGNES_API_KEY", "")
         
         result = subprocess.run([
             "prime-agent", "-p",
@@ -701,50 +703,39 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         harness_status = "❌ Не отвечает (Chromium не запущен)"
     
-    # 5. Проверка LiteLLM прокси — ВСЕ ВАРИАНТЫ
+    # 5. Проверка LiteLLM прокси — используем LITELLM_BASE_URL
     litellm_status = "❌ Не доступен"
     litellm_detail = ""
     
-    # Пробуем все возможные адреса и пути
-    test_urls = [
-        ("http://localhost:4000/health", "health"),
-        ("http://localhost:4000/health/liveliness", "liveness"),
-        ("http://localhost:4000/health/readiness", "readiness"),
-        ("http://127.0.0.1:4000/health", "127.0.0.1"),
-        ("http://0.0.0.0:4000/health", "0.0.0.0"),
-        ("http://localhost:4000/v1/models", "models"),
-        ("http://localhost:4000/", "root"),
-        (f"http://localhost:{os.getenv('PORT', 4000)}/health", "PORT"),
-    ]
+    # Берём адрес из переменной или используем стандартный
+    litellm_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000/v1")
+    # Убираем /v1 для проверки health
+    health_url = litellm_url.replace("/v1", "/health")
     
-    for url, name in test_urls:
-        try:
-            resp = httpx.get(url, timeout=2)
-            if resp.status_code == 200:
-                litellm_status = f"✅ Работает ({name})"
-                litellm_detail = f"URL: {url}"
-                break
-            elif resp.status_code in [401, 403]:
-                # Может требовать авторизацию, но это значит, что сервис жив
-                litellm_status = f"⚠️ Жив, но требует авторизацию ({name})"
-                litellm_detail = f"URL: {url}, статус: {resp.status_code}"
-                break
-        except Exception:
-            continue
-    
-    # Если не нашли — пробуем через curl (более надёжно)
-    if litellm_status == "❌ Не доступен":
+    try:
+        resp = httpx.get(health_url, timeout=3)
+        if resp.status_code == 200:
+            litellm_status = "✅ Работает"
+            litellm_detail = f"(по адресу {health_url})"
+        else:
+            litellm_status = f"⚠️ Ответ {resp.status_code}"
+            litellm_detail = f"(адрес {health_url})"
+    except Exception as e:
+        # Пробуем через curl как fallback
         try:
             result = subprocess.run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:4000/health"],
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", health_url],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            if result.stdout.strip() in ["200", "401", "403"]:
-                litellm_status = f"✅ Работает (curl, HTTP {result.stdout.strip()})"
+            if result.stdout.strip() == "200":
+                litellm_status = "✅ Работает (curl)"
+                litellm_detail = f"(адрес {health_url})"
+            else:
+                litellm_status = f"⚠️ Не отвечает (curl, HTTP {result.stdout.strip()})"
         except Exception:
-            pass
+            litellm_status = f"❌ Ошибка: {str(e)[:30]}"
     
     # 6. Проверка Telegram
     telegram_status = f"✅ {TELEGRAM_TOKEN[:8]}...{TELEGRAM_TOKEN[-4:]}"
@@ -765,7 +756,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌐 **Browser Harness:** {harness_status}
 
 ⚡ **LiteLLM Proxy:** {litellm_status}
-   {litellm_detail if litellm_detail else ''}
+   {litellm_detail}
 
 📦 **GitHub:** {github_status}
 
