@@ -11,12 +11,23 @@ import io
 import json
 import httpx
 import warnings
+from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
 from PIL import Image
 
+# ============================================================
+# DSPy + Agnes
+# ============================================================
+import dspy
+from dspy.teleprompt import BootstrapFewShot
+
 warnings.filterwarnings("ignore")
+
+# ============================================================
+# НАСТРОЙКА ОКРУЖЕНИЯ
+# ============================================================
 
 agent_workspace = "/app/browser-harness/agent-workspace"
 sys.path.insert(0, agent_workspace)
@@ -49,6 +60,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 logging.getLogger("telegram").setLevel(logging.CRITICAL)
 logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
+logging.getLogger("dspy").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
@@ -168,6 +180,7 @@ def set_viewport_global():
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -180,11 +193,258 @@ set_cookies_global()
 set_viewport_global()
 
 # ============================================================
+# AGNES LM ДЛЯ DSPy
+# ============================================================
+
+class AgnesLM(dspy.LM):
+    def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
+        self.model = model
+        self.api_key = api_key or os.environ.get("AGNES_API_KEY")
+        self.kwargs = kwargs
+        self.history = []
+        
+        if not self.api_key:
+            raise ValueError("AGNES_API_KEY не задан!")
+    
+    def __call__(self, prompt, **kwargs):
+        messages = [{"role": "user", "content": prompt}]
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.3),
+            "max_tokens": kwargs.get("max_tokens", 2000)
+        }
+        
+        try:
+            response = httpx.post(
+                "https://apihub.agnes-ai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=45.0
+            )
+            response.raise_for_status()
+            data = response.json()
+            result = data["choices"][0]["message"]["content"]
+            
+            self.history.append({
+                "prompt": prompt,
+                "response": result,
+                "kwargs": kwargs
+            })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка Agnes AI: {e}")
+            return f"Ошибка: {str(e)}"
+    
+    def get_history(self):
+        return self.history
+
+# ============================================================
+# ОПРЕДЕЛЕНИЕ СИГНАТУР DSPy
+# ============================================================
+
+class BrowserPlan(dspy.Signature):
+    user_query = dspy.InputField(desc="Запрос пользователя")
+    plan = dspy.OutputField(desc="Пошаговый план действий")
+    code = dspy.OutputField(desc="Python код для выполнения")
+    explanation = dspy.OutputField(desc="Объяснение решения")
+
+class FixError(dspy.Signature):
+    error = dspy.InputField(desc="Текст ошибки")
+    broken_code = dspy.InputField(desc="Сломанный код")
+    fixed_code = dspy.OutputField(desc="Исправленный код")
+    explanation = dspy.OutputField(desc="Что было исправлено")
+
+class ExtractSkill(dspy.Signature):
+    user_query = dspy.InputField(desc="Запрос пользователя")
+    code = dspy.InputField(desc="Рабочий код")
+    skill_name = dspy.OutputField(desc="Название навыка (одно слово)")
+    skill_description = dspy.OutputField(desc="Описание навыка")
+    skill_code = dspy.OutputField(desc="Код навыка (функция)")
+
+# ============================================================
+# DSPy + AGNES АГЕНТ
+# ============================================================
+
+class BrowserAgent(dspy.Module):
+    def __init__(self, lm=None):
+        super().__init__()
+        
+        if lm is None:
+            self.lm = AgnesLM()
+            dspy.settings.configure(lm=self.lm)
+        else:
+            self.lm = lm
+            dspy.settings.configure(lm=lm)
+        
+        self.planner = dspy.ChainOfThought(BrowserPlan)
+        self.fixer = dspy.ChainOfThought(FixError)
+        self.skill_extractor = dspy.ChainOfThought(ExtractSkill)
+        
+        self.skills = {}
+        self._load_skills()
+        
+        logger.info("✅ DSPy + Agnes агент инициализирован")
+    
+    def _load_skills(self):
+        skills_dir = os.path.join(agent_workspace, "domain-skills")
+        if not os.path.exists(skills_dir):
+            return
+        
+        for domain in os.listdir(skills_dir):
+            domain_path = os.path.join(skills_dir, domain)
+            if os.path.isdir(domain_path):
+                for f in os.listdir(domain_path):
+                    if f.endswith(".md"):
+                        skill_path = os.path.join(domain_path, f)
+                        try:
+                            with open(skill_path, 'r', encoding='utf-8') as file:
+                                content = file.read()
+                                skill_name = f.replace(".md", "")
+                                self.skills[skill_name] = {
+                                    "name": skill_name,
+                                    "domain": domain,
+                                    "content": content,
+                                    "path": skill_path
+                                }
+                        except Exception as e:
+                            logger.warning(f"⚠️ Не удалось загрузить навык {f}: {e}")
+        
+        logger.info(f"📚 Загружено {len(self.skills)} навыков")
+    
+    def forward(self, user_query: str, max_retries: int = 3):
+        logger.info(f"🤔 Планирую: {user_query}")
+        plan_result = self.planner(user_query=user_query)
+        
+        plan = plan_result.plan
+        code = plan_result.code
+        explanation = plan_result.explanation
+        
+        logger.info(f"📝 План:\n{plan}")
+        logger.info(f"💻 Код:\n{code}")
+        
+        output, success = self._execute_code(code)
+        
+        attempt = 0
+        while not success and attempt < max_retries:
+            logger.info(f"🔧 Исправляю ошибку (попытка {attempt + 1})")
+            
+            fix_result = self.fixer(
+                error=output,
+                broken_code=code
+            )
+            
+            code = fix_result.fixed_code
+            logger.info(f"🔄 Исправленный код:\n{code}")
+            
+            output, success = self._execute_code(code)
+            attempt += 1
+        
+        skill_created = False
+        if success and len(code) > 50:
+            skill = self._extract_skill(user_query, code)
+            if skill:
+                self.skills[skill['name']] = skill
+                self._save_skill(skill)
+                skill_created = True
+        
+        return {
+            "success": success,
+            "plan": plan,
+            "code": code,
+            "output": output,
+            "explanation": explanation,
+            "retries": attempt,
+            "skill_created": skill_created
+        }
+    
+    def _execute_code(self, code: str):
+        return execute_code(code)
+    
+    def _extract_skill(self, user_query: str, code: str):
+        try:
+            result = self.skill_extractor(
+                user_query=user_query,
+                code=code
+            )
+            
+            return {
+                "name": result.skill_name.lower().replace(" ", "_"),
+                "description": result.skill_description,
+                "code": result.skill_code,
+                "domain": "auto"
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось извлечь навык: {e}")
+            return None
+    
+    def _save_skill(self, skill: dict):
+        try:
+            skills_dir = os.path.join(agent_workspace, "domain-skills", skill.get("domain", "auto"))
+            os.makedirs(skills_dir, exist_ok=True)
+            
+            skill_path = os.path.join(skills_dir, f"{skill['name']}.md")
+            
+            content = f"# {skill['name']}\n\n**Описание:** {skill.get('description', 'Автоматически созданный навык')}\n\n**Код:**\n```python\n{skill['code']}\n```\n"
+            
+            with open(skill_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            logger.info(f"✅ Навык сохранён: {skill_path}")
+            
+            push_to_github(content, f"{skill['name']}.md", skill.get("domain", "auto"))
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения навыка: {e}")
+    
+    def use_skill(self, skill_name: str) -> dict:
+        if skill_name in self.skills:
+            skill = self.skills[skill_name]
+            
+            if 'code' in skill:
+                output, success = self._execute_code(skill['code'])
+                return {
+                    "success": success,
+                    "skill": skill_name,
+                    "output": output
+                }
+            elif 'path' in skill:
+                try:
+                    with open(skill['path'], 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        code_match = re.search(r'```python\n(.*?)\n```', content, re.DOTALL)
+                        if code_match:
+                            code = code_match.group(1)
+                            output, success = self._execute_code(code)
+                            return {
+                                "success": success,
+                                "skill": skill_name,
+                                "output": output
+                            }
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "error": f"Ошибка загрузки навыка: {e}"
+                    }
+        
+        return {
+            "success": False,
+            "error": f"Навык '{skill_name}' не найден"
+        }
+
+# ============================================================
 # GITHUB
 # ============================================================
 
 def push_to_github(content, filename, host="x.com"):
-    """Отправить файл навыка в GitHub по правильному пути."""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
         return False
@@ -199,7 +459,6 @@ def push_to_github(content, filename, host="x.com"):
         "Content-Type": "application/json"
     }
 
-    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -229,9 +488,7 @@ def push_to_github(content, filename, host="x.com"):
         logger.error(f"❌ Ошибка при отправке в GitHub: {e}")
         return False
 
-
 def push_helpers_to_github():
-    """Отправить agent_helpers.py в GitHub"""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан, helpers не будут отправлены")
         return False
@@ -246,14 +503,12 @@ def push_helpers_to_github():
         "Content-Type": "application/json"
     }
     
-    # Получаем текущий файл (чтобы получить sha)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha", None) if resp.status_code == 200 else None
     except:
         sha = None
     
-    # Читаем текущее содержимое файла в контейнере
     helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
     if not os.path.exists(helpers_path):
         logger.warning("⚠️ agent_helpers.py не найден")
@@ -283,172 +538,7 @@ def push_helpers_to_github():
         return False
 
 # ============================================================
-# ФОТОШОП (AGNES AI)
-# ============================================================
-
-AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
-
-def get_image_size(image_data):
-    """Определяет размер изображения"""
-    try:
-        img = Image.open(io.BytesIO(image_data))
-        width, height = img.size
-        logger.info(f"📐 Размер изображения: {width}x{height}")
-        return width, height
-    except Exception as e:
-        logger.error(f"Ошибка при определении размера: {e}")
-        return None, None
-
-def replace_background(image_data, new_background_prompt: str):
-    """
-    Заменяет фон изображения через Agnes AI.
-    
-    Args:
-        image_data: bytes изображения
-        new_background_prompt: описание нового фона
-    
-    Returns:
-        tuple: (url_result, error_message)
-    """
-    if not AGNES_API_KEY:
-        return None, "AGNES_API_KEY не установлен!"
-    
-    if not image_data:
-        return None, "Нет данных изображения"
-    
-    if not new_background_prompt or len(new_background_prompt.strip()) < 2:
-        return None, "Слишком короткое описание фона"
-    
-    try:
-        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
-        width, height = get_image_size(image_data)
-        
-        MAX_SIZE = 1024
-        MIN_SIZE = 256
-        
-        if width and height:
-            if width > MAX_SIZE or height > MAX_SIZE:
-                ratio = min(MAX_SIZE / width, MAX_SIZE / height)
-                width = int(width * ratio)
-                height = int(height * ratio)
-            if width < MIN_SIZE or height < MIN_SIZE:
-                ratio = max(MIN_SIZE / width, MIN_SIZE / height)
-                width = int(width * ratio)
-                height = int(height * ratio)
-            size = f"{width}x{height}"
-        else:
-            size = "1024x1024"
-            logger.warning("⚠️ Использую стандартный размер: 1024x1024")
-        
-        logger.info(f"📐 Размер для API: {size}")
-        
-        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
-        try:
-            img = Image.open(io.BytesIO(image_data))
-            if img.mode in ('RGBA', 'LA', 'P'):
-                img = img.convert('RGB')
-            buffer = io.BytesIO()
-            img.save(buffer, format='JPEG', quality=85, optimize=True)
-            image_data = buffer.getvalue()
-        except Exception as e:
-            logger.warning(f"Не удалось оптимизировать изображение: {e}")
-        
-        img_b64 = base64.b64encode(image_data).decode('utf-8')
-        data_uri = f"data:image/jpeg;base64,{img_b64}"
-        
-        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
-        enhanced_prompt = f"""
-        Replace the background with: {new_background_prompt}.
-        Keep the main subject exactly as is.
-        Maintain the original lighting and shadows.
-        Make the background look natural and realistic.
-        Do not alter the main subject.
-        """
-        
-        headers = {
-            "Authorization": f"Bearer {AGNES_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": "agnes-image-2.0-flash",
-            "prompt": enhanced_prompt.strip(),
-            "size": size,
-            "extra_body": {
-                "image": [data_uri],
-                "response_format": "url"
-            }
-        }
-        
-        # 4. ОТПРАВКА ЗАПРОСА (httpx)
-        logger.info(f"📤 Отправка запроса к Agnes AI...")
-        logger.info(f"   Промпт: {new_background_prompt[:50]}...")
-        
-        with httpx.Client(timeout=90.0) as client:
-            response = client.post(
-                AGNES_IMAGE_API_URL,
-                json=payload,
-                headers=headers
-            )
-            response.raise_for_status()
-            result = response.json()
-        
-        logger.info("✅ Изображение сгенерировано")
-        
-        # 5. ОБРАБОТКА ОТВЕТА
-        if 'data' in result and len(result['data']) > 0:
-            if 'url' in result['data'][0]:
-                return result['data'][0]['url'], None
-            elif 'b64_json' in result['data'][0]:
-                return result['data'][0]['b64_json'], None
-        
-        logger.error(f"❌ Неожиданный ответ: {result}")
-        return None, "Неожиданный формат ответа от API"
-        
-    except httpx.TimeoutException:
-        return None, "⏰ Превышено время ожидания (90 секунд)"
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code if e.response else "unknown"
-        return None, f"HTTP ошибка {status}: {str(e)}"
-    except httpx.RequestError as e:
-        logger.error(f"❌ Ошибка запроса: {e}")
-        return None, f"Ошибка сети: {str(e)}"
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        return None, f"Внутренняя ошибка: {str(e)[:100]}"
-
-# ============================================================
-# LLM
-# ============================================================
-
-async def ask_agnes(messages):
-    logger.info("=" * 60)
-    logger.info("📤 ОТПРАВКА В AGNES AI:")
-    for msg in messages:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        logger.info(f"  [{role}]: {content[:500]}..." if len(content) > 500 else f"  [{role}]: {content}")
-    logger.info("=" * 60)
-    
-    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "agnes-2.0-flash",
-        "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": 2000
-    }
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post("https://apihub.agnes-ai.com/v1/chat/completions", headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.error(f"❌ Ошибка Agnes AI: {e}")
-        return f"Ошибка LLM: {str(e)[:200]}"
-
-# ============================================================
-# ВЫПОЛНИТЕЛЬ
+# ВЫПОЛНИТЕЛЬ КОДА
 # ============================================================
 
 def execute_code(code):
@@ -470,29 +560,22 @@ def execute_code(code):
             
             logger.info(f"✅ Навык сохранён локально: {skill_path}")
             
-            # Отправляем в GitHub
             push_to_github(content, f"{name}.md", host)
             
             return skill_path
         
         def add_helper(code):
-            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
             helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
             
-            # Проверяем, что файл существует
             if not os.path.exists(helpers_path):
                 with open(helpers_path, "w") as f:
                     f.write('"""Agent-editable browser helpers."""\n')
             
-            # Добавляем код
             with open(helpers_path, "a", encoding='utf-8') as f:
                 f.write(f"\n\n{code}\n")
             
             logger.info(f"✅ Helper добавлен в agent_helpers.py")
-            
-            # Отправляем в GitHub
             push_helpers_to_github()
-            
             return True
         
         def capture_screenshot_with_path(path=None, full=False, max_dim=None):
@@ -558,17 +641,123 @@ def execute_code(code):
         return str(e), False
 
 # ============================================================
-# КОМАНДЫ
+# ИНИЦИАЛИЗАЦИЯ DSPy АГЕНТА
+# ============================================================
+
+agnes_lm = AgnesLM(
+    model="agnes-2.0-flash",
+    api_key=AGNES_API_KEY,
+    temperature=0.3,
+    max_tokens=2000
+)
+
+agent = BrowserAgent(lm=agnes_lm)
+logger.info("✅ DSPy + Agnes агент готов!")
+
+# ============================================================
+# КОМАНДЫ ТЕЛЕГРАМ
 # ============================================================
 
 async def start(update, context):
     await update.message.reply_text(
-        "🌐 Браузер:\n"
-        "/ask <запрос> — задать задачу агенту\n"
+        "🌐 Браузерный агент (DSPy + Agnes AI)\n\n"
+        "📌 Команды:\n"
+        "/ask <запрос> — выполнить задачу\n"
+        "/skill <название> — использовать навык\n"
+        "/skills — список навыков\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
-        "/log — скачать логи"
+        "/log — скачать логи\n"
+        "/stats — статистика агента\n\n"
+        "🧠 Особенности:\n"
+        "• Автоматическое создание навыков\n"
+        "• Самовосстановление при ошибках\n"
+        "• Структурированное планирование"
     )
+
+async def ask(update, context):
+    if not context.args:
+        await update.message.reply_text("Пример: /ask сделай скриншот google.com")
+        return
+    
+    user_query = " ".join(context.args)
+    username = update.effective_user.username or "unknown"
+    logger.info(f"👤 {username} запросил: {user_query}")
+    
+    status_msg = await update.message.reply_text("🧠 Думаю...")
+    
+    try:
+        result = agent.forward(user_query)
+        
+        if result['success']:
+            response = (
+                f"✅ Готово!\n\n"
+                f"📝 План:\n{result['plan'][:300]}\n\n"
+                f"📤 Результат:\n{result['output'][:1500]}\n\n"
+                f"🔄 Попыток: {result['retries'] + 1}"
+            )
+            if result['skill_created']:
+                response += "\n🧠 Новый навык создан! Используй /skills"
+            
+            await status_msg.edit_text(response)
+        else:
+            await status_msg.edit_text(
+                f"❌ Ошибка:\n{result['output'][:500]}\n\n"
+                f"📝 План:\n{result['plan'][:200]}"
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def skill_command(update, context):
+    if not context.args:
+        await update.message.reply_text("Пример: /skill open_google")
+        return
+    
+    skill_name = context.args[0]
+    result = agent.use_skill(skill_name)
+    
+    if result['success']:
+        await update.message.reply_text(
+            f"✅ Навык '{skill_name}' выполнен!\n\n"
+            f"📤 {result['output'][:500]}"
+        )
+    else:
+        await update.message.reply_text(
+            f"❌ {result.get('error', 'Неизвестная ошибка')}"
+        )
+
+async def skills_list(update, context):
+    if not agent.skills:
+        await update.message.reply_text("📭 Навыков пока нет. Агент создаст их по мере работы.")
+        return
+    
+    skills_text = "🧠 Доступные навыки:\n\n"
+    for name, skill in agent.skills.items():
+        desc = skill.get('description', 'Без описания')[:50]
+        skills_text += f"• {name} — {desc}...\n"
+    
+    if len(skills_text) > 4000:
+        skills_text = skills_text[:4000] + "\n\n... и ещё"
+    
+    await update.message.reply_text(skills_text)
+
+async def stats(update, context):
+    history = agnes_lm.get_history()
+    
+    stats_text = (
+        f"📊 Статистика агента\n\n"
+        f"🧠 Навыков: {len(agent.skills)}\n"
+        f"💬 Вызовов Agnes AI: {len(history)}\n"
+        f"🔄 Последних запросов: {len(history[-5:]) if history else 0}\n\n"
+        f"📚 Последние навыки:\n"
+    )
+    
+    for name in list(agent.skills.keys())[-5:]:
+        stats_text += f"• {name}\n"
+    
+    await update.message.reply_text(stats_text)
 
 async def log(update, context):
     try:
@@ -616,49 +805,6 @@ async def images(update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def ask(update, context):
-    if not context.args:
-        await update.message.reply_text("Пример: /ask сделай скриншот google.com")
-        return
-
-    user_query = " ".join(context.args)
-    username = update.effective_user.username or "unknown"
-    logger.info(f"👤 {username} запросил: {user_query}")
-    
-    status_msg = await update.message.reply_text("🤔 Думаю...")
-
-    try:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query}
-        ]
-
-        response = await ask_agnes(messages)
-
-        if "```python" in response:
-            code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-            code = code_match.group(1) if code_match else response
-
-            await status_msg.edit_text("⚙️ Выполняю код...")
-            output, success = execute_code(code)
-
-            if not success:
-                await status_msg.edit_text(f"❌ {output}")
-            else:
-                logger.info(f"✅ Успешное выполнение для {username}")
-                await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
-        else:
-            logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
-            await status_msg.edit_text(response[:4000])
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# ФОТОШОП КОМАНДЫ (УДАЛЕНЫ)
-# ============================================================
-
 # ============================================================
 # ЗАПУСК
 # ============================================================
@@ -666,19 +812,17 @@ async def ask(update, context):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("skill", skill_command))
+    app.add_handler(CommandHandler("skills", skills_list))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
-    
-    # Фотошоп команды (УДАЛЕНЫ)
-    # app.add_handler(CommandHandler("bg", bg_command))
-    # app.add_handler(CommandHandler("clear", clear_command))
-    # app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Бот с DSPy + Agnes запущен!")
+    logger.info(f"🧠 Загружено навыков: {len(agent.skills)}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
