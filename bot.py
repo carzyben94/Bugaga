@@ -1,7 +1,7 @@
 import os
 import sys
 import stat
-import time 
+import time
 import logging
 import base64
 import re
@@ -211,7 +211,6 @@ def push_to_github(content, filename, host="x.com"):
         "Content-Type": "application/json"
     }
 
-    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -258,14 +257,12 @@ def push_helpers_to_github():
         "Content-Type": "application/json"
     }
     
-    # Получаем текущий файл (чтобы получить sha)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha", None) if resp.status_code == 200 else None
     except:
         sha = None
     
-    # Читаем текущее содержимое файла в контейнере
     helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
     if not os.path.exists(helpers_path):
         logger.warning("⚠️ agent_helpers.py не найден")
@@ -301,7 +298,6 @@ def push_helpers_to_github():
 AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 def get_image_size(image_data):
-    """Определяет размер изображения"""
     try:
         img = Image.open(io.BytesIO(image_data))
         width, height = img.size
@@ -312,16 +308,6 @@ def get_image_size(image_data):
         return None, None
 
 def replace_background(image_data, new_background_prompt: str):
-    """
-    Заменяет фон изображения через Agnes AI.
-    
-    Args:
-        image_data: bytes изображения
-        new_background_prompt: описание нового фона
-    
-    Returns:
-        tuple: (url_result, error_message)
-    """
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
     
@@ -332,7 +318,6 @@ def replace_background(image_data, new_background_prompt: str):
         return None, "Слишком короткое описание фона"
     
     try:
-        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
         width, height = get_image_size(image_data)
         
         MAX_SIZE = 1024
@@ -354,7 +339,6 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info(f"📐 Размер для API: {size}")
         
-        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
         try:
             img = Image.open(io.BytesIO(image_data))
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -368,7 +352,6 @@ def replace_background(image_data, new_background_prompt: str):
         img_b64 = base64.b64encode(image_data).decode('utf-8')
         data_uri = f"data:image/jpeg;base64,{img_b64}"
         
-        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
         enhanced_prompt = f"""
         Replace the background with: {new_background_prompt}.
         Keep the main subject exactly as is.
@@ -392,7 +375,6 @@ def replace_background(image_data, new_background_prompt: str):
             }
         }
         
-        # 4. ОТПРАВКА ЗАПРОСА (httpx)
         logger.info(f"📤 Отправка запроса к Agnes AI...")
         logger.info(f"   Промпт: {new_background_prompt[:50]}...")
         
@@ -407,7 +389,6 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info("✅ Изображение сгенерировано")
         
-        # 5. ОБРАБОТКА ОТВЕТА
         if 'data' in result and len(result['data']) > 0:
             if 'url' in result['data'][0]:
                 return result['data'][0]['url'], None
@@ -465,7 +446,7 @@ async def ask_agnes(messages):
 
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
-    Prime Agent планирует через LiteLLM прокси, используя Agnes как провайдера.
+    Prime Agent планирует через LiteLLM, используя Agnes как провайдера.
     """
     if not PRIME_AVAILABLE:
         return "❌ Prime Agent не доступен", None
@@ -556,27 +537,22 @@ def execute_code(code):
             
             logger.info(f"✅ Навык сохранён локально: {skill_path}")
             
-            # Отправляем в GitHub
             push_to_github(content, f"{name}.md", host)
             
             return skill_path
         
         def add_helper(code):
-            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
             helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
             
-            # Проверяем, что файл существует
             if not os.path.exists(helpers_path):
                 with open(helpers_path, "w") as f:
                     f.write('"""Agent-editable browser helpers."""\n')
             
-            # Добавляем код
             with open(helpers_path, "a", encoding='utf-8') as f:
                 f.write(f"\n\n{code}\n")
             
             logger.info(f"✅ Helper добавлен в agent_helpers.py")
             
-            # Отправляем в GitHub
             push_helpers_to_github()
             
             return True
@@ -686,7 +662,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         harness_status = "❌ Не отвечает (Chromium не запущен)"
     
-    # 5. Проверка LiteLLM прокси
+    # 5. Проверка LiteLLM прокси (ИСПРАВЛЕНО)
     litellm_status = "❌ Не доступен"
     try:
         resp = httpx.get("http://localhost:4000/health", timeout=3)
@@ -744,7 +720,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузерный агент:**\n"
         "/ask <запрос> — Agnes AI + Harness\n"
-        "/prime <запрос> — Prime Agent + Agnes + Harness (глубокое мышление)\n"
+        "/prime <запрос> — Prime Agent + LiteLLM + Agnes + Harness\n"
         "/status — статус всех компонентов\n\n"
         "📸 **Скриншоты:**\n"
         "/image — последний скриншот\n"
@@ -890,11 +866,9 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🧠 Prime Agent думает через LiteLLM...")
     
     try:
-        # Получаем план от Prime Agent через LiteLLM
         response, code = await ask_prime_agent(user_query)
         
         if code:
-            # Выполняем код через Harness
             await status_msg.edit_text("⚙️ Выполняю код через Browser Harness...")
             output, success = execute_code(code)
             
@@ -908,7 +882,6 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"❌ Ошибка выполнения:\n```\n{output[:500]}\n```"
                 )
         else:
-            # Если кода нет — пробуем через Agnes напрямую
             await status_msg.edit_text("🔄 Prime Agent не сгенерировал код, пробую Agnes...")
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -942,7 +915,6 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Очищает сохраненное изображение"""
     if 'last_image' in context.user_data:
         del context.user_data['last_image']
         await update.message.reply_text("🧹 Кэш очищен!")
@@ -950,7 +922,6 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 Кэш пуст")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохраняет полученное фото"""
     try:
         photo_file = await update.message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
@@ -967,12 +938,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Замена фона через Agnes AI"""
     if not AGNES_API_KEY:
         await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
         return
 
-    # Проверяем, есть ли сохраненное изображение
     if 'last_image' not in context.user_data:
         await update.message.reply_text(
             "📸 Сначала загрузите картинку!\n"
@@ -980,7 +949,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Если нет описания
     if not context.args:
         await update.message.reply_text(
             "✏️ Напишите описание нового фона.\n"
@@ -1012,7 +980,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if result_url:
             try:
-                # Если пришёл base64
                 if result_url.startswith('data:image'):
                     img_data = base64.b64decode(result_url.split(',')[1])
                     await update.message.reply_photo(
@@ -1020,7 +987,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption=f"🖼️ Готово! Фон заменён на: {prompt}"
                     )
                 else:
-                    # Если пришёл URL
                     response = httpx.get(result_url, timeout=30)
                     if response.status_code == 200:
                         await update.message.reply_photo(
@@ -1046,7 +1012,6 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("prime", prime))
@@ -1056,7 +1021,6 @@ def main():
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
     
-    # Фотошоп команды
     app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
