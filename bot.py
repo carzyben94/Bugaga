@@ -1,6 +1,3 @@
-#Bot.py рабочий
-
-# bot.py
 import os
 import sys
 import stat
@@ -66,6 +63,18 @@ from browser_harness.helpers import (
     fill_input, upload_file, http_get, drain_events
 )
 from browser_harness.admin import ensure_daemon
+
+# ============================================================
+# PRIME AGENT
+# ============================================================
+
+try:
+    from prime_agent_client import PrimeSession
+    PRIME_AVAILABLE = True
+    logger.info("✅ Prime Agent клиент загружен")
+except ImportError:
+    PRIME_AVAILABLE = False
+    logger.warning("⚠️ Prime Agent не установлен")
 
 # ============================================================
 # КУКИ (WebSocket)
@@ -450,6 +459,82 @@ async def ask_agnes(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
+# PRIME AGENT + BROWSER HARNESS
+# ============================================================
+
+async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
+    """
+    Использует Prime Agent для генерации кода через Agnes.
+    Возвращает: (ответ_текст, код_для_выполнения)
+    """
+    if not PRIME_AVAILABLE:
+        return "❌ Prime Agent не доступен", None
+    
+    logger.info(f"🧠 Prime Agent запрос: {user_query}")
+    
+    # Промпт для Prime Agent — заставляем генерировать код для Harness
+    prime_prompt = f"""
+    Ты — эксперт по browser-harness. Напиши Python-код для выполнения задачи.
+    
+    Доступные функции browser-harness:
+    - new_tab() — открыть новую вкладку
+    - goto_url(url) — перейти по URL
+    - capture_screenshot(path) — сделать скриншот
+    - click_at_xy(x, y) — кликнуть по координатам
+    - type_text(text) — напечатать текст
+    - press_key(key) — нажать клавишу (Enter, Escape и т.д.)
+    - wait_for_load() — ждать загрузки
+    - wait_for_element(selector, timeout) — ждать элемент
+    - page_info() — получить информацию о странице
+    - scroll(x, y) — прокрутить страницу
+    - fill_input(selector, text) — заполнить поле ввода
+    - list_tabs() — список вкладок
+    - switch_tab(index) — переключить вкладку
+    - close_tab(index) — закрыть вкладку
+    - js(script) — выполнить JavaScript
+    - save_skill(host, name, content) — сохранить навык
+    - add_helper(code) — добавить вспомогательную функцию
+    
+    Задача: {user_query}
+    
+    Ответь ТОЛЬКО кодом в формате:
+    ```python
+    # твой код
+    ```
+    
+    Не используй другие форматы ответа. Код должен быть рабочим.
+    """
+    
+    try:
+        # Используем Prime Agent с OpenAI провайдером
+        # Если у вас есть Agnes как провайдер — замените provider="agnes"
+        async with PrimeSession(
+            cwd=agent_workspace,
+            provider="openai",
+            model="gpt-4o",
+            verbose=False
+        ) as session:
+            
+            response = ""
+            async for event in session.prompt_stream(prime_prompt):
+                if hasattr(event, 'text_delta'):
+                    response += event.text_delta
+            
+            logger.info(f"📝 Ответ Prime Agent: {response[:200]}...")
+            
+            # Извлекаем код
+            code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
+            if code_match:
+                code = code_match.group(1)
+                return response, code
+            else:
+                return response, None
+                
+    except Exception as e:
+        logger.error(f"❌ Ошибка Prime Agent: {e}")
+        return f"❌ Ошибка Prime Agent: {str(e)[:200]}", None
+
+# ============================================================
 # ВЫПОЛНИТЕЛЬ
 # ============================================================
 
@@ -535,7 +620,7 @@ def execute_code(code):
             'save_skill': save_skill,
             'add_helper': add_helper,
             'time': time,
-            'json': json,  # ← ДОБАВЛЕНО
+            'json': json,
             'print': print, 
             '__builtins__': __builtins__,
         }
@@ -565,15 +650,19 @@ def execute_code(code):
 
 async def start(update, context):
     await update.message.reply_text(
-        "🌐 Браузер:\n"
-        "/ask <запрос> — задать задачу агенту\n"
+        "🌐 **Браузерный агент:**\n"
+        "/ask <запрос> — Agnes AI + Harness\n"
+        "/prime <запрос> — Prime Agent + Harness (глубокое мышление)\n\n"
+        "📸 **Скриншоты:**\n"
         "/image — последний скриншот\n"
-        "/images — все скриншоты\n"
+        "/images — все скриншоты\n\n"
+        "🧠 **Навыки:**\n"
         "/skills — список навыков\n"
         "/log — скачать логи\n\n"
-        "🎨 Фотошоп:\n"
+        "🎨 **Фотошоп:**\n"
         "/bg <описание> — заменить фон\n"
-        "/clear — очистить кэш"
+        "/clear — очистить кэш",
+        parse_mode='Markdown'
     )
 
 async def log(update, context):
@@ -689,6 +778,51 @@ async def ask(update, context):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
+# PRIME КОМАНДА
+# ============================================================
+
+async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prime Agent генерирует код, Harness выполняет"""
+    if not context.args:
+        await update.message.reply_text(
+            "🧠 Prime Agent + Browser Harness\n"
+            "Пример: /prime открой google.com и сделай скриншот"
+        )
+        return
+    
+    user_query = " ".join(context.args)
+    username = update.effective_user.username or "unknown"
+    logger.info(f"👤 {username} запросил Prime: {user_query}")
+    
+    status_msg = await update.message.reply_text("🧠 Prime Agent думает...")
+    
+    try:
+        # Получаем ответ от Prime Agent
+        response, code = await ask_prime_agent(user_query)
+        
+        if code:
+            # Выполняем код через Harness
+            await status_msg.edit_text("⚙️ Выполняю код через Browser Harness...")
+            output, success = execute_code(code)
+            
+            if success:
+                await status_msg.edit_text(
+                    f"✅ **Prime Agent + Harness**\n\n"
+                    f"📤 Результат:\n```\n{output[:3500]}\n```"
+                )
+            else:
+                await status_msg.edit_text(
+                    f"❌ Ошибка выполнения:\n```\n{output[:500]}\n```"
+                )
+        else:
+            # Если кода нет — просто показываем ответ
+            await status_msg.edit_text(response[:4000])
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /prime для {username}: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ============================================================
 # ФОТОШОП КОМАНДЫ
 # ============================================================
 
@@ -800,6 +934,7 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("prime", prime))  # Prime Agent
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
@@ -810,7 +945,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Бот с Prime Agent запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
