@@ -28,7 +28,36 @@ RUN pip install 'fastapi==0.124.4' 'uvicorn==0.34.0' && \
     pip install 'litellm[proxy]==1.83.12'
 
 # ============================================================
-# СОЗДАЁМ APPEND_SYSTEM.md ДЛЯ PRIME AGENT
+# СОЗДАЁМ SETTINGS.JSON
+# ============================================================
+RUN echo '{' > /root/.prime/agent/settings.json && \
+    echo '  "defaultThinkingLevel": "xhigh",' >> /root/.prime/agent/settings.json && \
+    echo '  "defaultProvider": "litellm",' >> /root/.prime/agent/settings.json && \
+    echo '  "defaultModel": "agnes-2.0-flash",' >> /root/.prime/agent/settings.json && \
+    echo '  "compaction": {' >> /root/.prime/agent/settings.json && \
+    echo '    "enabled": true,' >> /root/.prime/agent/settings.json && \
+    echo '    "reserveTokens": 8192,' >> /root/.prime/agent/settings.json && \
+    echo '    "keepRecentTokens": 16384' >> /root/.prime/agent/settings.json && \
+    echo '  },' >> /root/.prime/agent/settings.json && \
+    echo '  "retry": {' >> /root/.prime/agent/settings.json && \
+    echo '    "maxRetries": 3,' >> /root/.prime/agent/settings.json && \
+    echo '    "baseDelayMs": 1000,' >> /root/.prime/agent/settings.json && \
+    echo '    "provider": {' >> /root/.prime/agent/settings.json && \
+    echo '      "timeoutMs": 120000' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '    }' >> /root/.prime/agent/settings.json && \
+    echo '  },' >> /root/.prime/agent/settings.json && \
+    echo '  "thinkingBudgets": {' >> /root/.prime/agent/settings.json && \
+    echo '    "off": 0,' >> /root/.prime/agent/settings.json && \
+    echo '    "minimal": 1024,' >> /root/.prime/agent/settings.json && \
+    echo '    "low": 4096,' >> /root/.prime/agent/settings.json && \
+    echo '    "medium": 8192,' >> /root/.prime/agent/settings.json && \
+    echo '    "high": 16384,' >> /root/.prime/agent/settings.json && \
+    echo '    "xhigh": 32768' >> /root/.prime/agent/settings.json && \
+    echo '  }' >> /root/.prime/agent/settings.json && \
+    echo '}' >> /root/.prime/agent/settings.json
+
+# ============================================================
+# СОЗДАЁМ APPEND_SYSTEM.md
 # ============================================================
 RUN echo '## Browser Harness Integration' > /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
@@ -45,6 +74,10 @@ RUN echo '## Browser Harness Integration' > /root/.prime/agent/APPEND_SYSTEM.md 
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '### ВАЖНО: НЕ ИСПОЛЬЗУЙ browser_harness. !!!' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'Все функции вызываются напрямую, без префикса browser_harness.' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '### Уровень мышления:' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo 'Для сложных многошаговых задач используй высокий уровень мышления.' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo 'Для простых задач используй низкий уровень.' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '### Основные функции (вызывай напрямую):' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- new_tab(url) — открыть новую вкладку (используй для первого перехода)' >> /root/.prime/agent/APPEND_SYSTEM.md && \
