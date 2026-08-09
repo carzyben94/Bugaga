@@ -23,13 +23,10 @@ RUN uv tool install --python 3.12 --upgrade --force browser-harness
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
 # ============================================================
-# ИСПРАВЛЕНО: устанавливаем litellm[proxy] с совместимыми версиями
+# ИСПРАВЛЕНО: правильная установка LiteLLM с прокси
 # ============================================================
-# Сначала устанавливаем совместимую версию fastapi
-RUN pip install 'fastapi>=0.115.0,<0.125.0' 'uvicorn>=0.30.0'
-
-# Затем устанавливаем litellm с прокси-зависимостями
-RUN pip install 'litellm[proxy]'
+RUN pip install 'fastapi==0.124.4' 'uvicorn==0.34.0' && \
+    pip install 'litellm[proxy]==1.83.12'
 
 # Проверка
 RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
