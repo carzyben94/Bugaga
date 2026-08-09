@@ -1,750 +1,794 @@
-# qwen_bot.py
-import os 
-import json       
-import asyncio
-import logging
-import uuid
-import httpx
-import re
+#Bot.py рабочий
+
+# bot.py
+import os
+import sys
+import stat
 import time
-from datetime import datetime
-from typing import Optional, Dict, List, Generator, AsyncGenerator
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+import logging
+import base64
+import re
+import asyncio
+import io
+import json
+import httpx
+import warnings
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from promt import SYSTEM_PROMPT
+from PIL import Image
 
-# ============================================================
-# НАСТРОЙКИ
-# ============================================================
+warnings.filterwarnings("ignore")
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-QWEN_TOKEN = os.getenv("QWEN_TOKEN")
+agent_workspace = "/app/browser-harness/agent-workspace"
+sys.path.insert(0, agent_workspace)
 
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+helpers_file = os.path.join(agent_workspace, "agent_helpers.py")
+os.makedirs(agent_workspace, exist_ok=True)
+if not os.path.exists(helpers_file):
+    with open(helpers_file, "w") as f:
+        f.write('"""Agent-editable browser helpers."""\n')
+os.chmod(agent_workspace, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+os.chmod(helpers_file, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+
+os.environ["BH_DOMAIN_SKILLS"] = "1"
+os.environ["BH_AGENT_WORKSPACE"] = "/app/browser-harness/agent-workspace"
+
+LOGS_DIR = '/app/logs'
+SCREENSHOTS_DIR = '/app/screenshots'
+os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
+
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("telegram").setLevel(logging.CRITICAL)
+logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
+
 logger = logging.getLogger(__name__)
+logger.info(f"✅ agent_workspace: {agent_workspace}")
+logger.info(f"✅ helpers_file: {helpers_file}")
+logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
+
+sys.path.insert(0, "browser-harness/src")
+
+from browser_harness.helpers import (
+    new_tab, goto_url, wait_for_load, page_info, capture_screenshot,
+    click_at_xy, type_text, press_key, scroll, js, cdp, ensure_real_tab,
+    wait_for_element, list_tabs, current_tab, close_tab, switch_tab,
+    fill_input, upload_file, http_get, drain_events
+)
+from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# ЗАГРУЗКА КУК
+# КУКИ (WebSocket)
 # ============================================================
 
 try:
     from cookies import COOKIES
-    logger.info(f"✅ Загружено {len(COOKIES)} кук из cookies.py")
+    import websockets
+    import json
+    
+    async def set_cookies_async():
+        try:
+            import httpx
+            resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+            pages = resp.json()
+            if not pages:
+                logger.error("❌ Нет активных вкладок")
+                return False
+            ws_url = pages[0]["webSocketDebuggerUrl"]
+            logger.info("🔗 Подключаюсь к WebSocket...")
+            async with websockets.connect(ws_url) as ws:
+                await ws.send(json.dumps({"id": 1, "method": "Network.setCookies", "params": {"cookies": COOKIES}}))
+                response = json.loads(await ws.recv())
+                if "error" in response:
+                    logger.error(f"❌ CDP ошибка: {response['error']}")
+                    return False
+                logger.info(f"🍪 Установлено {len(COOKIES)} кук")
+                return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            return False
+    
+    def set_cookies_global():
+        try:
+            loop = asyncio.get_running_loop()
+            return asyncio.run_coroutine_threadsafe(set_cookies_async(), loop).result(timeout=10)
+        except RuntimeError:
+            return asyncio.run(set_cookies_async())
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
+            return False
+
 except ImportError:
+    logger.warning("⚠️ websockets не установлен")
     COOKIES = []
-    logger.warning("⚠️ cookies.py не найден")
+    def set_cookies_global():
+        return False
 
 # ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# НАСТРОЙКА РАЗМЕРА ОКНА (WebSocket)
 # ============================================================
 
-def escape_markdown(text: str) -> str:
-    """Экранирует спецсимволы Markdown"""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
-
-# ============================================================
-# QWEN КЛИЕНТ (на httpx)
-# ============================================================
-
-class QwenClient:
-    """Клиент для работы с Qwen API на httpx"""
-    
-    def __init__(self, token: Optional[str] = None):
-        self.base_url = "https://chat.qwen.ai/api/v2"
-        self.client = httpx.Client(timeout=60.0)
-        self.current_chat_id = None
-        
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/150.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-            "Referer": "https://chat.qwen.ai/",
-            "source": "web",
-            "Version": "0.2.81",
-            "bx-v": "2.5.37",
-            "Content-Type": "application/json",
-            "X-Request-Id": str(uuid.uuid4()),
-            "Timezone": datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0000")
-        }
-        
-        if token:
-            self.headers["Authorization"] = f"Bearer {token}"
-        
-        self._load_cookies_once()
-    
-    def _load_cookies_once(self):
-        """Загружаем куки из всех источников, убираем дубликаты"""
-        all_cookies = {}
-        
-        if COOKIES:
-            for cookie in COOKIES:
-                name = cookie.get("name")
-                value = cookie.get("value")
-                domain = cookie.get("domain", ".qwen.ai")
-                path = cookie.get("path", "/")
-                
-                if name and value:
-                    all_cookies[name] = {
-                        "value": value, 
-                        "domain": domain, 
-                        "path": path
-                    }
-            logger.info(f"📦 Из cookies.py: {len(COOKIES)} кук")
-        
-        try:
-            with open("qwen_cookies.json", "r") as f:
-                json_cookies = json.load(f)
-                for name, value in json_cookies.items():
-                    all_cookies[name] = {
-                        "value": value,
-                        "domain": ".qwen.ai",
-                        "path": "/"
-                    }
-                logger.info(f"📦 Из qwen_cookies.json: {len(json_cookies)} кук")
-        except FileNotFoundError:
-            pass
-        
-        for name, data in all_cookies.items():
-            try:
-                self.client.cookies.set(
-                    name,
-                    data["value"],
-                    domain=data["domain"],
-                    path=data["path"]
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось установить куку {name}: {e}")
-        
-        logger.info(f"🍪 Итого установлено: {len(all_cookies)} уникальных кук")
-        
-        # Защита от дубликатов в ответах
-        original_send = self.client.send
-        
-        def safe_send(request, **kwargs):
-            response = original_send(request, **kwargs)
-            seen = set()
-            unique_cookies = []
-            for cookie in response.cookies.jar:
-                if cookie.name not in seen:
-                    seen.add(cookie.name)
-                    unique_cookies.append(cookie)
-            response.cookies.jar.clear()
-            for cookie in unique_cookies:
-                response.cookies.jar.set_cookie(cookie)
-            return response
-        
-        self.client.send = safe_send
-    
-    def _save_cookies(self):
-        """Сохраняем куки в файл"""
-        try:
-            cookies_dict = {}
-            for cookie in self.client.cookies.jar:
-                cookies_dict[cookie.name] = cookie.value
-            
-            with open("qwen_cookies.json", "w") as f:
-                json.dump(cookies_dict, f)
-            logger.info(f"💾 Сохранено {len(cookies_dict)} кук")
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось сохранить куки: {e}")
-    
-    def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
-        """Универсальный метод для запросов"""
-        url = f"{self.base_url}{endpoint}"
-        self.headers["X-Request-Id"] = str(uuid.uuid4())
-        
-        try:
-            response = self.client.request(
-                method, 
-                url, 
-                headers=self.headers,
-                **kwargs
-            )
-            
-            logger.info(f"📤 {method} {endpoint} -> {response.status_code}")
-            
-            if response.status_code == 429:
-                logger.warning("⚠️ Rate limit, ждем 5 секунд...")
-                time.sleep(5)
-                return self._request(method, endpoint, **kwargs)
-            
-            if response.status_code == 403:
-                logger.error(f"❌ Ошибка авторизации: {response.text}")
-                raise Exception("Требуется авторизация. Проверьте куки или токен.")
-            
-            if response.status_code == 401:
-                logger.error(f"❌ Не авторизован: {response.text}")
-                raise Exception("Не авторизован. Обновите куки.")
-            
-            # Проверяем на капчу/защиту
-            if 'RGV587_ERROR' in response.text or 'punish' in response.text:
-                logger.warning("🛡️ Обнаружена защита Cloudflare, ждем 10 секунд...")
-                time.sleep(10)
-                return self._request(method, endpoint, **kwargs)
-            
-            response.raise_for_status()
-            
-            try:
-                self._save_cookies()
-            except:
-                pass
-            
-            return response.json()
-            
-        except httpx.RequestError as e:
-            logger.error(f"❌ Ошибка запроса: {e}")
-            raise Exception(f"Ошибка запроса: {e}")
-    
-    def _create_chat(self) -> Optional[str]:
-        """Создаёт новый чат и возвращает его ID"""
-        try:
-            # Пробуем разные варианты создания чата
-            logger.info("🔧 Пытаемся создать новый чат...")
-            
-            # Вариант 1: POST /chats/
-            try:
-                payload = {"title": "Новый чат"}
-                result = self._request("POST", "/chats/", json=payload)
-                logger.info(f"Ответ на создание чата: {json.dumps(result, ensure_ascii=False)[:500]}")
-                
-                if 'data' in result:
-                    if isinstance(result['data'], dict) and 'id' in result['data']:
-                        chat_id = result['data']['id']
-                        logger.info(f"✅ Чат создан (вариант 1): {chat_id}")
-                        return chat_id
-                    elif isinstance(result['data'], str):
-                        logger.info(f"✅ Чат создан (вариант 1, строка): {result['data']}")
-                        return result['data']
-            except Exception as e:
-                logger.warning(f"Вариант 1 не сработал: {e}")
-            
-            # Вариант 2: GET /chats/ и берём первый
-            try:
-                chats = self.get_chats()
-                logger.info(f"Список чатов: {json.dumps(chats, ensure_ascii=False)[:500]}")
-                
-                if 'data' in chats:
-                    data = chats['data']
-                    if isinstance(data, list) and data:
-                        chat_id = data[0].get('id')
-                        if chat_id:
-                            logger.info(f"✅ Используем существующий чат: {chat_id}")
-                            return chat_id
-            except Exception as e:
-                logger.warning(f"Вариант 2 не сработал: {e}")
-            
-            # Вариант 3: Отправляем запрос к /chat/completions без chat_id
-            try:
-                logger.info("Пробуем отправить запрос без chat_id...")
-                payload = {
-                    "model": "qwen-turbo",
-                    "query": "тест",
-                    "stream": False,
-                    "temperature": 0.7,
-                    "max_tokens": 10
+async def set_viewport_async():
+    try:
+        import httpx
+        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+        pages = resp.json()
+        if not pages:
+            logger.warning("⚠️ Нет активных вкладок для установки размера")
+            return False
+        ws_url = pages[0]["webSocketDebuggerUrl"]
+        logger.info("🔗 Подключаюсь к WebSocket для установки размера...")
+        async with websockets.connect(ws_url) as ws:
+            await ws.send(json.dumps({
+                "id": 2,
+                "method": "Emulation.setDeviceMetricsOverride",
+                "params": {
+                    "width": 1280,
+                    "height": 720,
+                    "deviceScaleFactor": 1,
+                    "mobile": False,
+                    "screenWidth": 1280,
+                    "screenHeight": 720,
+                    "positionX": 0,
+                    "positionY": 0
                 }
-                result = self._request("POST", "/chat/completions", json=payload)
-                logger.info(f"Ответ без chat_id: {json.dumps(result, ensure_ascii=False)[:500]}")
-                
-                if 'chat_id' in result:
-                    return result['chat_id']
-                if 'data' in result and isinstance(result['data'], dict) and 'chat_id' in result['data']:
-                    return result['data']['chat_id']
-            except Exception as e:
-                logger.warning(f"Вариант 3 не сработал: {e}")
-            
-            logger.error("❌ Все варианты создания чата не сработали")
-            return None
-            
+            }))
+            response = json.loads(await ws.recv())
+            if "error" in response:
+                logger.warning(f"⚠️ CDP ошибка: {response['error']}")
+                return False
+            logger.info("✅ Размер окна установлен: 1280x720")
+            return True
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
+        return False
+
+def set_viewport_global():
+    try:
+        loop = asyncio.get_running_loop()
+        return asyncio.run_coroutine_threadsafe(set_viewport_async(), loop).result(timeout=10)
+    except RuntimeError:
+        return asyncio.run(set_viewport_async())
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
+        return False
+
+# ============================================================
+# НАСТРОЙКА
+# ============================================================
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+
+os.environ["BU_CDP_URL"] = "http://localhost:9222"
+ensure_daemon()
+logger.info("✅ Браузер готов")
+
+set_cookies_global()
+set_viewport_global()
+
+# ============================================================
+# GITHUB
+# ============================================================
+
+def push_to_github(content, filename, host="x.com"):
+    """Отправить файл навыка в GitHub по правильному пути."""
+    if not GITHUB_TOKEN:
+        logger.warning("⚠️ GITHUB_TOKEN не задан, навык не будет отправлен в GitHub")
+        return False
+
+    repo = "carzyben94/Bugaga"
+    branch = "main"
+    file_path = f"browser-harness/agent-workspace/domain-skills/{host}/{filename}"
+    url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
+    try:
+        resp = httpx.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            sha = resp.json().get("sha")
+        else:
+            sha = None
+    except Exception:
+        sha = None
+
+    data = {
+        "message": f"Добавлен/обновлён навык {filename} для {host}",
+        "content": base64.b64encode(content.encode()).decode(),
+        "branch": branch
+    }
+    if sha:
+        data["sha"] = sha
+
+    try:
+        response = httpx.put(url, headers=headers, json=data, timeout=30)
+        if response.status_code in [200, 201]:
+            logger.info(f"✅ Навык отправлен в GitHub: {file_path}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки в GitHub: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке в GitHub: {e}")
+        return False
+
+
+def push_helpers_to_github():
+    """Отправить agent_helpers.py в GitHub"""
+    if not GITHUB_TOKEN:
+        logger.warning("⚠️ GITHUB_TOKEN не задан, helpers не будут отправлены")
+        return False
+    
+    repo = "carzyben94/Bugaga"
+    branch = "main"
+    file_path = "browser-harness/agent-workspace/agent_helpers.py"
+    url = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+    
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # Получаем текущий файл (чтобы получить sha)
+    try:
+        resp = httpx.get(url, headers=headers, timeout=10)
+        sha = resp.json().get("sha", None) if resp.status_code == 200 else None
+    except:
+        sha = None
+    
+    # Читаем текущее содержимое файла в контейнере
+    helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+    if not os.path.exists(helpers_path):
+        logger.warning("⚠️ agent_helpers.py не найден")
+        return False
+    
+    with open(helpers_path, "r", encoding='utf-8') as f:
+        content = f.read()
+    
+    data = {
+        "message": "Обновлён agent_helpers.py",
+        "content": base64.b64encode(content.encode()).decode(),
+        "branch": branch
+    }
+    if sha:
+        data["sha"] = sha
+    
+    try:
+        response = httpx.put(url, headers=headers, json=data, timeout=30)
+        if response.status_code in [200, 201]:
+            logger.info(f"✅ agent_helpers.py отправлен в GitHub")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки helpers: {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке helpers: {e}")
+        return False
+
+# ============================================================
+# ФОТОШОП (AGNES AI)
+# ============================================================
+
+AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
+
+def get_image_size(image_data):
+    """Определяет размер изображения"""
+    try:
+        img = Image.open(io.BytesIO(image_data))
+        width, height = img.size
+        logger.info(f"📐 Размер изображения: {width}x{height}")
+        return width, height
+    except Exception as e:
+        logger.error(f"Ошибка при определении размера: {e}")
+        return None, None
+
+def replace_background(image_data, new_background_prompt: str):
+    """
+    Заменяет фон изображения через Agnes AI.
+    
+    Args:
+        image_data: bytes изображения
+        new_background_prompt: описание нового фона
+    
+    Returns:
+        tuple: (url_result, error_message)
+    """
+    if not AGNES_API_KEY:
+        return None, "AGNES_API_KEY не установлен!"
+    
+    if not image_data:
+        return None, "Нет данных изображения"
+    
+    if not new_background_prompt or len(new_background_prompt.strip()) < 2:
+        return None, "Слишком короткое описание фона"
+    
+    try:
+        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
+        width, height = get_image_size(image_data)
+        
+        MAX_SIZE = 1024
+        MIN_SIZE = 256
+        
+        if width and height:
+            if width > MAX_SIZE or height > MAX_SIZE:
+                ratio = min(MAX_SIZE / width, MAX_SIZE / height)
+                width = int(width * ratio)
+                height = int(height * ratio)
+            if width < MIN_SIZE or height < MIN_SIZE:
+                ratio = max(MIN_SIZE / width, MIN_SIZE / height)
+                width = int(width * ratio)
+                height = int(height * ratio)
+            size = f"{width}x{height}"
+        else:
+            size = "1024x1024"
+            logger.warning("⚠️ Использую стандартный размер: 1024x1024")
+        
+        logger.info(f"📐 Размер для API: {size}")
+        
+        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
+        try:
+            img = Image.open(io.BytesIO(image_data))
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG', quality=85, optimize=True)
+            image_data = buffer.getvalue()
         except Exception as e:
-            logger.error(f"❌ Ошибка создания чата: {e}")
-            return None
-    
-    def chat(self, prompt: str, stream: bool = False, chat_id: Optional[str] = None, **kwargs) -> Dict:
-        """Отправка запроса к модели"""
-        # Если нет chat_id, создаём новый чат
-        if not chat_id:
-            logger.info("📝 chat_id отсутствует, создаём новый чат...")
-            chat_id = self._create_chat()
-            if not chat_id:
-                raise Exception("Не удалось создать чат. Попробуйте позже.")
-            logger.info(f"📝 Используем chat_id: {chat_id}")
+            logger.warning(f"Не удалось оптимизировать изображение: {e}")
         
-        payload = {
-            "chat_id": chat_id,
-            "model": "qwen-turbo",
-            "query": prompt,
-            "stream": stream,
-            "temperature": kwargs.get("temperature", 0.7),
-            "max_tokens": kwargs.get("max_tokens", 2000)
+        img_b64 = base64.b64encode(image_data).decode('utf-8')
+        data_uri = f"data:image/jpeg;base64,{img_b64}"
+        
+        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
+        enhanced_prompt = f"""
+        Replace the background with: {new_background_prompt}.
+        Keep the main subject exactly as is.
+        Maintain the original lighting and shadows.
+        Make the background look natural and realistic.
+        Do not alter the main subject.
+        """
+        
+        headers = {
+            "Authorization": f"Bearer {AGNES_API_KEY}",
+            "Content-Type": "application/json"
         }
         
-        logger.info(f"📤 Отправляем запрос с payload: {json.dumps(payload, ensure_ascii=False)[:200]}")
-        
-        result = self._request("POST", "/chat/completions", json=payload)
-        
-        # Сохраняем chat_id
-        self.current_chat_id = chat_id
-        
-        return result
-    
-    def chat_stream(self, prompt: str, chat_id: Optional[str] = None, **kwargs) -> Generator:
-        """Потоковый чат (синхронный генератор)"""
-        # Если нет chat_id, создаём новый чат
-        if not chat_id:
-            logger.info("📝 chat_id отсутствует, создаём новый чат...")
-            chat_id = self._create_chat()
-            if not chat_id:
-                raise Exception("Не удалось создать чат. Попробуйте позже.")
-            logger.info(f"📝 Используем chat_id: {chat_id}")
-        
         payload = {
-            "chat_id": chat_id,
-            "model": "qwen-turbo",
-            "query": prompt,
-            "stream": True,
-            "temperature": kwargs.get("temperature", 0.7),
-            "max_tokens": kwargs.get("max_tokens", 2000)
+            "model": "agnes-image-2.0-flash",
+            "prompt": enhanced_prompt.strip(),
+            "size": size,
+            "extra_body": {
+                "image": [data_uri],
+                "response_format": "url"
+            }
         }
         
-        url = f"{self.base_url}/chat/completions"
-        self.headers["X-Request-Id"] = str(uuid.uuid4())
+        # 4. ОТПРАВКА ЗАПРОСА (httpx)
+        logger.info(f"📤 Отправка запроса к Agnes AI...")
+        logger.info(f"   Промпт: {new_background_prompt[:50]}...")
         
-        with self.client.stream("POST", url, headers=self.headers, json=payload) as response:
+        with httpx.Client(timeout=90.0) as client:
+            response = client.post(
+                AGNES_IMAGE_API_URL,
+                json=payload,
+                headers=headers
+            )
             response.raise_for_status()
-            
-            for line in response.iter_lines():
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        data = line[6:]
-                        if data != '[DONE]':
-                            try:
-                                chunk = json.loads(data)
-                                if 'choices' in chunk and chunk['choices']:
-                                    content = chunk['choices'][0].get('delta', {}).get('content', '')
-                                    if content:
-                                        yield content
-                                if 'chat_id' in chunk:
-                                    self.current_chat_id = chunk['chat_id']
-                            except json.JSONDecodeError:
-                                continue
+            result = response.json()
         
-        self.current_chat_id = chat_id
-    
-    def get_chats(self, page: int = 1) -> Dict:
-        """Получение истории чатов"""
-        params = {"page": page, "exclude_project": "true"}
-        return self._request("GET", "/chats/", params=params)
-    
-    def get_folders(self) -> Dict:
-        """Получение папок"""
-        params = {"exclude_project": "true"}
-        return self._request("GET", "/folders/", params=params)
-    
-    def get_notifications(self) -> Dict:
-        """Получение уведомлений"""
-        params = {"type": "memory"}
-        return self._request("GET", "/notifications/latest", params=params)
-    
-    def get_chat_messages(self, chat_id: str) -> Dict:
-        """Получение сообщений чата"""
-        return self._request("GET", f"/chats/{chat_id}")
-    
-    def delete_chat(self, chat_id: str) -> Dict:
-        """Удаление чата"""
-        return self._request("DELETE", f"/chats/{chat_id}")
-    
-    def close(self):
-        """Закрываем клиент"""
-        self.client.close()
+        logger.info("✅ Изображение сгенерировано")
+        
+        # 5. ОБРАБОТКА ОТВЕТА
+        if 'data' in result and len(result['data']) > 0:
+            if 'url' in result['data'][0]:
+                return result['data'][0]['url'], None
+            elif 'b64_json' in result['data'][0]:
+                return result['data'][0]['b64_json'], None
+        
+        logger.error(f"❌ Неожиданный ответ: {result}")
+        return None, "Неожиданный формат ответа от API"
+        
+    except httpx.TimeoutException:
+        return None, "⏰ Превышено время ожидания (90 секунд)"
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code if e.response else "unknown"
+        return None, f"HTTP ошибка {status}: {str(e)}"
+    except httpx.RequestError as e:
+        logger.error(f"❌ Ошибка запроса: {e}")
+        return None, f"Ошибка сети: {str(e)}"
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        return None, f"Внутренняя ошибка: {str(e)[:100]}"
 
 # ============================================================
-# СОСТОЯНИЯ
+# LLM
 # ============================================================
 
-user_sessions = {}  # {user_id: {"history": [], "mode": "chat", "chat_id": None}}
-
-# ============================================================
-# КОМАНДЫ БОТА
-# ============================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
-    keyboard = [
-        [InlineKeyboardButton("💬 Чат", callback_data="mode_chat")],
-        [InlineKeyboardButton("📚 История", callback_data="history")],
-        [InlineKeyboardButton("📁 Папки", callback_data="folders")],
-        [InlineKeyboardButton("🔔 Уведомления", callback_data="notifications")],
-        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+async def ask_agnes(messages):
+    logger.info("=" * 60)
+    logger.info("📤 ОТПРАВКА В AGNES AI:")
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        logger.info(f"  [{role}]: {content[:500]}..." if len(content) > 500 else f"  [{role}]: {content}")
+    logger.info("=" * 60)
     
+    headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "agnes-2.0-flash",
+        "messages": messages,
+        "temperature": 0.3,
+        "max_tokens": 2000
+    }
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post("https://apihub.agnes-ai.com/v1/chat/completions", headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(f"❌ Ошибка Agnes AI: {e}")
+        return f"Ошибка LLM: {str(e)[:200]}"
+
+# ============================================================
+# ВЫПОЛНИТЕЛЬ
+# ============================================================
+
+def execute_code(code):
+    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
+    try:
+        stdout_buffer = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = stdout_buffer
+        
+        def save_skill(host, name, content):
+            skills_dir = os.path.join(agent_workspace, "domain-skills", host)
+            os.makedirs(skills_dir, exist_ok=True)
+            os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            
+            skill_path = os.path.join(skills_dir, f"{name}.md")
+            with open(skill_path, "w", encoding='utf-8') as f:
+                f.write(content)
+            os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+            
+            logger.info(f"✅ Навык сохранён локально: {skill_path}")
+            
+            # Отправляем в GitHub
+            push_to_github(content, f"{name}.md", host)
+            
+            return skill_path
+        
+        def add_helper(code):
+            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
+            helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+            
+            # Проверяем, что файл существует
+            if not os.path.exists(helpers_path):
+                with open(helpers_path, "w") as f:
+                    f.write('"""Agent-editable browser helpers."""\n')
+            
+            # Добавляем код
+            with open(helpers_path, "a", encoding='utf-8') as f:
+                f.write(f"\n\n{code}\n")
+            
+            logger.info(f"✅ Helper добавлен в agent_helpers.py")
+            
+            # Отправляем в GitHub
+            push_helpers_to_github()
+            
+            return True
+        
+        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
+            if path is None:
+                timestamp = int(time.time())
+                filename = f"screenshot_{timestamp}.png"
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            else:
+                filename = os.path.basename(path)
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            logger.info(f"📸 Сохраняю скриншот в: {full_path}")
+            return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
+        
+        globals_dict = {
+            'new_tab': new_tab, 
+            'goto_url': goto_url, 
+            'wait_for_load': wait_for_load,
+            'page_info': page_info, 
+            'capture_screenshot': capture_screenshot_with_path,
+            'click_at_xy': click_at_xy, 
+            'type_text': type_text, 
+            'press_key': press_key,
+            'scroll': scroll,
+            'scroll_at_xy': scroll,
+            'js': js, 
+            'cdp': cdp, 
+            'ensure_real_tab': ensure_real_tab,
+            'wait_for_element': wait_for_element, 
+            'list_tabs': list_tabs,
+            'current_tab': current_tab, 
+            'close_tab': close_tab,
+            'switch_tab': switch_tab,
+            'fill_input': fill_input,
+            'upload_file': upload_file,
+            'http_get': http_get,
+            'drain_events': drain_events,
+            'set_cookies': set_cookies_global,
+            'save_skill': save_skill,
+            'add_helper': add_helper,
+            'time': time,
+            'json': json,  # ← ДОБАВЛЕНО
+            'print': print, 
+            '__builtins__': __builtins__,
+        }
+        
+        exec(code, globals_dict)
+        
+        sys.stdout = old_stdout
+        output = stdout_buffer.getvalue()
+        
+        if output:
+            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
+            return output.strip(), True
+        elif 'result' in globals_dict:
+            result = str(globals_dict['result'])
+            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
+            return result, True
+        
+        logger.warning("⚠️ Код выполнен, но нет вывода")
+        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
+    except Exception as e:
+        logger.error(f"❌ Ошибка выполнения: {e}")
+        return str(e), False
+
+# ============================================================
+# КОМАНДЫ
+# ============================================================
+
+async def start(update, context):
     await update.message.reply_text(
-        "🤖 **Qwen Bot**\n\n"
-        "Я бот для работы с Qwen AI от Alibaba.\n\n"
-        "**Команды:**\n"
-        "/qwen \\<текст\\> \\- задать вопрос\n"
-        "/history \\- показать историю\n"
-        "/folders \\- показать папки\n"
-        "/notifications \\- уведомления\n"
-        "/clear \\- очистить историю\n\n"
-        "Или используйте кнопки ниже 👇",
-        parse_mode='MarkdownV2'
+        "🌐 Браузер:\n"
+        "/ask <запрос> — задать задачу агенту\n"
+        "/image — последний скриншот\n"
+        "/images — все скриншоты\n"
+        "/skills — список навыков\n"
+        "/log — скачать логи\n\n"
+        "🎨 Фотошоп:\n"
+        "/bg <описание> — заменить фон\n"
+        "/clear — очистить кэш"
     )
 
-async def qwen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /qwen - задать вопрос"""
+async def log(update, context):
+    try:
+        log_file = os.path.join(LOGS_DIR, 'bot.log')
+        if not os.path.exists(log_file):
+            await update.message.reply_text("📭 Лог-файл не найден")
+            return
+        with open(log_file, 'rb') as f:
+            await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def skills(update, context):
+    try:
+        skills_dir = os.path.join(agent_workspace, "domain-skills")
+        if not os.path.exists(skills_dir):
+            await update.message.reply_text("📭 Папка с навыками не найдена")
+            return
+        
+        skills_list = []
+        for domain in os.listdir(skills_dir):
+            domain_path = os.path.join(skills_dir, domain)
+            if os.path.isdir(domain_path):
+                for f in os.listdir(domain_path):
+                    if f.endswith(".md") or f.endswith(".txt"):
+                        skills_list.append(f"{domain}/{f}")
+        
+        if skills_list:
+            msg = "🧠 **Доступные навыки:**\n\n"
+            for skill in skills_list[:20]:
+                msg += f"• `{skill}`\n"
+            if len(skills_list) > 20:
+                msg += f"\n... и ещё {len(skills_list) - 20}"
+            await update.message.reply_text(msg, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("🧠 Навыков пока нет. Агент создаст их по мере работы.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def image(update, context):
+    try:
+        screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
+        if not screenshot_files:
+            await update.message.reply_text("📭 Скриншотов не найдено")
+            return
+        screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
+        latest = screenshot_files[0]
+        file_path = os.path.join(SCREENSHOTS_DIR, latest)
+        with open(file_path, 'rb') as f:
+            await update.message.reply_photo(photo=f, caption=f"📸 {latest}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def images(update, context):
+    try:
+        screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
+        if not screenshot_files:
+            await update.message.reply_text("📭 Скриншотов не найдено")
+            return
+        screenshot_files.sort(key=lambda x: os.path.getmtime(os.path.join(SCREENSHOTS_DIR, x)), reverse=True)
+        sent_count = 0
+        for s_file in screenshot_files[:10]:
+            file_path = os.path.join(SCREENSHOTS_DIR, s_file)
+            with open(file_path, 'rb') as f:
+                await update.message.reply_photo(photo=f, caption=f"📸 {s_file}")
+            sent_count += 1
+            await asyncio.sleep(0.5)
+        if len(screenshot_files) > 10:
+            await update.message.reply_text(f"📸 Показано 10 из {len(screenshot_files)} скриншотов")
+        else:
+            await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def ask(update, context):
     if not context.args:
-        await update.message.reply_text(
-            "❌ Введите запрос\n"
-            "Пример: `/qwen Что такое Python?`",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("Пример: /ask сделай скриншот google.com")
         return
-    
-    prompt = " ".join(context.args)
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"history": [], "mode": "chat", "chat_id": None}
-    
-    user_sessions[user_id]["history"].append({"role": "user", "content": prompt})
+
+    user_query = " ".join(context.args)
+    username = update.effective_user.username or "unknown"
+    logger.info(f"👤 {username} запросил: {user_query}")
     
     status_msg = await update.message.reply_text("🤔 Думаю...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        
-        chat_id = user_sessions[user_id].get("chat_id")
-        logger.info(f"📋 chat_id из сессии: {chat_id}")
-        
-        # Если нет chat_id, он создастся автоматически в client.chat()
-        response = client.chat(prompt, chat_id=chat_id)
-        
-        # Сохраняем chat_id для следующих сообщений
-        if client.current_chat_id:
-            user_sessions[user_id]["chat_id"] = client.current_chat_id
-            logger.info(f"💾 Сохранили chat_id: {client.current_chat_id}")
-        
-        if 'choices' in response:
-            answer = response['choices'][0]['message']['content']
-            user_sessions[user_id]["history"].append({"role": "assistant", "content": answer})
-            
-            safe_answer = escape_markdown(answer[:3000])
-            safe_prompt = escape_markdown(prompt)
-            
-            await status_msg.edit_text(
-                f"💬 **Вопрос:** {safe_prompt}\n\n"
-                f"📝 **Ответ:**\n{safe_answer}",
-                parse_mode='Markdown'
-            )
-        else:
-            await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(response))}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка /qwen: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
 
-async def qwen_stream_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /qwen_stream - потоковый ответ"""
-    if not context.args:
-        await update.message.reply_text("❌ Введите запрос")
-        return
-    
-    prompt = " ".join(context.args)
-    user_id = update.effective_user.id
-    
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"history": [], "mode": "chat", "chat_id": None}
-    
-    status_msg = await update.message.reply_text("📡 Получаю поток...")
-    
-    client = None
     try:
-        client = QwenClient(QWEN_TOKEN)
-        chat_id = user_sessions[user_id].get("chat_id")
-        full_response = ""
-        
-        for chunk in client.chat_stream(prompt, chat_id=chat_id):
-            full_response += chunk
-            if len(full_response) % 100 < 20:
-                safe_text = escape_markdown(full_response[:500])
-                await status_msg.edit_text(
-                    f"📡 **Генерация:**\n{safe_text}...",
-                    parse_mode='Markdown'
-                )
-        
-        if client.current_chat_id:
-            user_sessions[user_id]["chat_id"] = client.current_chat_id
-        
-        safe_answer = escape_markdown(full_response[:3000])
-        safe_prompt = escape_markdown(prompt)
-        
-        await status_msg.edit_text(
-            f"💬 **Вопрос:** {safe_prompt}\n\n"
-            f"📝 **Ответ:**\n{safe_answer}",
-            parse_mode='Markdown'
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка /qwen_stream: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_query}
+        ]
 
-async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /history - показать историю"""
-    status_msg = await update.message.reply_text("📚 Загружаю историю...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        history = client.get_chats(page=1)
-        
-        if 'data' in history:
-            data = history['data']
-            # Проверяем формат данных
-            if isinstance(data, list):
-                chats = data
-            elif isinstance(data, dict) and 'items' in data:
-                chats = data['items']
-            elif isinstance(data, dict) and 'chats' in data:
-                chats = data['chats']
+        response = await ask_agnes(messages)
+
+        if "```python" in response:
+            code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
+            code = code_match.group(1) if code_match else response
+
+            await status_msg.edit_text("⚙️ Выполняю код...")
+            output, success = execute_code(code)
+
+            if not success:
+                await status_msg.edit_text(f"❌ {output}")
             else:
-                chats = []
-            
-            if chats:
-                caption = "📚 **Последние чаты:**\n\n"
-                for chat in chats[:10]:
-                    title = escape_markdown(str(chat.get('title', 'Без названия'))[:50])
-                    created = escape_markdown(str(chat.get('created_at', '')))
-                    chat_id = escape_markdown(str(chat.get('id', '')))
-                    caption += f"• {title}\n  🕐 {created}\n  🆔 `{chat_id}`\n\n"
-                
-                caption += "\nДля просмотра сообщений используйте /messages \\<chat\\_id\\>"
-                await status_msg.edit_text(caption, parse_mode='MarkdownV2')
-            else:
-                await status_msg.edit_text("📭 История пуста")
+                logger.info(f"✅ Успешное выполнение для {username}")
+                await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
         else:
-            await status_msg.edit_text(f"❌ Неожиданный формат ответа: {escape_markdown(str(history))[:500]}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка /history: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
+            logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
+            await status_msg.edit_text(response[:4000])
 
-async def messages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /messages <chat_id> - показать сообщения чата"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID чата\nПример: `/messages abc123`", parse_mode='Markdown')
-        return
-    
-    chat_id = context.args[0]
-    status_msg = await update.message.reply_text("📨 Загружаю сообщения...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        messages = client.get_chat_messages(chat_id)
-        
-        # Проверяем разные форматы ответа
-        msg_list = []
-        if 'data' in messages:
-            data = messages['data']
-            if isinstance(data, list):
-                msg_list = data
-            elif isinstance(data, dict):
-                # Ищем список сообщений в разных ключах
-                for key in ['messages', 'items', 'records', 'list']:
-                    if key in data and isinstance(data[key], list):
-                        msg_list = data[key]
-                        break
-                # Если не нашли, может сам data - это одно сообщение
-                if not msg_list and 'content' in data:
-                    msg_list = [data]
-        
-        if msg_list:
-            caption = f"💬 **Сообщения чата** `{escape_markdown(chat_id)}`\n\n"
-            for msg in msg_list[:20]:
-                role = msg.get('role', 'unknown')
-                content = escape_markdown(str(msg.get('content', ''))[:200])
-                if role == 'user':
-                    caption += f"👤 **Вы:** {content}\n\n"
-                else:
-                    caption += f"🤖 **Qwen:** {content}\n\n"
-            
-            if len(caption) > 4000:
-                caption = caption[:4000] + "\n\n...(сообщение обрезано)"
-            
-            await status_msg.edit_text(caption, parse_mode='Markdown')
-        else:
-            await status_msg.edit_text(f"📭 Сообщений нет или не удалось распарсить ответ.\n\nОтвет API: {escape_markdown(str(messages))[:500]}")
-            
     except Exception as e:
-        logger.error(f"Ошибка /messages: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
+        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /folders - показать папки"""
-    status_msg = await update.message.reply_text("📁 Загружаю папки...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        folders = client.get_folders()
-        
-        # Проверяем формат
-        folder_list = []
-        if 'data' in folders:
-            data = folders['data']
-            if isinstance(data, list):
-                folder_list = data
-            elif isinstance(data, dict) and 'folders' in data:
-                folder_list = data['folders']
-        
-        if folder_list:
-            caption = "📁 **Папки:**\n\n"
-            for folder in folder_list:
-                name = escape_markdown(str(folder.get('name', 'Без названия')))
-                count = folder.get('chat_count', 0)
-                folder_id = escape_markdown(str(folder.get('id', '')))
-                caption += f"• {name} ({count} чатов)\n  🆔 `{folder_id}`\n\n"
-            
-            await status_msg.edit_text(caption, parse_mode='Markdown')
-        else:
-            await status_msg.edit_text("📭 Папок нет")
-            
-    except Exception as e:
-        logger.error(f"Ошибка /folders: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
-
-async def notifications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /notifications - показать уведомления"""
-    status_msg = await update.message.reply_text("🔔 Загружаю уведомления...")
-    
-    client = None
-    try:
-        client = QwenClient(QWEN_TOKEN)
-        notifications = client.get_notifications()
-        
-        caption = "🔔 **Уведомления:**\n\n"
-        caption += f"```json\n{json.dumps(notifications, indent=2, ensure_ascii=False)[:2000]}\n```"
-        await status_msg.edit_text(caption, parse_mode='Markdown')
-            
-    except Exception as e:
-        logger.error(f"Ошибка /notifications: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
+# ============================================================
+# ФОТОШОП КОМАНДЫ
+# ============================================================
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /clear - очистить историю"""
-    user_id = update.effective_user.id
-    if user_id in user_sessions:
-        user_sessions[user_id] = {"history": [], "mode": "chat", "chat_id": None}
-    
-    await update.message.reply_text("🧹 История очищена")
+    """Очищает сохраненное изображение"""
+    if 'last_image' in context.user_data:
+        del context.user_data['last_image']
+        await update.message.reply_text("🧹 Кэш очищен!")
+    else:
+        await update.message.reply_text("📭 Кэш пуст")
 
-async def delete_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /delete <chat_id> - удалить чат"""
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ID чата\nПример: `/delete abc123`", parse_mode='Markdown')
-        return
-    
-    chat_id = context.args[0]
-    status_msg = await update.message.reply_text(f"🗑️ Удаляю чат `{escape_markdown(chat_id)}`...", parse_mode='Markdown')
-    
-    client = None
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет полученное фото"""
     try:
-        client = QwenClient(QWEN_TOKEN)
-        result = client.delete_chat(chat_id)
-        await status_msg.edit_text(f"✅ Чат `{escape_markdown(chat_id)}` удален", parse_mode='Markdown')
-            
-    except Exception as e:
-        logger.error(f"Ошибка /delete: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {escape_markdown(str(e))}")
-    finally:
-        if client:
-            client.close()
-
-# ============================================================
-# ОБРАБОТЧИК КНОПОК
-# ============================================================
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки"""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "mode_chat":
-        await query.edit_message_text(
-            "💬 **Режим чата**\n\n"
-            "Просто отправьте сообщение или используйте команду:\n"
-            "`/qwen <текст>`\n\n"
-            "Для потокового ответа:\n"
-            "`/qwen_stream <текст>`",
-            parse_mode='Markdown'
-        )
-    
-    elif data == "history":
-        class FakeUpdate:
-            def __init__(self, effective_user, message):
-                self.effective_user = effective_user
-                self.message = message
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        context.user_data['last_image'] = bytes(photo_bytes)
         
-        fake_msg = await query.message.reply_text("📚 Загружаю историю...")
-        fake_update = FakeUpdate(update.effective_user, fake_msg)
-        await history_command(fake_update, context)
-    
-    elif data == "folders":
-        fake_msg = await query.message.reply_text("📁 Загружаю папки...")
-        fake_update = FakeUpdate(update.effective_user, fake_msg)
-        await folders_command(fake_update, context)
-    
-    elif data == "notifications":
-        fake_msg = await query.message.reply_text("🔔 Загружаю уведомления...")
-        fake_update = FakeUpdate(update.effective_user, fake_msg)
-        await notifications_command(fake_update, context)
-    
-    elif data == "help":
-        await query.edit_message_text(
-            "❓ **Помощь**\n\n"
-            "**Основные команды:**\n"
-            "/qwen \\<текст\\> \\- задать вопрос\n"
-            "/qwen\\_stream \\<текст\\> \\- потоковый ответ\n"
-            "/history \\- история чатов\n"
-            "/messages \\<id\\> \\- сообщения чата\n"
-            "/folders \\- список папок\n"
-            "/notifications \\- уведомления\n"
-            "/delete \\<id\\> \\- удалить чат\n"
-            "/clear \\- очистить историю\n\n"
-            "**Требуется токен Qwen?**\n"
-            "Установите переменную QWEN\\_TOKEN",
-            parse_mode='MarkdownV2'
+        width, height = get_image_size(photo_bytes)
+        size_info = f" ({width}x{height})" if width and height else ""
+        
+        await update.message.reply_text(
+            f"📸 Фото сохранено{size_info}!\n"
+            f"✏️ Используй /bg <описание> для замены фона"
         )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Замена фона через Agnes AI"""
+    if not AGNES_API_KEY:
+        await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
+        return
+
+    # Проверяем, есть ли сохраненное изображение
+    if 'last_image' not in context.user_data:
+        await update.message.reply_text(
+            "📸 Сначала загрузите картинку!\n"
+            "Отправьте фото или сделайте скриншот /screen"
+        )
+        return
+
+    # Если нет описания
+    if not context.args:
+        await update.message.reply_text(
+            "✏️ Напишите описание нового фона.\n"
+            "Пример: /bg beach \n"
+            "Пример: /bg космос"
+        )
+        return
+
+    prompt = ' '.join(context.args)
+    waiting_msg = await update.message.reply_text(
+        f"🎨 Заменяю фон: {prompt}\n⏳ Ожидайте..."
+    )
+
+    try:
+        image_data = context.user_data['last_image']
+        loop = asyncio.get_event_loop()
+        result_url, error = await loop.run_in_executor(
+            None, replace_background, image_data, prompt
+        )
+
+        try:
+            await waiting_msg.delete()
+        except:
+            pass
+
+        if error:
+            await update.message.reply_text(f"❌ Ошибка: {error}")
+            return
+
+        if result_url:
+            try:
+                # Если пришёл base64
+                if result_url.startswith('data:image'):
+                    img_data = base64.b64decode(result_url.split(',')[1])
+                    await update.message.reply_photo(
+                        img_data,
+                        caption=f"🖼️ Готово! Фон заменён на: {prompt}"
+                    )
+                else:
+                    # Если пришёл URL
+                    response = httpx.get(result_url, timeout=30)
+                    if response.status_code == 200:
+                        await update.message.reply_photo(
+                            response.content,
+                            caption=f"🖼️ Готово! Фон заменён на: {prompt}"
+                        )
+                    else:
+                        await update.message.reply_text(f"❌ Ошибка загрузки: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Ошибка скачивания: {e}")
+                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        else:
+            await update.message.reply_text("❌ Не удалось заменить фон")
+
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ============================================================
 # ЗАПУСК
@@ -753,32 +797,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Команды
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("qwen", qwen_command))
-    app.add_handler(CommandHandler("qwen_stream", qwen_stream_command))
-    app.add_handler(CommandHandler("history", history_command))
-    app.add_handler(CommandHandler("messages", messages_command))
-    app.add_handler(CommandHandler("folders", folders_command))
-    app.add_handler(CommandHandler("notifications", notifications_command))
+    app.add_handler(CommandHandler("ask", ask))
+    app.add_handler(CommandHandler("log", log))
+    app.add_handler(CommandHandler("skills", skills))
+    app.add_handler(CommandHandler("image", image))
+    app.add_handler(CommandHandler("images", images))
+    
+    # Фотошоп команды
+    app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(CommandHandler("delete", delete_chat_command))
-    
-    # Кнопки
-    app.add_handler(CallbackQueryHandler(button_callback))
-    
-    logger.info("🚀 Qwen Bot запущен!")
-    logger.info(f"🍪 Загружено кук: {len(COOKIES)}")
-    logger.info("📋 Доступные команды:")
-    logger.info("  /qwen <текст> - задать вопрос")
-    logger.info("  /qwen_stream <текст> - потоковый ответ")
-    logger.info("  /history - история чатов")
-    logger.info("  /messages <id> - сообщения чата")
-    logger.info("  /folders - папки")
-    logger.info("  /notifications - уведомления")
-    logger.info("  /delete <id> - удалить чат")
-    logger.info("  /clear - очистить историю")
-    
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
