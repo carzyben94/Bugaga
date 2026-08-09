@@ -1,12 +1,15 @@
 FROM python:3.12-slim
 
-# Устанавливаем зависимости для Chromium, Node.js (нужен для Prime Agent) и других инструментов
+# Устанавливаем зависимости
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
     git \
     gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && rm -rf /var/lib/apt/lists/*
+
+# УСТАНАВЛИВАЕМ NODE.JS 22 (исправлено)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,31 +25,22 @@ RUN pip install --no-cache-dir uv
 # Устанавливаем browser-harness как CLI-инструмент
 RUN uv tool install --python 3.12 --upgrade --force browser-harness
 
-# ============================================================
-# УСТАНОВКА PRIME AGENT
-# ============================================================
+# УСТАНОВКА PRIME AGENT (теперь с Node.js 22)
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
-# Проверяем установку
-RUN prime-agent --version || echo "⚠️ Prime Agent установлен (версия не отображается)"
+# Проверяем версию Node.js и Prime Agent
+RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
 
 # Копируем requirements и устанавливаем Python-зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем ВСЕ файлы (включая cookies.py)
+# Копируем ВСЕ файлы
 COPY . .
-
-# Устанавливаем куки через browser-harness (если есть файл)
-RUN if [ -f cookies.py ]; then \
-        echo "🍪 Установка кук..." && \
-        python -c "from cookies import COOKIES; print(f'✅ Загружено {len(COOKIES)} кук')"; \
-    fi
 
 # Создаём папку для данных Prime Agent
 RUN mkdir -p /root/.prime-agent
 
-# Правильный синтаксис CMD
 CMD sh -c "echo '🚀 Запуск Chromium...' && \
     /usr/bin/chromium \
         --headless \
@@ -68,6 +62,7 @@ CMD sh -c "echo '🚀 Запуск Chromium...' && \
     echo '🧠 Проверка Prime Agent...' && \
     if command -v prime-agent > /dev/null 2>&1; then \
         echo '✅ Prime Agent готов!'; \
+        prime-agent --version; \
     else \
         echo '⚠️ Prime Agent не найден, работаем без него'; \
     fi && \
