@@ -468,14 +468,17 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # Используем LiteLLM прокси через api-base
+        # Устанавливаем переменные окружения для Prime Agent
+        env = os.environ.copy()
+        env["OPENAI_API_BASE"] = "http://localhost:4000/v1"
+        env["OPENAI_API_KEY"] = "dummy-key"
+        
         result = subprocess.run([
             "prime-agent", "-p",
             "--provider", "openai",
             "--model", "agnes-2.0-flash",
-            "--api-base", "http://localhost:4000",
             plan_prompt
-        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace)
+        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace, env=env)
         
         if result.returncode != 0:
             logger.error(f"❌ Prime Agent CLI ошибка: {result.stderr}")
@@ -662,7 +665,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         harness_status = "❌ Не отвечает (Chromium не запущен)"
     
-    # 5. Проверка LiteLLM прокси (ИСПРАВЛЕНО)
+    # 5. Проверка LiteLLM прокси
     litellm_status = "❌ Не доступен"
     try:
         resp = httpx.get("http://localhost:4000/health", timeout=3)
