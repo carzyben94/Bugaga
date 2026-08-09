@@ -1,4 +1,4 @@
-FROM python:3.12-slim 
+FROM python:3.12-slim
 
 # Устанавливаем зависимости
 RUN apt-get update && apt-get install -y \
@@ -35,14 +35,8 @@ COPY . .
 
 RUN mkdir -p /root/.prime-agent /app/logs /app/screenshots
 
-# Создаём конфиг для LiteLLM
-RUN echo 'model_list:' > /app/config.yaml && \
-    echo '  - model_name: agnes-2.0-flash' >> /app/config.yaml && \
-    echo '    litellm_params:' >> /app/config.yaml && \
-    echo '      model: openai/agnes-2.0-flash' >> /app/config.yaml && \
-    echo '      api_base: https://apihub.agnes-ai.com/v1' >> /app/config.yaml && \
-    echo '      api_key: os.environ/AGNES_API_KEY' >> /app/config.yaml && \
-    echo '      max_tokens: 65536' >> /app/config.yaml
+# ИСПРАВЛЕНО: создаём конфиг через printf или cat
+RUN printf 'model_list:\n  - model_name: agnes-2.0-flash\n    litellm_params:\n      model: openai/agnes-2.0-flash\n      api_base: https://apihub.agnes-ai.com/v1\n      api_key: os.environ/AGNES_API_KEY\n      max_tokens: 65536\n' > /app/config.yaml
 
 CMD sh -c "
     echo '🚀 Запуск LiteLLM...' && \
