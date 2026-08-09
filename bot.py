@@ -572,14 +572,20 @@ def execute_code(code):
             os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
             
             skill_path = os.path.join(skills_dir, f"{name}.md")
+            
+            # ИСПРАВЛЕНО: преобразуем content в строку
+            if isinstance(content, dict):
+                content = json.dumps(content, indent=2, ensure_ascii=False)
+            elif not isinstance(content, str):
+                content = str(content)
+            
             with open(skill_path, "w", encoding='utf-8') as f:
                 f.write(content)
+            
             os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
             
             logger.info(f"✅ Навык сохранён локально: {skill_path}")
-            
             push_to_github(content, f"{name}.md", host)
-            
             return skill_path
         
         def add_helper(code):
@@ -703,13 +709,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         harness_status = "❌ Не отвечает (Chromium не запущен)"
     
-    # 5. Проверка LiteLLM прокси — используем LITELLM_BASE_URL
+    # 5. Проверка LiteLLM прокси
     litellm_status = "❌ Не доступен"
     litellm_detail = ""
     
-    # Берём адрес из переменной или используем стандартный
     litellm_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000/v1")
-    # Убираем /v1 для проверки health
     health_url = litellm_url.replace("/v1", "/health")
     
     try:
@@ -721,7 +725,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             litellm_status = f"⚠️ Ответ {resp.status_code}"
             litellm_detail = f"(адрес {health_url})"
     except Exception as e:
-        # Пробуем через curl как fallback
         try:
             result = subprocess.run(
                 ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", health_url],
@@ -744,7 +747,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cookies_status = "✅ Загружены" if COOKIES else "❌ Не загружены"
     cookies_count = len(COOKIES) if COOKIES else 0
     
-    # Формируем ответ
     status_text = f"""
 📊 **СТАТУС СИСТЕМЫ**
 
