@@ -23,9 +23,12 @@ RUN uv tool install --python 3.12 --upgrade --force browser-harness
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
 # ============================================================
-# ФИКСИМ ВЕРСИИ ДЛЯ LITELLM
+# ИСПРАВЛЕНО: устанавливаем litellm[proxy] с совместимыми версиями
 # ============================================================
-RUN pip install 'fastapi>=0.115.0,<0.120.0' 'uvicorn>=0.30.0' 'pydantic>=2.0.0'
+# Сначала устанавливаем совместимую версию fastapi
+RUN pip install 'fastapi>=0.115.0,<0.125.0' 'uvicorn>=0.30.0'
+
+# Затем устанавливаем litellm с прокси-зависимостями
 RUN pip install 'litellm[proxy]'
 
 # Проверка
