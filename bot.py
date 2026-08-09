@@ -55,6 +55,44 @@ logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
 logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
 
+# ============================================================
+# СОЗДАЁМ КОНФИГ ДЛЯ PRIME AGENT
+# ============================================================
+
+def setup_prime_config():
+    """Создаёт конфиг для Prime Agent с API ключом из переменных окружения"""
+    try:
+        agnes_key = os.environ.get("AGNES_API_KEY")
+        if not agnes_key:
+            logger.warning("⚠️ AGNES_API_KEY не задан, Prime Agent не сможет работать")
+            return
+        
+        prime_config_dir = os.path.expanduser("~/.prime/agent")
+        os.makedirs(prime_config_dir, exist_ok=True)
+        
+        config_file = os.path.join(prime_config_dir, "models.json")
+        config_content = {
+            "providers": {
+                "litellm": {
+                    "baseUrl": "http://localhost:4000/v1",
+                    "api": "openai-completions",
+                    "apiKey": agnes_key,
+                    "models": [{"id": "agnes-2.0-flash"}]
+                }
+            }
+        }
+        
+        with open(config_file, "w") as f:
+            json.dump(config_content, f, indent=2)
+        
+        logger.info(f"✅ Конфиг Prime Agent создан: {config_file}")
+        logger.info(f"   Провайдер: litellm, модель: agnes-2.0-flash")
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания конфига Prime Agent: {e}")
+
+# Вызываем создание конфига
+setup_prime_config()
+
 sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
@@ -447,11 +485,12 @@ async def ask_agnes(messages):
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
     Prime Agent планирует через LiteLLM, используя Agnes как провайдера.
+    Использует провайдера 'litellm' из конфига models.json.
     """
     if not PRIME_AVAILABLE:
         return "❌ Prime Agent не доступен", None
     
-    logger.info(f"🧠 Prime Agent планирует через LiteLLM: {user_query}")
+    logger.info(f"🧠 Prime Agent планирует через LiteLLM (provider: litellm): {user_query}")
     
     try:
         plan_prompt = (
@@ -468,17 +507,13 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # ИСПРАВЛЕНО: ключ берётся из переменной окружения
-        env = os.environ.copy()
-        env["OPENAI_API_BASE"] = "http://localhost:4000/v1"
-        env["OPENAI_API_KEY"] = os.environ.get("AGNES_API_KEY", "")
-        
+        # ИСПРАВЛЕНО: используем провайдера 'litellm' из конфига
         result = subprocess.run([
             "prime-agent", "-p",
-            "--provider", "openai",
+            "--provider", "litellm",
             "--model", "agnes-2.0-flash",
             plan_prompt
-        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace, env=env)
+        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace)
         
         if result.returncode != 0:
             logger.error(f"❌ Prime Agent CLI ошибка: {result.stderr}")
