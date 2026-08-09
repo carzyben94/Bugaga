@@ -90,7 +90,6 @@ def setup_prime_config():
     except Exception as e:
         logger.error(f"❌ Ошибка создания конфига Prime Agent: {e}")
 
-# Вызываем создание конфига
 setup_prime_config()
 
 sys.path.insert(0, "browser-harness/src")
@@ -485,12 +484,11 @@ async def ask_agnes(messages):
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
     Prime Agent планирует через LiteLLM, используя Agnes как провайдера.
-    Использует провайдера 'litellm' из конфига models.json.
     """
     if not PRIME_AVAILABLE:
         return "❌ Prime Agent не доступен", None
     
-    logger.info(f"🧠 Prime Agent планирует через LiteLLM (provider: litellm): {user_query}")
+    logger.info(f"🧠 Prime Agent планирует через LiteLLM: {user_query}")
     
     try:
         plan_prompt = (
@@ -507,13 +505,16 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # ИСПРАВЛЕНО: используем провайдера 'litellm' из конфига
+        # Передаём переменные окружения для Prime Agent
+        env = os.environ.copy()
+        env["OPENAI_API_BASE"] = "http://localhost:4000/v1"
+        
         result = subprocess.run([
             "prime-agent", "-p",
             "--provider", "litellm",
             "--model", "agnes-2.0-flash",
             plan_prompt
-        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace)
+        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace, env=env)
         
         if result.returncode != 0:
             logger.error(f"❌ Prime Agent CLI ошибка: {result.stderr}")
@@ -700,16 +701,50 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         harness_status = "❌ Не отвечает (Chromium не запущен)"
     
-    # 5. Проверка LiteLLM прокси
+    # 5. Проверка LiteLLM прокси — ВСЕ ВАРИАНТЫ
     litellm_status = "❌ Не доступен"
-    try:
-        resp = httpx.get("http://localhost:4000/health", timeout=3)
-        if resp.status_code == 200:
-            litellm_status = "✅ Работает"
-        else:
-            litellm_status = f"⚠️ Ответ {resp.status_code}"
-    except Exception:
-        litellm_status = "❌ Не отвечает (LiteLLM не запущен)"
+    litellm_detail = ""
+    
+    # Пробуем все возможные адреса и пути
+    test_urls = [
+        ("http://localhost:4000/health", "health"),
+        ("http://localhost:4000/health/liveliness", "liveness"),
+        ("http://localhost:4000/health/readiness", "readiness"),
+        ("http://127.0.0.1:4000/health", "127.0.0.1"),
+        ("http://0.0.0.0:4000/health", "0.0.0.0"),
+        ("http://localhost:4000/v1/models", "models"),
+        ("http://localhost:4000/", "root"),
+        (f"http://localhost:{os.getenv('PORT', 4000)}/health", "PORT"),
+    ]
+    
+    for url, name in test_urls:
+        try:
+            resp = httpx.get(url, timeout=2)
+            if resp.status_code == 200:
+                litellm_status = f"✅ Работает ({name})"
+                litellm_detail = f"URL: {url}"
+                break
+            elif resp.status_code in [401, 403]:
+                # Может требовать авторизацию, но это значит, что сервис жив
+                litellm_status = f"⚠️ Жив, но требует авторизацию ({name})"
+                litellm_detail = f"URL: {url}, статус: {resp.status_code}"
+                break
+        except Exception:
+            continue
+    
+    # Если не нашли — пробуем через curl (более надёжно)
+    if litellm_status == "❌ Не доступен":
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:4000/health"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.stdout.strip() in ["200", "401", "403"]:
+                litellm_status = f"✅ Работает (curl, HTTP {result.stdout.strip()})"
+        except Exception:
+            pass
     
     # 6. Проверка Telegram
     telegram_status = f"✅ {TELEGRAM_TOKEN[:8]}...{TELEGRAM_TOKEN[-4:]}"
@@ -730,6 +765,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🌐 **Browser Harness:** {harness_status}
 
 ⚡ **LiteLLM Proxy:** {litellm_status}
+   {litellm_detail if litellm_detail else ''}
 
 📦 **GitHub:** {github_status}
 
