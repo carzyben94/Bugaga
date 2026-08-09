@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Устанавливаем зависимости для Chromium, Node.js
+# Устанавливаем зависимости
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
@@ -13,14 +13,10 @@ RUN apt-get update && apt-get install -y \
 ENV PYTHONUNBUFFERED=1
 ENV CHROMIUM_PATH=/usr/bin/chromium
 ENV PATH="/root/.local/bin:${PATH}"
-ENV LITELLM_LOG=/tmp/litellm.log
 
 WORKDIR /app
 
-# Устанавливаем uv
 RUN pip install --no-cache-dir uv
-
-# Устанавливаем browser-harness как CLI-инструмент
 RUN uv tool install --python 3.12 --upgrade --force browser-harness
 
 # УСТАНОВКА PRIME AGENT
@@ -29,44 +25,36 @@ RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 # УСТАНОВКА LITELLM
 RUN pip install 'litellm[proxy]'
 
-# Проверяем установку
+# Проверка
 RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
 
-# Копируем requirements и устанавливаем Python-зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем ВСЕ файлы
 COPY . .
 
-# Создаём папку для данных
 RUN mkdir -p /root/.prime-agent /app/logs /app/screenshots
 
 # Создаём конфиг для LiteLLM
-RUN echo 'model_list:' > /app/litellm_config.yaml && \
-    echo '  - model_name: agnes-2.0-flash' >> /app/litellm_config.yaml && \
-    echo '    litellm_params:' >> /app/litellm_config.yaml && \
-    echo '      model: openai/agnes-2.0-flash' >> /app/litellm_config.yaml && \
-    echo '      api_base: https://apihub.agnes-ai.com/v1' >> /app/litellm_config.yaml && \
-    echo '      api_key: os.environ/AGNES_API_KEY' >> /app/litellm_config.yaml && \
-    echo '      max_tokens: 65536' >> /app/litellm_config.yaml
+RUN echo 'model_list:' > /app/config.yaml && \
+    echo '  - model_name: agnes-2.0-flash' >> /app/config.yaml && \
+    echo '    litellm_params:' >> /app/config.yaml && \
+    echo '      model: openai/agnes-2.0-flash' >> /app/config.yaml && \
+    echo '      api_base: https://apihub.agnes-ai.com/v1' >> /app/config.yaml && \
+    echo '      api_key: os.environ/AGNES_API_KEY' >> /app/config.yaml && \
+    echo '      max_tokens: 65536' >> /app/config.yaml
 
-# ИСПРАВЛЕНО: запускаем все сервисы последовательно
 CMD sh -c "
-    echo '🚀 Запуск LiteLLM прокси...' && \
-    litellm --config /app/litellm_config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 &
+    echo '🚀 Запуск LiteLLM...' && \
+    litellm --config /app/config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 &
     
     echo '⏳ Ожидание LiteLLM...' && \
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    for i in 1 2 3 4 5 6 7 8 9 10; do \
         if curl -s http://localhost:4000/health > /dev/null 2>&1; then \
             echo '✅ LiteLLM готов!'; \
             break; \
         fi; \
         echo -n '.' && sleep 2; \
-        if [ $i -eq 15 ]; then \
-            echo '❌ LiteLLM не запустился, смотрим логи:'; \
-            cat /tmp/litellm.log; \
-        fi; \
     done && \
     
     echo '🚀 Запуск Chromium...' && \
