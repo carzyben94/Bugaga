@@ -465,113 +465,78 @@ async def ask_agnes(messages):
 
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
-    Использует Prime Agent для генерации кода.
-    Возвращает: (ответ_текст, код_для_выполнения)
+    Prime Agent планирует, Agnes генерирует код по плану.
+    Использует SYSTEM_PROMPT из promt.py.
     """
     if not PRIME_AVAILABLE:
         return "❌ Prime Agent не доступен", None
     
-    logger.info(f"🧠 Prime Agent запрос: {user_query}")
-    
-    prime_prompt = f"""
-    Ты — эксперт по browser-harness. Напиши Python-код для выполнения задачи.
-    
-    Доступные функции browser-harness:
-    - new_tab() — открыть новую вкладку
-    - goto_url(url) — перейти по URL
-    - capture_screenshot(path) — сделать скриншот
-    - click_at_xy(x, y) — кликнуть по координатам
-    - type_text(text) — напечатать текст
-    - press_key(key) — нажать клавишу (Enter, Escape и т.д.)
-    - wait_for_load() — ждать загрузки
-    - wait_for_element(selector, timeout) — ждать элемент
-    - page_info() — получить информацию о странице
-    - scroll(x, y) — прокрутить страницу
-    - fill_input(selector, text) — заполнить поле ввода
-    - list_tabs() — список вкладок
-    - switch_tab(index) — переключить вкладку
-    - close_tab(index) — закрыть вкладку
-    - js(script) — выполнить JavaScript
-    - save_skill(host, name, content) — сохранить навык
-    - add_helper(code) — добавить вспомогательную функцию
-    
-    Задача: {user_query}
-    
-    Ответь ТОЛЬКО кодом в формате:
-    ```python
-    # твой код
-    ```
-    
-    Не используй другие форматы ответа. Код должен быть рабочим.
-    """
+    logger.info(f"🧠 Prime Agent планирует: {user_query}")
     
     try:
-        # Пробуем разные варианты запуска PrimeSession
+        # ШАГ 1: Prime Agent составляет план
+        plan_prompt = (
+            "Ты — стратег. Составь пошаговый план для выполнения задачи.\n\n"
+            "Задача: " + user_query + "\n\n"
+            "План должен быть:\n"
+            "1. Конкретным и детальным\n"
+            "2. Разбитым на логические шаги\n"
+            "3. С указанием, что нужно делать на каждом шаге\n\n"
+            "Формат ответа (ТОЛЬКО план, без лишнего текста):\n\n"
+            "План:\n"
+            "1. [действие]\n"
+            "2. [действие]\n"
+            "..."
+        )
         
-        # Вариант 1: вообще без параметров
-        try:
-            async with PrimeSession() as session:
-                response = ""
-                async for event in session.prompt_stream(prime_prompt):
-                    if hasattr(event, 'text_delta'):
-                        response += event.text_delta
-                
-                logger.info(f"📝 Ответ Prime Agent: {response[:200]}...")
-                
-                code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-                if code_match:
-                    return response, code_match.group(1)
-                return response, None
-        except TypeError as e:
-            logger.warning(f"⚠️ PrimeSession без параметров не работает: {e}")
-            
-            # Вариант 2: с cwd
-            try:
-                async with PrimeSession(cwd=agent_workspace) as session:
-                    response = ""
-                    async for event in session.prompt_stream(prime_prompt):
-                        if hasattr(event, 'text_delta'):
-                            response += event.text_delta
-                    
-                    code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-                    if code_match:
-                        return response, code_match.group(1)
-                    return response, None
-            except TypeError as e2:
-                logger.warning(f"⚠️ PrimeSession с cwd не работает: {e2}")
-                
-                # Вариант 3: через CLI (обходной путь)
-                try:
-                    prompt_file = "/tmp/prime_prompt.txt"
-                    with open(prompt_file, "w") as f:
-                        f.write(prime_prompt)
-                    
-                    result = subprocess.run(
-                        ["prime-agent", "run", "-f", prompt_file],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        cwd=agent_workspace
-                    )
-                    
-                    if result.returncode != 0:
-                        return f"❌ Ошибка CLI Prime Agent: {result.stderr}", None
-                    
-                    response = result.stdout
-                    code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-                    if code_match:
-                        return response, code_match.group(1)
-                    return response, None
-                    
-                except subprocess.TimeoutExpired:
-                    return "❌ Prime Agent CLI: превышено время ожидания (120 сек)", None
-                except Exception as e3:
-                    logger.error(f"❌ Prime Agent CLI ошибка: {e3}")
-                    return f"❌ Ошибка Prime Agent: {str(e3)[:200]}", None
-                
+        # Запускаем Prime Agent через CLI для планирования
+        plan_file = "/tmp/prime_plan.txt"
+        with open(plan_file, "w") as f:
+            f.write(plan_prompt)
+        
+        result = subprocess.run(
+            ["prime-agent", "run", "-f", plan_file],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=agent_workspace
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"❌ Prime Agent CLI ошибка: {result.stderr}")
+            return None, None
+        
+        plan = result.stdout
+        logger.info(f"📋 План от Prime:\n{plan}")
+        
+        # ШАГ 2: Agnes генерирует код по плану, используя SYSTEM_PROMPT из promt.py
+        code_prompt = (
+            SYSTEM_PROMPT + "\n\n"
+            "Выполни этот план через Browser Harness:\n\n"
+            + plan + "\n\n"
+            "Напиши Python-код для выполнения этого плана.\n"
+            "Ответь ТОЛЬКО кодом в формате ```python ... ```\n"
+            "Не используй другие форматы ответа."
+        )
+        
+        # Используем существующую ask_agnes
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": code_prompt}
+        ]
+        
+        code_response = await ask_agnes(messages)
+        
+        # Извлекаем код
+        code_match = re.search(r'```python\n(.*?)\n```', code_response, re.DOTALL)
+        if code_match:
+            return plan + "\n\n" + code_response, code_match.group(1)
+        
+        return plan + "\n\n" + code_response, None
+        
     except Exception as e:
         logger.error(f"❌ Ошибка Prime Agent: {e}")
-        return f"❌ Ошибка Prime Agent: {str(e)[:200]}", None
+        return None, None
 
 # ============================================================
 # ВЫПОЛНИТЕЛЬ
@@ -1077,7 +1042,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("prime", prime))
-    app.add_handler(CommandHandler("status", status))  # ← НОВАЯ КОМАНДА
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
