@@ -11,6 +11,8 @@ import json
 import httpx
 import warnings
 import subprocess
+import threading
+import queue
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
@@ -556,115 +558,128 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         return None, None
 
 # ============================================================
-# ВЫПОЛНИТЕЛЬ
+# ВЫПОЛНИТЕЛЬ (с таймаутом)
 # ============================================================
 
 def execute_code(code):
-    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
-    try:
-        stdout_buffer = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = stdout_buffer
-        
-        def save_skill(host, name, content):
-            skills_dir = os.path.join(agent_workspace, "domain-skills", host)
-            os.makedirs(skills_dir, exist_ok=True)
-            os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+    """Выполняет код с таймаутом 30 секунд"""
+    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code[:500]}...")
+    
+    result_queue = queue.Queue()
+    
+    def run_code():
+        try:
+            stdout_buffer = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = stdout_buffer
             
-            skill_path = os.path.join(skills_dir, f"{name}.md")
+            def save_skill(host, name, content):
+                skills_dir = os.path.join(agent_workspace, "domain-skills", host)
+                os.makedirs(skills_dir, exist_ok=True)
+                os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                
+                skill_path = os.path.join(skills_dir, f"{name}.md")
+                
+                if isinstance(content, dict):
+                    content = json.dumps(content, indent=2, ensure_ascii=False)
+                elif not isinstance(content, str):
+                    content = str(content)
+                
+                with open(skill_path, "w", encoding='utf-8') as f:
+                    f.write(content)
+                
+                os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+                
+                logger.info(f"✅ Навык сохранён локально: {skill_path}")
+                push_to_github(content, f"{name}.md", host)
+                return skill_path
             
-            # ИСПРАВЛЕНО: преобразуем content в строку
-            if isinstance(content, dict):
-                content = json.dumps(content, indent=2, ensure_ascii=False)
-            elif not isinstance(content, str):
-                content = str(content)
+            def add_helper(code):
+                helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+                
+                if not os.path.exists(helpers_path):
+                    with open(helpers_path, "w") as f:
+                        f.write('"""Agent-editable browser helpers."""\n')
+                
+                if isinstance(code, dict):
+                    code = json.dumps(code, indent=2, ensure_ascii=False)
+                elif not isinstance(code, str):
+                    code = str(code)
+                
+                with open(helpers_path, "a", encoding='utf-8') as f:
+                    f.write(f"\n\n{code}\n")
+                
+                logger.info(f"✅ Helper добавлен в agent_helpers.py")
+                push_helpers_to_github()
+                return True
             
-            with open(skill_path, "w", encoding='utf-8') as f:
-                f.write(content)
+            def capture_screenshot_with_path(path=None, full=False, max_dim=None):
+                if path is None:
+                    timestamp = int(time.time())
+                    filename = f"screenshot_{timestamp}.png"
+                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
+                else:
+                    filename = os.path.basename(path)
+                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
+                logger.info(f"📸 Сохраняю скриншот в: {full_path}")
+                return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
             
-            os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+            globals_dict = {
+                'new_tab': new_tab, 
+                'goto_url': goto_url, 
+                'wait_for_load': wait_for_load,
+                'page_info': page_info, 
+                'capture_screenshot': capture_screenshot_with_path,
+                'click_at_xy': click_at_xy, 
+                'type_text': type_text, 
+                'press_key': press_key,
+                'scroll': scroll,
+                'scroll_at_xy': scroll,
+                'js': js, 
+                'cdp': cdp, 
+                'ensure_real_tab': ensure_real_tab,
+                'wait_for_element': wait_for_element, 
+                'list_tabs': list_tabs,
+                'current_tab': current_tab, 
+                'close_tab': close_tab,
+                'switch_tab': switch_tab,
+                'fill_input': fill_input,
+                'upload_file': upload_file,
+                'http_get': http_get,
+                'drain_events': drain_events,
+                'set_cookies': set_cookies_global,
+                'save_skill': save_skill,
+                'add_helper': add_helper,
+                'time': time,
+                'json': json,
+                'print': print, 
+                '__builtins__': __builtins__,
+            }
             
-            logger.info(f"✅ Навык сохранён локально: {skill_path}")
-            push_to_github(content, f"{name}.md", host)
-            return skill_path
-        
-        def add_helper(code):
-            helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+            exec(code, globals_dict)
             
-            if not os.path.exists(helpers_path):
-                with open(helpers_path, "w") as f:
-                    f.write('"""Agent-editable browser helpers."""\n')
+            sys.stdout = old_stdout
+            output = stdout_buffer.getvalue()
             
-            with open(helpers_path, "a", encoding='utf-8') as f:
-                f.write(f"\n\n{code}\n")
-            
-            logger.info(f"✅ Helper добавлен в agent_helpers.py")
-            
-            push_helpers_to_github()
-            
-            return True
-        
-        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
-            if path is None:
-                timestamp = int(time.time())
-                filename = f"screenshot_{timestamp}.png"
-                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            if output:
+                result_queue.put((output.strip(), True))
+            elif 'result' in globals_dict:
+                result_queue.put((str(globals_dict['result']), True))
             else:
-                filename = os.path.basename(path)
-                full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            logger.info(f"📸 Сохраняю скриншот в: {full_path}")
-            return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
-        
-        globals_dict = {
-            'new_tab': new_tab, 
-            'goto_url': goto_url, 
-            'wait_for_load': wait_for_load,
-            'page_info': page_info, 
-            'capture_screenshot': capture_screenshot_with_path,
-            'click_at_xy': click_at_xy, 
-            'type_text': type_text, 
-            'press_key': press_key,
-            'scroll': scroll,
-            'scroll_at_xy': scroll,
-            'js': js, 
-            'cdp': cdp, 
-            'ensure_real_tab': ensure_real_tab,
-            'wait_for_element': wait_for_element, 
-            'list_tabs': list_tabs,
-            'current_tab': current_tab, 
-            'close_tab': close_tab,
-            'switch_tab': switch_tab,
-            'fill_input': fill_input,
-            'upload_file': upload_file,
-            'http_get': http_get,
-            'drain_events': drain_events,
-            'set_cookies': set_cookies_global,
-            'save_skill': save_skill,
-            'add_helper': add_helper,
-            'time': time,
-            'json': json,
-            'print': print, 
-            '__builtins__': __builtins__,
-        }
-        
-        exec(code, globals_dict)
-        
-        sys.stdout = old_stdout
-        output = stdout_buffer.getvalue()
-        
-        if output:
-            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
-            return output.strip(), True
-        elif 'result' in globals_dict:
-            result = str(globals_dict['result'])
-            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
-            return result, True
-        
-        logger.warning("⚠️ Код выполнен, но нет вывода")
-        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
-    except Exception as e:
-        logger.error(f"❌ Ошибка выполнения: {e}")
-        return str(e), False
+                result_queue.put(("⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False))
+        except Exception as e:
+            result_queue.put((str(e), False))
+    
+    thread = threading.Thread(target=run_code)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=30)
+    
+    if thread.is_alive():
+        logger.error("⏰ Превышено время ожидания (30 сек)")
+        return "⏰ Превышено время ожидания (30 сек)", False
+    
+    return result_queue.get()
 
 # ============================================================
 # СТАТУС
@@ -801,15 +816,39 @@ async def start(update, context):
         parse_mode='Markdown'
     )
 
-async def log(update, context):
+async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправить все логи одним архивом"""
     try:
-        log_file = os.path.join(LOGS_DIR, 'bot.log')
-        if not os.path.exists(log_file):
-            await update.message.reply_text("📭 Лог-файл не найден")
+        import zipfile
+        import io
+        
+        # Проверяем, есть ли файлы логов
+        log_files = []
+        for f in os.listdir(LOGS_DIR):
+            file_path = os.path.join(LOGS_DIR, f)
+            if os.path.isfile(file_path) and f.endswith('.log'):
+                log_files.append(file_path)
+        
+        if not log_files:
+            await update.message.reply_text("📭 Логов пока нет")
             return
-        with open(log_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
+        
+        # Создаём архив
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in log_files:
+                zipf.write(file_path, os.path.basename(file_path))
+        
+        zip_buffer.seek(0)
+        
+        await update.message.reply_document(
+            document=zip_buffer,
+            filename='logs.zip',
+            caption=f"📋 Все логи ({len(log_files)} файлов)"
+        )
+        
     except Exception as e:
+        logger.error(f"❌ Ошибка отправки логов: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skills(update, context):
