@@ -468,10 +468,10 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # ИСПРАВЛЕНО: убран OPENAI_API_KEY, ключ берётся из системы
+        # ИСПРАВЛЕНО: ключ берётся из переменной окружения
         env = os.environ.copy()
         env["OPENAI_API_BASE"] = "http://localhost:4000/v1"
-        # OPENAI_API_KEY НЕ переопределяем — берётся из AGNES_API_KEY через LiteLLM
+        env["OPENAI_API_KEY"] = os.environ.get("AGNES_API_KEY", "")
         
         result = subprocess.run([
             "prime-agent", "-p",
