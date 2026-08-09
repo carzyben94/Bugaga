@@ -26,7 +26,7 @@ RUN uv tool install --python 3.12 --upgrade --force browser-harness
 RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 
 # ============================================================
-# УСТАНОВКА LITELLM (добавлено)
+# УСТАНОВКА LITELLM (исправлено)
 # ============================================================
 RUN pip install 'litellm[proxy]'
 
@@ -43,6 +43,16 @@ COPY . .
 # Создаём папку для данных Prime Agent
 RUN mkdir -p /root/.prime-agent
 
+# Создаём конфиг для LiteLLM
+RUN echo 'model_list:' > /app/litellm_config.yaml && \
+    echo '  - model_name: agnes-2.0-flash' >> /app/litellm_config.yaml && \
+    echo '    litellm_params:' >> /app/litellm_config.yaml && \
+    echo '      model: openai/agnes-2.0-flash' >> /app/litellm_config.yaml && \
+    echo '      api_base: https://apihub.agnes-ai.com/v1' >> /app/litellm_config.yaml && \
+    echo '      api_key: os.environ/AGNES_API_KEY' >> /app/litellm_config.yaml && \
+    echo '      max_tokens: 65536' >> /app/litellm_config.yaml
+
+# ИСПРАВЛЕНО: запускаем LiteLLM на порту 4000
 CMD sh -c "echo '🚀 Запуск LiteLLM прокси...' && \
     litellm --config /app/litellm_config.yaml --port 4000 --host 0.0.0.0 > /tmp/litellm.log 2>&1 & \
     echo '⏳ Ожидание инициализации LiteLLM...' && \
