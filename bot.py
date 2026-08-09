@@ -13,6 +13,7 @@ import warnings
 import subprocess
 import threading
 import queue
+import zipfile
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
@@ -508,15 +509,16 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # Устанавливаем переменные окружения для Prime Agent
         env = os.environ.copy()
         env["LITELLM_BASE_URL"] = "http://127.0.0.1:4000/v1"
         env["LITELLM_API_KEY"] = os.environ.get("AGNES_API_KEY", "")
         
+        # ИСПРАВЛЕНО: добавлен --append-system-prompt
         result = subprocess.run([
             "prime-agent", "-p",
             "--provider", "litellm",
             "--model", "agnes-2.0-flash",
+            "--append-system-prompt", "/root/.prime/agent/APPEND_SYSTEM.md",
             plan_prompt
         ], capture_output=True, text=True, timeout=120, cwd=agent_workspace, env=env)
         
@@ -819,9 +821,6 @@ async def start(update, context):
 async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправить все логи одним архивом"""
     try:
-        import zipfile
-        import io
-        
         # Проверяем, есть ли файлы логов
         log_files = []
         for f in os.listdir(LOGS_DIR):
