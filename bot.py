@@ -465,7 +465,7 @@ async def ask_agnes(messages):
 
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
-    Prime Agent планирует, Agnes генерирует код по плану.
+    Prime Agent планирует через -p режим, Agnes генерирует код по плану.
     Использует SYSTEM_PROMPT из promt.py.
     """
     if not PRIME_AVAILABLE:
@@ -474,7 +474,7 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     logger.info(f"🧠 Prime Agent планирует: {user_query}")
     
     try:
-        # ШАГ 1: Prime Agent составляет план
+        # ШАГ 1: Prime Agent составляет план через -p
         plan_prompt = (
             "Ты — стратег. Составь пошаговый план для выполнения задачи.\n\n"
             "Задача: " + user_query + "\n\n"
@@ -489,13 +489,9 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
             "..."
         )
         
-        # Запускаем Prime Agent через CLI для планирования
-        plan_file = "/tmp/prime_plan.txt"
-        with open(plan_file, "w") as f:
-            f.write(plan_prompt)
-        
+        # ИСПРАВЛЕНО: используем -p (print mode)
         result = subprocess.run(
-            ["prime-agent", "run", "-f", plan_file],
+            ["prime-agent", "-p", plan_prompt],
             capture_output=True,
             text=True,
             timeout=120,
@@ -534,6 +530,9 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         
         return plan + "\n\n" + code_response, None
         
+    except subprocess.TimeoutExpired:
+        logger.error("❌ Prime Agent CLI: timeout (120 сек)")
+        return None, None
     except Exception as e:
         logger.error(f"❌ Ошибка Prime Agent: {e}")
         return None, None
