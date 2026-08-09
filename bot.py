@@ -26,6 +26,32 @@ from dspy.teleprompt import BootstrapFewShot
 warnings.filterwarnings("ignore")
 
 # ============================================================
+# НАСТРОЙКА ЛОГГИРОВАНИЯ (В КОНСОЛЬ)
+# ============================================================
+
+# Очищаем все существующие обработчики
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+
+# Настройка логирования - ВСЁ В КОНСОЛЬ
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Только консоль
+    ]
+)
+
+# Отключаем лишние логи
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+logging.getLogger("dspy").setLevel(logging.INFO)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
 # НАСТРОЙКА ОКРУЖЕНИЯ
 # ============================================================
 
@@ -48,21 +74,9 @@ SCREENSHOTS_DIR = '/app/screenshots'
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-
-logging.getLogger("httpx").setLevel(logging.CRITICAL)
-logging.getLogger("telegram").setLevel(logging.CRITICAL)
-logging.getLogger("telegram.ext").setLevel(logging.CRITICAL)
-logging.getLogger("dspy").setLevel(logging.INFO)
-
-logger = logging.getLogger(__name__)
+logger.info("=" * 60)
+logger.info("🚀 ЗАПУСК БОТА С DSPy + AGNES")
+logger.info("=" * 60)
 logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
 logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
@@ -186,17 +200,22 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
+
+logger.info("🔄 Запускаю браузер...")
 ensure_daemon()
 logger.info("✅ Браузер готов")
 
+logger.info("🔄 Устанавливаю куки...")
 set_cookies_global()
+
+logger.info("🔄 Устанавливаю размер окна...")
 set_viewport_global()
 
 # ============================================================
-# AGNES LM ДЛЯ DSPy
+# AGNES LM ДЛЯ DSPy (ИСПРАВЛЕННЫЙ)
 # ============================================================
 
-class AgnesLM(dspy.LM):
+class AgnesLM:
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.model = model
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
@@ -205,9 +224,18 @@ class AgnesLM(dspy.LM):
         
         if not self.api_key:
             raise ValueError("AGNES_API_KEY не задан!")
+        
+        logger.info(f"✅ Agnes LM инициализирован (model: {model})")
     
     def __call__(self, prompt, **kwargs):
-        messages = [{"role": "user", "content": prompt}]
+        """Вызов Agnes AI через API"""
+        # Обработка разных форматов prompt
+        if isinstance(prompt, str):
+            messages = [{"role": "user", "content": prompt}]
+        elif isinstance(prompt, list):
+            messages = prompt
+        else:
+            messages = [{"role": "user", "content": str(prompt)}]
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -217,53 +245,66 @@ class AgnesLM(dspy.LM):
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": kwargs.get("temperature", 0.3),
-            "max_tokens": kwargs.get("max_tokens", 2000)
+            "temperature": kwargs.get("temperature", self.kwargs.get("temperature", 0.3)),
+            "max_tokens": kwargs.get("max_tokens", self.kwargs.get("max_tokens", 2000))
         }
         
         try:
+            logger.info(f"📤 Запрос к Agnes AI: {str(messages)[:100]}...")
             response = httpx.post(
                 "https://apihub.agnes-ai.com/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=45.0
+                timeout=kwargs.get("timeout", 45.0)
             )
             response.raise_for_status()
             data = response.json()
             result = data["choices"][0]["message"]["content"]
             
+            logger.info(f"📥 Ответ Agnes AI: {result[:100]}...")
+            
             self.history.append({
                 "prompt": prompt,
                 "response": result,
-                "kwargs": kwargs
+                "kwargs": kwargs,
+                "timestamp": time.time()
             })
             
             return result
             
+        except httpx.TimeoutException:
+            logger.error("❌ Таймаут Agnes AI (45 сек)")
+            return "Ошибка: Превышено время ожидания"
         except Exception as e:
             logger.error(f"❌ Ошибка Agnes AI: {e}")
             return f"Ошибка: {str(e)}"
     
     def get_history(self):
         return self.history
+    
+    def clear_history(self):
+        self.history = []
 
 # ============================================================
 # ОПРЕДЕЛЕНИЕ СИГНАТУР DSPy
 # ============================================================
 
 class BrowserPlan(dspy.Signature):
+    """Планирование действий в браузере"""
     user_query = dspy.InputField(desc="Запрос пользователя")
     plan = dspy.OutputField(desc="Пошаговый план действий")
     code = dspy.OutputField(desc="Python код для выполнения")
     explanation = dspy.OutputField(desc="Объяснение решения")
 
 class FixError(dspy.Signature):
+    """Исправление ошибок в коде"""
     error = dspy.InputField(desc="Текст ошибки")
     broken_code = dspy.InputField(desc="Сломанный код")
     fixed_code = dspy.OutputField(desc="Исправленный код")
     explanation = dspy.OutputField(desc="Что было исправлено")
 
 class ExtractSkill(dspy.Signature):
+    """Извлечение навыка из успешного решения"""
     user_query = dspy.InputField(desc="Запрос пользователя")
     code = dspy.InputField(desc="Рабочий код")
     skill_name = dspy.OutputField(desc="Название навыка (одно слово)")
@@ -293,10 +334,12 @@ class BrowserAgent(dspy.Module):
         self._load_skills()
         
         logger.info("✅ DSPy + Agnes агент инициализирован")
+        logger.info(f"📚 Загружено навыков: {len(self.skills)}")
     
     def _load_skills(self):
         skills_dir = os.path.join(agent_workspace, "domain-skills")
         if not os.path.exists(skills_dir):
+            logger.info("📭 Папка навыков не найдена, создаю новую...")
             return
         
         for domain in os.listdir(skills_dir):
@@ -315,27 +358,33 @@ class BrowserAgent(dspy.Module):
                                     "content": content,
                                     "path": skill_path
                                 }
+                                logger.info(f"📄 Загружен навык: {skill_name}")
                         except Exception as e:
                             logger.warning(f"⚠️ Не удалось загрузить навык {f}: {e}")
-        
-        logger.info(f"📚 Загружено {len(self.skills)} навыков")
     
     def forward(self, user_query: str, max_retries: int = 3):
-        logger.info(f"🤔 Планирую: {user_query}")
+        logger.info("=" * 60)
+        logger.info(f"🤔 НОВАЯ ЗАДАЧА: {user_query}")
+        logger.info("=" * 60)
+        
+        logger.info("📝 Шаг 1: Планирование...")
         plan_result = self.planner(user_query=user_query)
         
         plan = plan_result.plan
         code = plan_result.code
         explanation = plan_result.explanation
         
-        logger.info(f"📝 План:\n{plan}")
-        logger.info(f"💻 Код:\n{code}")
+        logger.info(f"📋 План:\n{plan}")
+        logger.info(f"💻 Сгенерированный код:\n{code}")
+        logger.info(f"📖 Объяснение:\n{explanation}")
         
+        logger.info("⚙️ Шаг 2: Выполнение кода...")
         output, success = self._execute_code(code)
         
         attempt = 0
         while not success and attempt < max_retries:
-            logger.info(f"🔧 Исправляю ошибку (попытка {attempt + 1})")
+            logger.info(f"🔧 Шаг 3: Исправление ошибки (попытка {attempt + 1}/{max_retries})")
+            logger.info(f"❌ Ошибка: {output}")
             
             fix_result = self.fixer(
                 error=output,
@@ -344,17 +393,34 @@ class BrowserAgent(dspy.Module):
             
             code = fix_result.fixed_code
             logger.info(f"🔄 Исправленный код:\n{code}")
+            logger.info(f"📖 Объяснение исправления:\n{fix_result.explanation}")
             
+            logger.info("⚙️ Повторное выполнение...")
             output, success = self._execute_code(code)
             attempt += 1
         
         skill_created = False
-        if success and len(code) > 50:
-            skill = self._extract_skill(user_query, code)
-            if skill:
-                self.skills[skill['name']] = skill
-                self._save_skill(skill)
-                skill_created = True
+        if success:
+            logger.info("✅ Код выполнен успешно!")
+            logger.info(f"📤 Вывод:\n{output}")
+            
+            if len(code) > 50:
+                logger.info("🧠 Шаг 4: Создание навыка...")
+                skill = self._extract_skill(user_query, code)
+                if skill:
+                    self.skills[skill['name']] = skill
+                    self._save_skill(skill)
+                    skill_created = True
+                    logger.info(f"✅ Навык создан: {skill['name']}")
+        else:
+            logger.error(f"❌ Код не выполнен после {attempt} попыток")
+            logger.error(f"❌ Последняя ошибка: {output}")
+        
+        logger.info("=" * 60)
+        logger.info(f"📊 РЕЗУЛЬТАТ: {'УСПЕШНО' if success else 'ОШИБКА'}")
+        logger.info(f"🔄 Попыток: {attempt + 1}")
+        logger.info(f"🧠 Навык создан: {'ДА' if skill_created else 'НЕТ'}")
+        logger.info("=" * 60)
         
         return {
             "success": success,
@@ -371,17 +437,23 @@ class BrowserAgent(dspy.Module):
     
     def _extract_skill(self, user_query: str, code: str):
         try:
+            logger.info("🧠 Извлечение навыка из решения...")
             result = self.skill_extractor(
                 user_query=user_query,
                 code=code
             )
             
-            return {
+            skill = {
                 "name": result.skill_name.lower().replace(" ", "_"),
                 "description": result.skill_description,
                 "code": result.skill_code,
                 "domain": "auto"
             }
+            
+            logger.info(f"📝 Название навыка: {skill['name']}")
+            logger.info(f"📝 Описание: {skill['description'][:100]}...")
+            
+            return skill
         except Exception as e:
             logger.warning(f"⚠️ Не удалось извлечь навык: {e}")
             return None
@@ -398,7 +470,7 @@ class BrowserAgent(dspy.Module):
             with open(skill_path, 'w', encoding='utf-8') as f:
                 f.write(content)
             
-            logger.info(f"✅ Навык сохранён: {skill_path}")
+            logger.info(f"✅ Навык сохранён локально: {skill_path}")
             
             push_to_github(content, f"{skill['name']}.md", skill.get("domain", "auto"))
             
@@ -406,11 +478,15 @@ class BrowserAgent(dspy.Module):
             logger.error(f"❌ Ошибка сохранения навыка: {e}")
     
     def use_skill(self, skill_name: str) -> dict:
+        logger.info(f"🎯 Использование навыка: {skill_name}")
+        
         if skill_name in self.skills:
             skill = self.skills[skill_name]
             
             if 'code' in skill:
+                logger.info("⚙️ Выполнение кода навыка...")
                 output, success = self._execute_code(skill['code'])
+                logger.info(f"✅ Навык выполнен: {success}")
                 return {
                     "success": success,
                     "skill": skill_name,
@@ -430,11 +506,13 @@ class BrowserAgent(dspy.Module):
                                 "output": output
                             }
                 except Exception as e:
+                    logger.error(f"❌ Ошибка загрузки навыка: {e}")
                     return {
                         "success": False,
                         "error": f"Ошибка загрузки навыка: {e}"
                     }
         
+        logger.error(f"❌ Навык не найден: {skill_name}")
         return {
             "success": False,
             "error": f"Навык '{skill_name}' не найден"
@@ -644,6 +722,7 @@ def execute_code(code):
 # ИНИЦИАЛИЗАЦИЯ DSPy АГЕНТА
 # ============================================================
 
+logger.info("🔄 Инициализация Agnes LM...")
 agnes_lm = AgnesLM(
     model="agnes-2.0-flash",
     api_key=AGNES_API_KEY,
@@ -651,14 +730,19 @@ agnes_lm = AgnesLM(
     max_tokens=2000
 )
 
+logger.info("🔄 Инициализация BrowserAgent...")
 agent = BrowserAgent(lm=agnes_lm)
-logger.info("✅ DSPy + Agnes агент готов!")
+
+logger.info("=" * 60)
+logger.info("✅ DSPy + Agnes агент готов к работе!")
+logger.info("=" * 60)
 
 # ============================================================
 # КОМАНДЫ ТЕЛЕГРАМ
 # ============================================================
 
 async def start(update, context):
+    logger.info(f"👤 Пользователь {update.effective_user.username} вызвал /start")
     await update.message.reply_text(
         "🌐 Браузерный агент (DSPy + Agnes AI)\n\n"
         "📌 Команды:\n"
@@ -682,7 +766,12 @@ async def ask(update, context):
     
     user_query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
-    logger.info(f"👤 {username} запросил: {user_query}")
+    user_id = update.effective_user.id
+    
+    logger.info("=" * 60)
+    logger.info(f"📩 НОВЫЙ ЗАПРОС ОТ @{username} (ID: {user_id})")
+    logger.info(f"📝 Текст: {user_query}")
+    logger.info("=" * 60)
     
     status_msg = await update.message.reply_text("🧠 Думаю...")
     
@@ -699,15 +788,17 @@ async def ask(update, context):
             if result['skill_created']:
                 response += "\n🧠 Новый навык создан! Используй /skills"
             
+            logger.info(f"✅ Успешный ответ для @{username}")
             await status_msg.edit_text(response)
         else:
+            logger.error(f"❌ Ошибка выполнения для @{username}: {result['output'][:200]}")
             await status_msg.edit_text(
                 f"❌ Ошибка:\n{result['output'][:500]}\n\n"
                 f"📝 План:\n{result['plan'][:200]}"
             )
             
     except Exception as e:
-        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
+        logger.error(f"❌ Критическая ошибка для @{username}: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def skill_command(update, context):
@@ -716,19 +807,28 @@ async def skill_command(update, context):
         return
     
     skill_name = context.args[0]
+    username = update.effective_user.username or "unknown"
+    
+    logger.info(f"🎯 @{username} использует навык: {skill_name}")
+    
     result = agent.use_skill(skill_name)
     
     if result['success']:
+        logger.info(f"✅ Навык {skill_name} выполнен для @{username}")
         await update.message.reply_text(
             f"✅ Навык '{skill_name}' выполнен!\n\n"
             f"📤 {result['output'][:500]}"
         )
     else:
+        logger.error(f"❌ Ошибка выполнения навыка {skill_name} для @{username}: {result.get('error', 'Unknown')}")
         await update.message.reply_text(
             f"❌ {result.get('error', 'Неизвестная ошибка')}"
         )
 
 async def skills_list(update, context):
+    username = update.effective_user.username or "unknown"
+    logger.info(f"📚 @{username} запросил список навыков")
+    
     if not agent.skills:
         await update.message.reply_text("📭 Навыков пока нет. Агент создаст их по мере работы.")
         return
@@ -741,9 +841,13 @@ async def skills_list(update, context):
     if len(skills_text) > 4000:
         skills_text = skills_text[:4000] + "\n\n... и ещё"
     
+    logger.info(f"📚 Отправлено {len(agent.skills)} навыков для @{username}")
     await update.message.reply_text(skills_text)
 
 async def stats(update, context):
+    username = update.effective_user.username or "unknown"
+    logger.info(f"📊 @{username} запросил статистику")
+    
     history = agnes_lm.get_history()
     
     stats_text = (
@@ -760,6 +864,9 @@ async def stats(update, context):
     await update.message.reply_text(stats_text)
 
 async def log(update, context):
+    username = update.effective_user.username or "unknown"
+    logger.info(f"📄 @{username} скачивает логи")
+    
     try:
         log_file = os.path.join(LOGS_DIR, 'bot.log')
         if not os.path.exists(log_file):
@@ -768,9 +875,13 @@ async def log(update, context):
         with open(log_file, 'rb') as f:
             await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
     except Exception as e:
+        logger.error(f"❌ Ошибка отправки логов для @{username}: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def image(update, context):
+    username = update.effective_user.username or "unknown"
+    logger.info(f"📸 @{username} запросил последний скриншот")
+    
     try:
         screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
         if not screenshot_files:
@@ -781,10 +892,15 @@ async def image(update, context):
         file_path = os.path.join(SCREENSHOTS_DIR, latest)
         with open(file_path, 'rb') as f:
             await update.message.reply_photo(photo=f, caption=f"📸 {latest}")
+        logger.info(f"✅ Отправлен скриншот {latest} для @{username}")
     except Exception as e:
+        logger.error(f"❌ Ошибка отправки скриншота для @{username}: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def images(update, context):
+    username = update.effective_user.username or "unknown"
+    logger.info(f"📸 @{username} запросил все скриншоты")
+    
     try:
         screenshot_files = [f for f in os.listdir(SCREENSHOTS_DIR) if f.endswith('.png')]
         if not screenshot_files:
@@ -802,7 +918,9 @@ async def images(update, context):
             await update.message.reply_text(f"📸 Показано 10 из {len(screenshot_files)} скриншотов")
         else:
             await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
+        logger.info(f"✅ Отправлено {sent_count} скриншотов для @{username}")
     except Exception as e:
+        logger.error(f"❌ Ошибка отправки скриншотов для @{username}: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
@@ -810,6 +928,10 @@ async def images(update, context):
 # ============================================================
 
 def main():
+    logger.info("=" * 60)
+    logger.info("🚀 ЗАПУСК TELEGRAM БОТА")
+    logger.info("=" * 60)
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -821,8 +943,13 @@ def main():
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
 
-    logger.info("🚀 Бот с DSPy + Agnes запущен!")
+    logger.info("=" * 60)
+    logger.info("✅ БОТ ГОТОВ К РАБОТЕ!")
     logger.info(f"🧠 Загружено навыков: {len(agent.skills)}")
+    logger.info(f"📁 Скриншоты: {SCREENSHOTS_DIR}")
+    logger.info(f"📁 Логи: {LOGS_DIR}")
+    logger.info("=" * 60)
+    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
