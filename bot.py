@@ -10,6 +10,7 @@ import io
 import json
 import httpx
 import warnings
+import subprocess
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
@@ -464,7 +465,7 @@ async def ask_agnes(messages):
 
 async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
-    Использует Prime Agent для генерации кода через Agnes.
+    Использует Prime Agent для генерации кода.
     Возвращает: (ответ_текст, код_для_выполнения)
     """
     if not PRIME_AVAILABLE:
@@ -472,7 +473,6 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     
     logger.info(f"🧠 Prime Agent запрос: {user_query}")
     
-    # Промпт для Prime Agent — заставляем генерировать код для Harness
     prime_prompt = f"""
     Ты — эксперт по browser-harness. Напиши Python-код для выполнения задачи.
     
@@ -506,29 +506,68 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
     """
     
     try:
-        # Используем Prime Agent с OpenAI провайдером
-        # Если у вас есть Agnes как провайдер — замените provider="agnes"
-        async with PrimeSession(
-            cwd=agent_workspace,
-            provider="openai",
-            model="gpt-4o",
-            verbose=False
-        ) as session:
-            
-            response = ""
-            async for event in session.prompt_stream(prime_prompt):
-                if hasattr(event, 'text_delta'):
-                    response += event.text_delta
-            
-            logger.info(f"📝 Ответ Prime Agent: {response[:200]}...")
-            
-            # Извлекаем код
-            code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-            if code_match:
-                code = code_match.group(1)
-                return response, code
-            else:
+        # Пробуем разные варианты запуска PrimeSession
+        
+        # Вариант 1: вообще без параметров
+        try:
+            async with PrimeSession() as session:
+                response = ""
+                async for event in session.prompt_stream(prime_prompt):
+                    if hasattr(event, 'text_delta'):
+                        response += event.text_delta
+                
+                logger.info(f"📝 Ответ Prime Agent: {response[:200]}...")
+                
+                code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
+                if code_match:
+                    return response, code_match.group(1)
                 return response, None
+        except TypeError as e:
+            logger.warning(f"⚠️ PrimeSession без параметров не работает: {e}")
+            
+            # Вариант 2: с cwd
+            try:
+                async with PrimeSession(cwd=agent_workspace) as session:
+                    response = ""
+                    async for event in session.prompt_stream(prime_prompt):
+                        if hasattr(event, 'text_delta'):
+                            response += event.text_delta
+                    
+                    code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
+                    if code_match:
+                        return response, code_match.group(1)
+                    return response, None
+            except TypeError as e2:
+                logger.warning(f"⚠️ PrimeSession с cwd не работает: {e2}")
+                
+                # Вариант 3: через CLI (обходной путь)
+                try:
+                    prompt_file = "/tmp/prime_prompt.txt"
+                    with open(prompt_file, "w") as f:
+                        f.write(prime_prompt)
+                    
+                    result = subprocess.run(
+                        ["prime-agent", "run", "-f", prompt_file],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        cwd=agent_workspace
+                    )
+                    
+                    if result.returncode != 0:
+                        return f"❌ Ошибка CLI Prime Agent: {result.stderr}", None
+                    
+                    response = result.stdout
+                    code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
+                    if code_match:
+                        return response, code_match.group(1)
+                    return response, None
+                    
+                except subprocess.TimeoutExpired:
+                    return "❌ Prime Agent CLI: превышено время ожидания (120 сек)", None
+                except Exception as e3:
+                    logger.error(f"❌ Prime Agent CLI ошибка: {e3}")
+                    return f"❌ Ошибка Prime Agent: {str(e3)[:200]}", None
                 
     except Exception as e:
         logger.error(f"❌ Ошибка Prime Agent: {e}")
@@ -645,6 +684,86 @@ def execute_code(code):
         return str(e), False
 
 # ============================================================
+# СТАТУС
+# ============================================================
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка статуса всех компонентов"""
+    
+    # 1. Проверка Prime Agent
+    prime_status = "❌ Не установлен"
+    prime_version = "Неизвестно"
+    if PRIME_AVAILABLE:
+        try:
+            result = subprocess.run(
+                ["prime-agent", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                prime_status = "✅ Работает"
+                prime_version = result.stdout.strip() or result.stderr.strip()
+            else:
+                prime_status = "⚠️ Установлен, но не отвечает"
+        except Exception as e:
+            prime_status = f"⚠️ Ошибка: {str(e)[:30]}"
+    
+    # 2. Проверка Agnes AI
+    agnes_status = "✅ Доступен" if AGNES_API_KEY else "❌ Нет API ключа"
+    
+    # 3. Проверка GitHub
+    github_status = "✅ Настроен" if GITHUB_TOKEN else "❌ Не настроен"
+    
+    # 4. Проверка Browser Harness
+    harness_status = "❌ Не доступен"
+    try:
+        resp = httpx.get("http://localhost:9222/json/version", timeout=3)
+        if resp.status_code == 200:
+            harness_status = "✅ Работает (Chromium готов)"
+        else:
+            harness_status = f"⚠️ Ответ {resp.status_code}"
+    except Exception:
+        harness_status = "❌ Не отвечает (Chromium не запущен)"
+    
+    # 5. Проверка Telegram
+    telegram_status = f"✅ {TELEGRAM_TOKEN[:8]}...{TELEGRAM_TOKEN[-4:]}"
+    
+    # 6. Проверка cookies
+    cookies_status = "✅ Загружены" if COOKIES else "❌ Не загружены"
+    cookies_count = len(COOKIES) if COOKIES else 0
+    
+    # Формируем ответ
+    status_text = f"""
+📊 **СТАТУС СИСТЕМЫ**
+
+🧠 **Prime Agent:** {prime_status}
+   Версия: {prime_version}
+
+🤖 **Agnes AI:** {agnes_status}
+
+🌐 **Browser Harness:** {harness_status}
+
+📦 **GitHub:** {github_status}
+
+📱 **Telegram Bot:** {telegram_status}
+
+🍪 **Cookies:** {cookies_status} ({cookies_count} шт.)
+
+📁 **Рабочая папка:** `{agent_workspace}`
+📂 **Логи:** `{LOGS_DIR}`
+📸 **Скриншоты:** `{SCREENSHOTS_DIR}`
+
+---
+💡 **Команды:**
+/ask — Agnes AI + Harness
+/prime — Prime Agent + Harness
+/status — этот статус
+"""
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+# ============================================================
 # КОМАНДЫ
 # ============================================================
 
@@ -652,7 +771,8 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 **Браузерный агент:**\n"
         "/ask <запрос> — Agnes AI + Harness\n"
-        "/prime <запрос> — Prime Agent + Harness (глубокое мышление)\n\n"
+        "/prime <запрос> — Prime Agent + Harness (глубокое мышление)\n"
+        "/status — статус всех компонентов\n\n"
         "📸 **Скриншоты:**\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n\n"
@@ -815,8 +935,30 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"❌ Ошибка выполнения:\n```\n{output[:500]}\n```"
                 )
         else:
-            # Если кода нет — просто показываем ответ
-            await status_msg.edit_text(response[:4000])
+            # Если кода нет — пробуем через Agnes
+            await status_msg.edit_text("🔄 Prime Agent не сгенерировал код, пробую Agnes...")
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query}
+            ]
+            response = await ask_agnes(messages)
+            
+            if "```python" in response:
+                code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
+                code = code_match.group(1) if code_match else None
+                
+                if code:
+                    await status_msg.edit_text("⚙️ Выполняю код через Harness...")
+                    output, success = execute_code(code)
+                    
+                    if success:
+                        await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
+                    else:
+                        await status_msg.edit_text(f"❌ {output}")
+                else:
+                    await status_msg.edit_text(response[:4000])
+            else:
+                await status_msg.edit_text(response[:4000])
             
     except Exception as e:
         logger.error(f"❌ Ошибка в /prime для {username}: {e}")
@@ -934,7 +1076,8 @@ def main():
     # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
-    app.add_handler(CommandHandler("prime", prime))  # Prime Agent
+    app.add_handler(CommandHandler("prime", prime))
+    app.add_handler(CommandHandler("status", status))  # ← НОВАЯ КОМАНДА
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
