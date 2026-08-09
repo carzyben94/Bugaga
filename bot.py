@@ -16,7 +16,6 @@ import queue
 import zipfile
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from promt import SYSTEM_PROMPT
 from PIL import Image
 
 warnings.filterwarnings("ignore")
@@ -513,7 +512,6 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         env["LITELLM_BASE_URL"] = "http://127.0.0.1:4000/v1"
         env["LITELLM_API_KEY"] = os.environ.get("AGNES_API_KEY", "")
         
-        # ИСПРАВЛЕНО: добавлен --append-system-prompt
         result = subprocess.run([
             "prime-agent", "-p",
             "--provider", "litellm",
@@ -529,9 +527,8 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         plan = result.stdout
         logger.info(f"📋 План от Prime через LiteLLM:\n{plan[:300]}...")
         
-        # ШАГ 2: Agnes генерирует код по плану напрямую
+        # ШАГ 2: Agnes генерирует код по плану (БЕЗ SYSTEM_PROMPT)
         code_prompt = (
-            SYSTEM_PROMPT + "\n\n"
             "Выполни этот план через Browser Harness:\n\n"
             + plan + "\n\n"
             "Напиши Python-код для выполнения этого плана.\n"
@@ -540,7 +537,6 @@ async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
         )
         
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": code_prompt}
         ]
         
@@ -925,7 +921,6 @@ async def ask(update, context):
 
     try:
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_query}
         ]
 
@@ -989,7 +984,6 @@ async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await status_msg.edit_text("🔄 Prime Agent не сгенерировал код, пробую Agnes...")
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
             response = await ask_agnes(messages)
