@@ -1,3 +1,4 @@
+# bot.py
 import os
 import sys
 import stat
@@ -10,12 +11,9 @@ import io
 import json
 import httpx
 import warnings
-import subprocess
-import threading
-import queue
-import zipfile
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from promt import SYSTEM_PROMPT
 from PIL import Image
 
 warnings.filterwarnings("ignore")
@@ -57,44 +55,6 @@ logger.info(f"✅ agent_workspace: {agent_workspace}")
 logger.info(f"✅ helpers_file: {helpers_file}")
 logger.info(f"✅ screenshots_dir: {SCREENSHOTS_DIR}")
 
-# ============================================================
-# СОЗДАЁМ КОНФИГ ДЛЯ PRIME AGENT
-# ============================================================
-
-def setup_prime_config():
-    """Создаёт конфиг для Prime Agent с API ключом из переменных окружения"""
-    try:
-        agnes_key = os.environ.get("AGNES_API_KEY")
-        if not agnes_key:
-            logger.warning("⚠️ AGNES_API_KEY не задан, Prime Agent не сможет работать")
-            return
-        
-        prime_config_dir = os.path.expanduser("~/.prime/agent")
-        os.makedirs(prime_config_dir, exist_ok=True)
-        
-        config_file = os.path.join(prime_config_dir, "models.json")
-        config_content = {
-            "providers": {
-                "litellm": {
-                    "baseUrl": "http://127.0.0.1:4000/v1",
-                    "api": "openai-completions",
-                    "apiKey": agnes_key,
-                    "models": [{"id": "agnes-2.0-flash"}]
-                }
-            }
-        }
-        
-        with open(config_file, "w") as f:
-            json.dump(config_content, f, indent=2)
-        
-        logger.info(f"✅ Конфиг Prime Agent создан: {config_file}")
-        logger.info(f"   Провайдер: litellm, модель: agnes-2.0-flash")
-        logger.info(f"   baseUrl: http://127.0.0.1:4000/v1")
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания конфига Prime Agent: {e}")
-
-setup_prime_config()
-
 sys.path.insert(0, "browser-harness/src")
 
 from browser_harness.helpers import (
@@ -104,18 +64,6 @@ from browser_harness.helpers import (
     fill_input, upload_file, http_get, drain_events
 )
 from browser_harness.admin import ensure_daemon
-
-# ============================================================
-# PRIME AGENT
-# ============================================================
-
-try:
-    from prime_agent_client import PrimeSession
-    PRIME_AVAILABLE = True
-    logger.info("✅ Prime Agent клиент загружен")
-except ImportError:
-    PRIME_AVAILABLE = False
-    logger.warning("⚠️ Prime Agent не установлен")
 
 # ============================================================
 # КУКИ (WebSocket)
@@ -251,6 +199,7 @@ def push_to_github(content, filename, host="x.com"):
         "Content-Type": "application/json"
     }
 
+    # Проверяем, существует ли уже файл (чтобы получить его SHA для обновления)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
@@ -297,12 +246,14 @@ def push_helpers_to_github():
         "Content-Type": "application/json"
     }
     
+    # Получаем текущий файл (чтобы получить sha)
     try:
         resp = httpx.get(url, headers=headers, timeout=10)
         sha = resp.json().get("sha", None) if resp.status_code == 200 else None
     except:
         sha = None
     
+    # Читаем текущее содержимое файла в контейнере
     helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
     if not os.path.exists(helpers_path):
         logger.warning("⚠️ agent_helpers.py не найден")
@@ -338,6 +289,7 @@ def push_helpers_to_github():
 AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 def get_image_size(image_data):
+    """Определяет размер изображения"""
     try:
         img = Image.open(io.BytesIO(image_data))
         width, height = img.size
@@ -348,6 +300,16 @@ def get_image_size(image_data):
         return None, None
 
 def replace_background(image_data, new_background_prompt: str):
+    """
+    Заменяет фон изображения через Agnes AI.
+    
+    Args:
+        image_data: bytes изображения
+        new_background_prompt: описание нового фона
+    
+    Returns:
+        tuple: (url_result, error_message)
+    """
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
     
@@ -358,6 +320,7 @@ def replace_background(image_data, new_background_prompt: str):
         return None, "Слишком короткое описание фона"
     
     try:
+        # 1. ОПРЕДЕЛЕНИЕ РАЗМЕРА
         width, height = get_image_size(image_data)
         
         MAX_SIZE = 1024
@@ -379,6 +342,7 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info(f"📐 Размер для API: {size}")
         
+        # 2. ПОДГОТОВКА ИЗОБРАЖЕНИЯ
         try:
             img = Image.open(io.BytesIO(image_data))
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -392,6 +356,7 @@ def replace_background(image_data, new_background_prompt: str):
         img_b64 = base64.b64encode(image_data).decode('utf-8')
         data_uri = f"data:image/jpeg;base64,{img_b64}"
         
+        # 3. ФОРМИРОВАНИЕ ЗАПРОСА
         enhanced_prompt = f"""
         Replace the background with: {new_background_prompt}.
         Keep the main subject exactly as is.
@@ -415,6 +380,7 @@ def replace_background(image_data, new_background_prompt: str):
             }
         }
         
+        # 4. ОТПРАВКА ЗАПРОСА (httpx)
         logger.info(f"📤 Отправка запроса к Agnes AI...")
         logger.info(f"   Промпт: {new_background_prompt[:50]}...")
         
@@ -429,6 +395,7 @@ def replace_background(image_data, new_background_prompt: str):
         
         logger.info("✅ Изображение сгенерировано")
         
+        # 5. ОБРАБОТКА ОТВЕТА
         if 'data' in result and len(result['data']) > 0:
             if 'url' in result['data'][0]:
                 return result['data'][0]['url'], None
@@ -481,334 +448,114 @@ async def ask_agnes(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# PRIME AGENT + LITELLM + BROWSER HARNESS
-# ============================================================
-
-async def ask_prime_agent(user_query: str) -> tuple[str, str | None]:
-    """
-    Prime Agent планирует через LiteLLM, используя Agnes как провайдера.
-    """
-    if not PRIME_AVAILABLE:
-        return "❌ Prime Agent не доступен", None
-    
-    logger.info(f"🧠 Prime Agent планирует через LiteLLM: {user_query}")
-    
-    try:
-        plan_prompt = (
-            "Ты — стратег. Составь пошаговый план для выполнения задачи.\n\n"
-            "Задача: " + user_query + "\n\n"
-            "План должен быть:\n"
-            "1. Конкретным и детальным\n"
-            "2. Разбитым на логические шаги\n"
-            "3. С указанием, что нужно делать на каждом шаге\n\n"
-            "Формат ответа (ТОЛЬКО план, без лишнего текста):\n\n"
-            "План:\n"
-            "1. [действие]\n"
-            "2. [действие]\n"
-            "..."
-        )
-        
-        env = os.environ.copy()
-        env["LITELLM_BASE_URL"] = "http://127.0.0.1:4000/v1"
-        env["LITELLM_API_KEY"] = os.environ.get("AGNES_API_KEY", "")
-        
-        result = subprocess.run([
-            "prime-agent", "-p",
-            "--provider", "litellm",
-            "--model", "agnes-2.0-flash",
-            "--append-system-prompt", "/root/.prime/agent/APPEND_SYSTEM.md",
-            plan_prompt
-        ], capture_output=True, text=True, timeout=120, cwd=agent_workspace, env=env)
-        
-        if result.returncode != 0:
-            logger.error(f"❌ Prime Agent CLI ошибка: {result.stderr}")
-            return None, None
-        
-        plan = result.stdout
-        logger.info(f"📋 План от Prime через LiteLLM:\n{plan[:300]}...")
-        
-        # ШАГ 2: Agnes генерирует код по плану с жёстким запретом
-        code_prompt = (
-            "⚠️ КРИТИЧЕСКИ ВАЖНО: НЕ ИСПОЛЬЗУЙ СТОРОННИЕ БИБЛИОТЕКИ!\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ selenium, playwright, puppeteer, requests, beautifulsoup!\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ import! Все функции уже доступны!\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ from selenium import webdriver\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ browser. — просто new_tab()\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ browser_harness. — просто new_tab()\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ BrowserHarness()\n"
-            "⚠️ НЕ ИСПОЛЬЗУЙ screenshot() — используй capture_screenshot()\n\n"
-            "ТЫ ДОЛЖЕН ИСПОЛЬЗОВАТЬ ТОЛЬКО ЭТИ ФУНКЦИИ:\n"
-            "- new_tab(url) — открыть новую вкладку\n"
-            "- goto_url(url) — переход по URL\n"
-            "- wait_for_load() — ждать загрузки\n"
-            "- click_at_xy(x, y) — клик по координатам\n"
-            "- type_text(text) — ввод текста\n"
-            "- press_key(key) — нажать клавишу\n"
-            "- capture_screenshot(path) — скриншот\n"
-            "- js(expression) — выполнить JavaScript\n"
-            "- scroll(x, y) — прокрутка\n\n"
-            "Выполни этот план через Browser Harness:\n\n"
-            + plan + "\n\n"
-            "Напиши Python-код для выполнения этого плана.\n"
-            "Ответь ТОЛЬКО кодом в формате ```python ... ```\n"
-            "Не используй другие форматы ответа."
-        )
-        
-        messages = [
-            {"role": "user", "content": code_prompt}
-        ]
-        
-        code_response = await ask_agnes(messages)
-        
-        code_match = re.search(r'```python\n(.*?)\n```', code_response, re.DOTALL)
-        if code_match:
-            return plan + "\n\n" + code_response, code_match.group(1)
-        
-        return plan + "\n\n" + code_response, None
-        
-    except subprocess.TimeoutExpired:
-        logger.error("❌ Prime Agent CLI: timeout (120 сек)")
-        return None, None
-    except Exception as e:
-        logger.error(f"❌ Ошибка Prime Agent через LiteLLM: {e}")
-        return None, None
-
-# ============================================================
-# ВЫПОЛНИТЕЛЬ (с таймаутом)
+# ВЫПОЛНИТЕЛЬ
 # ============================================================
 
 def execute_code(code):
-    """Выполняет код с таймаутом 30 секунд"""
-    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code[:500]}...")
-    
-    result_queue = queue.Queue()
-    
-    def run_code():
-        try:
-            stdout_buffer = io.StringIO()
-            old_stdout = sys.stdout
-            sys.stdout = stdout_buffer
-            
-            def save_skill(host, name, content):
-                skills_dir = os.path.join(agent_workspace, "domain-skills", host)
-                os.makedirs(skills_dir, exist_ok=True)
-                os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-                
-                skill_path = os.path.join(skills_dir, f"{name}.md")
-                
-                if isinstance(content, dict):
-                    content = json.dumps(content, indent=2, ensure_ascii=False)
-                elif not isinstance(content, str):
-                    content = str(content)
-                
-                with open(skill_path, "w", encoding='utf-8') as f:
-                    f.write(content)
-                
-                os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-                
-                logger.info(f"✅ Навык сохранён локально: {skill_path}")
-                push_to_github(content, f"{name}.md", host)
-                return skill_path
-            
-            def add_helper(code):
-                helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
-                
-                if not os.path.exists(helpers_path):
-                    with open(helpers_path, "w") as f:
-                        f.write('"""Agent-editable browser helpers."""\n')
-                
-                if isinstance(code, dict):
-                    code = json.dumps(code, indent=2, ensure_ascii=False)
-                elif not isinstance(code, str):
-                    code = str(code)
-                
-                with open(helpers_path, "a", encoding='utf-8') as f:
-                    f.write(f"\n\n{code}\n")
-                
-                logger.info(f"✅ Helper добавлен в agent_helpers.py")
-                push_helpers_to_github()
-                return True
-            
-            def capture_screenshot_with_path(path=None, full=False, max_dim=None):
-                if path is None:
-                    timestamp = int(time.time())
-                    filename = f"screenshot_{timestamp}.png"
-                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
-                else:
-                    filename = os.path.basename(path)
-                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
-                logger.info(f"📸 Сохраняю скриншот в: {full_path}")
-                return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
-            
-            globals_dict = {
-                'new_tab': new_tab, 
-                'goto_url': goto_url, 
-                'wait_for_load': wait_for_load,
-                'page_info': page_info, 
-                'capture_screenshot': capture_screenshot_with_path,
-                'click_at_xy': click_at_xy, 
-                'type_text': type_text, 
-                'press_key': press_key,
-                'scroll': scroll,
-                'scroll_at_xy': scroll,
-                'js': js, 
-                'cdp': cdp, 
-                'ensure_real_tab': ensure_real_tab,
-                'wait_for_element': wait_for_element, 
-                'list_tabs': list_tabs,
-                'current_tab': current_tab, 
-                'close_tab': close_tab,
-                'switch_tab': switch_tab,
-                'fill_input': fill_input,
-                'upload_file': upload_file,
-                'http_get': http_get,
-                'drain_events': drain_events,
-                'set_cookies': set_cookies_global,
-                'save_skill': save_skill,
-                'add_helper': add_helper,
-                'time': time,
-                'json': json,
-                'print': print, 
-                '__builtins__': __builtins__,
-            }
-            
-            exec(code, globals_dict)
-            
-            sys.stdout = old_stdout
-            output = stdout_buffer.getvalue()
-            
-            if output:
-                result_queue.put((output.strip(), True))
-            elif 'result' in globals_dict:
-                result_queue.put((str(globals_dict['result']), True))
-            else:
-                result_queue.put(("⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False))
-        except Exception as e:
-            result_queue.put((str(e), False))
-    
-    thread = threading.Thread(target=run_code)
-    thread.daemon = True
-    thread.start()
-    thread.join(timeout=30)
-    
-    if thread.is_alive():
-        logger.error("⏰ Превышено время ожидания (30 сек)")
-        return "⏰ Превышено время ожидания (30 сек)", False
-    
-    return result_queue.get()
-
-# ============================================================
-# СТАТУС
-# ============================================================
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса всех компонентов"""
-    
-    # 1. Проверка Prime Agent
-    prime_status = "❌ Не установлен"
-    prime_version = "Неизвестно"
-    if PRIME_AVAILABLE:
-        try:
-            result = subprocess.run(
-                ["prime-agent", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                prime_status = "✅ Работает"
-                prime_version = result.stdout.strip() or result.stderr.strip()
-            else:
-                prime_status = "⚠️ Установлен, но не отвечает"
-        except Exception as e:
-            prime_status = f"⚠️ Ошибка: {str(e)[:30]}"
-    
-    # 2. Проверка Agnes AI
-    agnes_status = "✅ Доступен" if AGNES_API_KEY else "❌ Нет API ключа"
-    
-    # 3. Проверка GitHub
-    github_status = "✅ Настроен" if GITHUB_TOKEN else "❌ Не настроен"
-    
-    # 4. Проверка Browser Harness
-    harness_status = "❌ Не доступен"
+    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
     try:
-        resp = httpx.get("http://localhost:9222/json/version", timeout=3)
-        if resp.status_code == 200:
-            harness_status = "✅ Работает (Chromium готов)"
-        else:
-            harness_status = f"⚠️ Ответ {resp.status_code}"
-    except Exception:
-        harness_status = "❌ Не отвечает (Chromium не запущен)"
-    
-    # 5. Проверка LiteLLM прокси
-    litellm_status = "❌ Не доступен"
-    litellm_detail = ""
-    
-    litellm_url = os.environ.get("LITELLM_BASE_URL", "http://127.0.0.1:4000/v1")
-    health_url = litellm_url.replace("/v1", "/health")
-    
-    try:
-        resp = httpx.get(health_url, timeout=3)
-        if resp.status_code == 200:
-            litellm_status = "✅ Работает"
-            litellm_detail = f"(по адресу {health_url})"
-        else:
-            litellm_status = f"⚠️ Ответ {resp.status_code}"
-            litellm_detail = f"(адрес {health_url})"
+        stdout_buffer = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = stdout_buffer
+        
+        def save_skill(host, name, content):
+            skills_dir = os.path.join(agent_workspace, "domain-skills", host)
+            os.makedirs(skills_dir, exist_ok=True)
+            os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+            
+            skill_path = os.path.join(skills_dir, f"{name}.md")
+            with open(skill_path, "w", encoding='utf-8') as f:
+                f.write(content)
+            os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
+            
+            logger.info(f"✅ Навык сохранён локально: {skill_path}")
+            
+            # Отправляем в GitHub
+            push_to_github(content, f"{name}.md", host)
+            
+            return skill_path
+        
+        def add_helper(code):
+            """Добавить функцию в agent_helpers.py и отправить в GitHub"""
+            helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
+            
+            # Проверяем, что файл существует
+            if not os.path.exists(helpers_path):
+                with open(helpers_path, "w") as f:
+                    f.write('"""Agent-editable browser helpers."""\n')
+            
+            # Добавляем код
+            with open(helpers_path, "a", encoding='utf-8') as f:
+                f.write(f"\n\n{code}\n")
+            
+            logger.info(f"✅ Helper добавлен в agent_helpers.py")
+            
+            # Отправляем в GitHub
+            push_helpers_to_github()
+            
+            return True
+        
+        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
+            if path is None:
+                timestamp = int(time.time())
+                filename = f"screenshot_{timestamp}.png"
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            else:
+                filename = os.path.basename(path)
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            logger.info(f"📸 Сохраняю скриншот в: {full_path}")
+            return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
+        
+        globals_dict = {
+            'new_tab': new_tab, 
+            'goto_url': goto_url, 
+            'wait_for_load': wait_for_load,
+            'page_info': page_info, 
+            'capture_screenshot': capture_screenshot_with_path,
+            'click_at_xy': click_at_xy, 
+            'type_text': type_text, 
+            'press_key': press_key,
+            'scroll': scroll,
+            'scroll_at_xy': scroll,
+            'js': js, 
+            'cdp': cdp, 
+            'ensure_real_tab': ensure_real_tab,
+            'wait_for_element': wait_for_element, 
+            'list_tabs': list_tabs,
+            'current_tab': current_tab, 
+            'close_tab': close_tab,
+            'switch_tab': switch_tab,
+            'fill_input': fill_input,
+            'upload_file': upload_file,
+            'http_get': http_get,
+            'drain_events': drain_events,
+            'set_cookies': set_cookies_global,
+            'save_skill': save_skill,
+            'add_helper': add_helper,
+            'time': time,
+            'json': json,
+            'print': print, 
+            '__builtins__': __builtins__,
+        }
+        
+        exec(code, globals_dict)
+        
+        sys.stdout = old_stdout
+        output = stdout_buffer.getvalue()
+        
+        if output:
+            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
+            return output.strip(), True
+        elif 'result' in globals_dict:
+            result = str(globals_dict['result'])
+            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
+            return result, True
+        
+        logger.warning("⚠️ Код выполнен, но нет вывода")
+        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
     except Exception as e:
-        try:
-            result = subprocess.run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", health_url],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.stdout.strip() == "200":
-                litellm_status = "✅ Работает (curl)"
-                litellm_detail = f"(адрес {health_url})"
-            else:
-                litellm_status = f"⚠️ Не отвечает (curl, HTTP {result.stdout.strip()})"
-        except Exception:
-            litellm_status = f"❌ Ошибка: {str(e)[:30]}"
-    
-    # 6. Проверка Telegram
-    telegram_status = f"✅ {TELEGRAM_TOKEN[:8]}...{TELEGRAM_TOKEN[-4:]}"
-    
-    # 7. Проверка cookies
-    cookies_status = "✅ Загружены" if COOKIES else "❌ Не загружены"
-    cookies_count = len(COOKIES) if COOKIES else 0
-    
-    status_text = f"""
-📊 **СТАТУС СИСТЕМЫ**
-
-🧠 **Prime Agent:** {prime_status}
-   Версия: {prime_version}
-
-🤖 **Agnes AI:** {agnes_status}
-
-🌐 **Browser Harness:** {harness_status}
-
-⚡ **LiteLLM Proxy:** {litellm_status}
-   {litellm_detail}
-
-📦 **GitHub:** {github_status}
-
-📱 **Telegram Bot:** {telegram_status}
-
-🍪 **Cookies:** {cookies_status} ({cookies_count} шт.)
-
-📁 **Рабочая папка:** `{agent_workspace}`
-📂 **Логи:** `{LOGS_DIR}`
-📸 **Скриншоты:** `{SCREENSHOTS_DIR}`
-
----
-💡 **Команды:**
-/ask — Agnes AI + Harness
-/prime — Prime Agent + LiteLLM + Agnes + Harness
-/status — этот статус
-"""
-    
-    await update.message.reply_text(status_text, parse_mode='Markdown')
+        logger.error(f"❌ Ошибка выполнения: {e}")
+        return str(e), False
 
 # ============================================================
 # КОМАНДЫ
@@ -816,78 +563,21 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update, context):
     await update.message.reply_text(
-        "🌐 **Браузерный агент:**\n"
-        "/ask <запрос> — Agnes AI + Harness\n"
-        "/prime <запрос> — Prime Agent + LiteLLM + Agnes + Harness\n"
-        "/status — статус всех компонентов\n\n"
-        "📸 **Скриншоты:**\n"
+        "🌐 Браузер:\n"
+        "/ask <запрос> — задать задачу агенту\n"
         "/image — последний скриншот\n"
-        "/images — все скриншоты\n\n"
-        "🧠 **Навыки:**\n"
-        "/skills — список навыков\n"
-        "/log — скачать логи\n\n"
-        "🎨 **Фотошоп:**\n"
-        "/bg <описание> — заменить фон\n"
-        "/clear — очистить кэш",
-        parse_mode='Markdown'
+        "/images — все скриншоты\n"
+        "/log — скачать логи"
     )
 
-async def log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправить все логи одним архивом"""
+async def log(update, context):
     try:
-        # Проверяем, есть ли файлы логов
-        log_files = []
-        for f in os.listdir(LOGS_DIR):
-            file_path = os.path.join(LOGS_DIR, f)
-            if os.path.isfile(file_path) and f.endswith('.log'):
-                log_files.append(file_path)
-        
-        if not log_files:
-            await update.message.reply_text("📭 Логов пока нет")
+        log_file = os.path.join(LOGS_DIR, 'bot.log')
+        if not os.path.exists(log_file):
+            await update.message.reply_text("📭 Лог-файл не найден")
             return
-        
-        # Создаём архив
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for file_path in log_files:
-                zipf.write(file_path, os.path.basename(file_path))
-        
-        zip_buffer.seek(0)
-        
-        await update.message.reply_document(
-            document=zip_buffer,
-            filename='logs.zip',
-            caption=f"📋 Все логи ({len(log_files)} файлов)"
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки логов: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def skills(update, context):
-    try:
-        skills_dir = os.path.join(agent_workspace, "domain-skills")
-        if not os.path.exists(skills_dir):
-            await update.message.reply_text("📭 Папка с навыками не найдена")
-            return
-        
-        skills_list = []
-        for domain in os.listdir(skills_dir):
-            domain_path = os.path.join(skills_dir, domain)
-            if os.path.isdir(domain_path):
-                for f in os.listdir(domain_path):
-                    if f.endswith(".md") or f.endswith(".txt"):
-                        skills_list.append(f"{domain}/{f}")
-        
-        if skills_list:
-            msg = "🧠 **Доступные навыки:**\n\n"
-            for skill in skills_list[:20]:
-                msg += f"• `{skill}`\n"
-            if len(skills_list) > 20:
-                msg += f"\n... и ещё {len(skills_list) - 20}"
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("🧠 Навыков пока нет. Агент создаст их по мере работы.")
+        with open(log_file, 'rb') as f:
+            await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -939,6 +629,7 @@ async def ask(update, context):
 
     try:
         messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_query}
         ]
 
@@ -965,162 +656,8 @@ async def ask(update, context):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# PRIME КОМАНДА
+# ФОТОШОП КОМАНДЫ (УДАЛЕНЫ)
 # ============================================================
-
-async def prime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Prime Agent через LiteLLM генерирует план, Harness выполняет"""
-    if not context.args:
-        await update.message.reply_text(
-            "🧠 Prime Agent + LiteLLM + Browser Harness\n"
-            "Пример: /prime открой google.com и найди погоду"
-        )
-        return
-    
-    user_query = " ".join(context.args)
-    username = update.effective_user.username or "unknown"
-    logger.info(f"👤 {username} запросил Prime: {user_query}")
-    
-    status_msg = await update.message.reply_text("🧠 Prime Agent думает через LiteLLM...")
-    
-    try:
-        response, code = await ask_prime_agent(user_query)
-        
-        if code:
-            await status_msg.edit_text("⚙️ Выполняю код через Browser Harness...")
-            output, success = execute_code(code)
-            
-            if success:
-                await status_msg.edit_text(
-                    f"✅ **Prime Agent + LiteLLM + Harness**\n\n"
-                    f"📤 Результат:\n```\n{output[:3500]}\n```"
-                )
-            else:
-                await status_msg.edit_text(
-                    f"❌ Ошибка выполнения:\n```\n{output[:500]}\n```"
-                )
-        else:
-            await status_msg.edit_text("🔄 Prime Agent не сгенерировал код, пробую Agnes...")
-            messages = [
-                {"role": "user", "content": user_query}
-            ]
-            response = await ask_agnes(messages)
-            
-            if "```python" in response:
-                code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-                code = code_match.group(1) if code_match else None
-                
-                if code:
-                    await status_msg.edit_text("⚙️ Выполняю код через Harness...")
-                    output, success = execute_code(code)
-                    
-                    if success:
-                        await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
-                    else:
-                        await status_msg.edit_text(f"❌ {output}")
-                else:
-                    await status_msg.edit_text(response[:4000])
-            else:
-                await status_msg.edit_text(response[:4000])
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка в /prime для {username}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# ФОТОШОП КОМАНДЫ
-# ============================================================
-
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'last_image' in context.user_data:
-        del context.user_data['last_image']
-        await update.message.reply_text("🧹 Кэш очищен!")
-    else:
-        await update.message.reply_text("📭 Кэш пуст")
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        context.user_data['last_image'] = bytes(photo_bytes)
-        
-        width, height = get_image_size(photo_bytes)
-        size_info = f" ({width}x{height})" if width and height else ""
-        
-        await update.message.reply_text(
-            f"📸 Фото сохранено{size_info}!\n"
-            f"✏️ Используй /bg <описание> для замены фона"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not AGNES_API_KEY:
-        await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
-        return
-
-    if 'last_image' not in context.user_data:
-        await update.message.reply_text(
-            "📸 Сначала загрузите картинку!\n"
-            "Отправьте фото или сделайте скриншот /screen"
-        )
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "✏️ Напишите описание нового фона.\n"
-            "Пример: /bg beach \n"
-            "Пример: /bg космос"
-        )
-        return
-
-    prompt = ' '.join(context.args)
-    waiting_msg = await update.message.reply_text(
-        f"🎨 Заменяю фон: {prompt}\n⏳ Ожидайте..."
-    )
-
-    try:
-        image_data = context.user_data['last_image']
-        loop = asyncio.get_event_loop()
-        result_url, error = await loop.run_in_executor(
-            None, replace_background, image_data, prompt
-        )
-
-        try:
-            await waiting_msg.delete()
-        except:
-            pass
-
-        if error:
-            await update.message.reply_text(f"❌ Ошибка: {error}")
-            return
-
-        if result_url:
-            try:
-                if result_url.startswith('data:image'):
-                    img_data = base64.b64decode(result_url.split(',')[1])
-                    await update.message.reply_photo(
-                        img_data,
-                        caption=f"🖼️ Готово! Фон заменён на: {prompt}"
-                    )
-                else:
-                    response = httpx.get(result_url, timeout=30)
-                    if response.status_code == 200:
-                        await update.message.reply_photo(
-                            response.content,
-                            caption=f"🖼️ Готово! Фон заменён на: {prompt}"
-                        )
-                    else:
-                        await update.message.reply_text(f"❌ Ошибка загрузки: {response.status_code}")
-            except Exception as e:
-                logger.error(f"Ошибка скачивания: {e}")
-                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-        else:
-            await update.message.reply_text("❌ Не удалось заменить фон")
-
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ============================================================
 # ЗАПУСК
@@ -1129,20 +666,19 @@ async def bg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Основные команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
-    app.add_handler(CommandHandler("prime", prime))
-    app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("log", log))
-    app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
     
-    app.add_handler(CommandHandler("bg", bg_command))
-    app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # Фотошоп команды (УДАЛЕНЫ)
+    # app.add_handler(CommandHandler("bg", bg_command))
+    # app.add_handler(CommandHandler("clear", clear_command))
+    # app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    logger.info("🚀 Бот с Prime Agent и LiteLLM запущен!")
+    logger.info("🚀 Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
