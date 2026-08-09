@@ -28,13 +28,16 @@ RUN pip install 'fastapi==0.124.4' 'uvicorn==0.34.0' && \
     pip install 'litellm[proxy]==1.83.12'
 
 # ============================================================
-# СОЗДАЁМ APPEND_SYSTEM.md ДЛЯ PRIME AGENT (ИСПРАВЛЕНО)
+# СОЗДАЁМ APPEND_SYSTEM.md ДЛЯ PRIME AGENT
 # ============================================================
 RUN echo '## Browser Harness Integration' > /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'Всегда используй browser-harness для работы с браузером.' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '### Основные функции:' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '### ВАЖНО: НЕ ИСПОЛЬЗУЙ browser. !!!' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo 'Все функции вызываются напрямую, без префикса browser.' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '### Основные функции (вызывай напрямую):' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- new_tab(url) — открыть новую вкладку (используй для первого перехода)' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- goto_url(url) — переход по URL' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- wait_for_load() — ждать загрузки' >> /root/.prime/agent/APPEND_SYSTEM.md && \
@@ -47,17 +50,20 @@ RUN echo '## Browser Harness Integration' > /root/.prime/agent/APPEND_SYSTEM.md 
     echo '- scroll(x, y) — прокрутка' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '- cdp(command) — доступ к Chrome DevTools Protocol' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '### Правила:' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '1. Всегда используй new_tab(url) для первого перехода' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '2. После навигации всегда вызывай wait_for_load()' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '3. После каждого действия делай скриншот' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '4. Для поиска элементов используй js() или cdp("Accessibility.getFullAXTree")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '5. Для клика по элементу: найди координаты через DOM.getBoxModel и используй click_at_xy()' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo '### Пример:' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '### ПРАВИЛЬНЫЙ ПРИМЕР (без browser.):' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'new_tab("https://wikipedia.org")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
     echo 'wait_for_load()' >> /root/.prime/agent/APPEND_SYSTEM.md && \
-    echo 'capture_screenshot("page.png")' >> /root/.prime/agent/APPEND_SYSTEM.md
+    echo 'capture_screenshot("page.png")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo 'result = js('\''() => { const text = document.body.innerText; const m = text.match(/основан[а]?\\s*в\\s*(\\d{4})/i); return m ? m[1] : null; }'\'')' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo 'print(f"Результат: {result}")' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '### Правила:' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '1. НЕ используй browser. — вызывай функции напрямую!' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '2. НЕ используй import!' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '3. Всегда используй new_tab(url) для первого перехода' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '4. После навигации всегда вызывай wait_for_load()' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '5. После каждого действия делай скриншот' >> /root/.prime/agent/APPEND_SYSTEM.md && \
+    echo '6. Для поиска элементов используй js()' >> /root/.prime/agent/APPEND_SYSTEM.md
 
 RUN node --version && prime-agent --version || echo "⚠️ Prime Agent установлен"
 
