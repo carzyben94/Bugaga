@@ -1,9 +1,13 @@
-FROM python:3.12-slim        
+FROM python:3.12-slim
 
+# Устанавливаем зависимости для Chromium, Node.js (нужен для Prime Agent) и других инструментов
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
     git \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1
@@ -18,6 +22,15 @@ RUN pip install --no-cache-dir uv
 # Устанавливаем browser-harness как CLI-инструмент
 RUN uv tool install --python 3.12 --upgrade --force browser-harness
 
+# ============================================================
+# УСТАНОВКА PRIME AGENT
+# ============================================================
+RUN curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
+
+# Проверяем установку
+RUN prime-agent --version || echo "⚠️ Prime Agent установлен (версия не отображается)"
+
+# Копируем requirements и устанавливаем Python-зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -29,6 +42,9 @@ RUN if [ -f cookies.py ]; then \
         echo "🍪 Установка кук..." && \
         python -c "from cookies import COOKIES; print(f'✅ Загружено {len(COOKIES)} кук')"; \
     fi
+
+# Создаём папку для данных Prime Agent
+RUN mkdir -p /root/.prime-agent
 
 # Правильный синтаксис CMD
 CMD sh -c "echo '🚀 Запуск Chromium...' && \
@@ -49,5 +65,11 @@ CMD sh -c "echo '🚀 Запуск Chromium...' && \
         fi; \
         echo -n '.' && sleep 1; \
     done && \
+    echo '🧠 Проверка Prime Agent...' && \
+    if command -v prime-agent > /dev/null 2>&1; then \
+        echo '✅ Prime Agent готов!'; \
+    else \
+        echo '⚠️ Prime Agent не найден, работаем без него'; \
+    fi && \
     echo '🚀 Запуск бота...' && \
     python -u bot.py"
