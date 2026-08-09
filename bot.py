@@ -11,7 +11,6 @@ import json
 import httpx
 import warnings
 import subprocess
-import shutil
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from promt import SYSTEM_PROMPT
@@ -759,138 +758,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💡 **Команды:**
 /ask — Agnes AI + Harness
 /prime — Prime Agent + Harness
-/prime_diag — диагностика Prime Agent
 /status — этот статус
 """
     
     await update.message.reply_text(status_text, parse_mode='Markdown')
-
-# ============================================================
-# ДИАГНОСТИКА PRIME AGENT
-# ============================================================
-
-async def prime_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Диагностика Prime Agent"""
-    
-    diag_text = "🔍 **ДИАГНОСТИКА PRIME AGENT**\n\n"
-    
-    # 1. Проверка наличия команды
-    prime_path = shutil.which("prime-agent")
-    diag_text += f"📁 **Путь:** {prime_path or '❌ Не найден'}\n"
-    
-    # 2. Проверка через which -a
-    try:
-        result = subprocess.run(["which", "-a", "prime-agent"], capture_output=True, text=True)
-        diag_text += f"📂 **Все пути:**\n```\n{result.stdout or '❌ Не найдено'}\n```\n"
-    except Exception as e:
-        diag_text += f"❌ Ошибка which: {e}\n"
-    
-    # 3. Проверка версии (разными способами)
-    diag_text += "\n**Проверка версии:**\n"
-    
-    # Способ 1: prime-agent --version
-    try:
-        result = subprocess.run(
-            ["prime-agent", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        diag_text += f"📌 `prime-agent --version`:\n"
-        diag_text += f"   stdout: `{result.stdout.strip() or 'пусто'}`\n"
-        diag_text += f"   stderr: `{result.stderr.strip() or 'пусто'}`\n"
-        diag_text += f"   код: {result.returncode}\n"
-    except Exception as e:
-        diag_text += f"❌ Ошибка: {e}\n"
-    
-    # Способ 2: prime-agent -v
-    try:
-        result = subprocess.run(
-            ["prime-agent", "-v"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        diag_text += f"\n📌 `prime-agent -v`:\n"
-        diag_text += f"   stdout: `{result.stdout.strip() or 'пусто'}`\n"
-        diag_text += f"   stderr: `{result.stderr.strip() or 'пусто'}`\n"
-        diag_text += f"   код: {result.returncode}\n"
-    except Exception as e:
-        diag_text += f"❌ Ошибка: {e}\n"
-    
-    # 4. Проверка, что файл существует и исполняемый
-    if prime_path:
-        try:
-            exists = os.path.exists(prime_path)
-            is_exec = os.access(prime_path, os.X_OK)
-            diag_text += f"\n📄 **Файл:** {prime_path}\n"
-            diag_text += f"   Существует: {exists}\n"
-            diag_text += f"   Исполняемый: {is_exec}\n"
-            
-            # Пробуем прочитать первую строку (shebang)
-            try:
-                with open(prime_path, 'r') as f:
-                    first_line = f.readline().strip()
-                    diag_text += f"   Shebang: `{first_line}`\n"
-            except:
-                diag_text += f"   Shebang: ❌ Не удалось прочитать\n"
-        except Exception as e:
-            diag_text += f"❌ Ошибка проверки файла: {e}\n"
-    
-    # 5. Проверка установленных npm пакетов
-    try:
-        result = subprocess.run(
-            ["npm", "list", "-g", "--depth=0"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if "prime-agent" in result.stdout:
-            diag_text += "\n✅ Prime Agent найден в npm global\n"
-        else:
-            diag_text += "\n⚠️ Prime Agent НЕ найден в npm global\n"
-    except Exception as e:
-        diag_text += f"\n❌ Ошибка npm: {e}\n"
-    
-    # 6. Проверка ~/.prime-agent
-    try:
-        home = os.path.expanduser("~")
-        prime_dir = os.path.join(home, ".prime-agent")
-        if os.path.exists(prime_dir):
-            diag_text += f"\n📁 Папка ~/.prime-agent: ✅ существует\n"
-            try:
-                files = os.listdir(prime_dir)[:10]
-                diag_text += f"   Файлы: {', '.join(files) if files else 'пусто'}\n"
-            except:
-                diag_text += f"   ❌ Не удалось прочитать\n"
-        else:
-            diag_text += f"\n📁 Папка ~/.prime-agent: ❌ не существует\n"
-    except Exception as e:
-        diag_text += f"\n❌ Ошибка проверки ~/.prime-agent: {e}\n"
-    
-    # 7. Попытка запустить prime-agent без аргументов
-    try:
-        result = subprocess.run(
-            ["prime-agent"],
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
-        diag_text += f"\n📌 `prime-agent` (без аргументов):\n"
-        diag_text += f"   stdout: `{result.stdout[:200] or 'пусто'}`\n"
-        diag_text += f"   stderr: `{result.stderr[:200] or 'пусто'}`\n"
-        diag_text += f"   код: {result.returncode}\n"
-    except subprocess.TimeoutExpired:
-        diag_text += "\n⏰ `prime-agent` завис (Timeout 2 сек)\n"
-    except Exception as e:
-        diag_text += f"\n❌ Ошибка: {e}\n"
-    
-    # 8. Проверка переменных окружения
-    diag_text += f"\n**Переменные окружения:**\n"
-    for var in ["PATH", "NODE_PATH", "HOME"]:
-        diag_text += f"   {var}: `{os.environ.get(var, '❌ не задана')}`\n"
-    
-    await update.message.reply_text(diag_text, parse_mode='Markdown')
 
 # ============================================================
 # КОМАНДЫ
@@ -901,7 +772,6 @@ async def start(update, context):
         "🌐 **Браузерный агент:**\n"
         "/ask <запрос> — Agnes AI + Harness\n"
         "/prime <запрос> — Prime Agent + Harness (глубокое мышление)\n"
-        "/prime_diag — диагностика Prime Agent\n"
         "/status — статус всех компонентов\n\n"
         "📸 **Скриншоты:**\n"
         "/image — последний скриншот\n"
@@ -1207,8 +1077,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("prime", prime))
-    app.add_handler(CommandHandler("prime_diag", prime_diag))  # ← ДИАГНОСТИКА
-    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("status", status))  # ← НОВАЯ КОМАНДА
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("skills", skills))
     app.add_handler(CommandHandler("image", image))
