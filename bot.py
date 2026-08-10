@@ -143,7 +143,7 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА С ФУНКЦИЯМИ БРАУЗЕРА И АНАЛИЗОМ ACCESSIBILITY TREE
+# СИГНАТУРА С ACCESSIBILITY TREE
 # ============================================================
 
 class BrowserTask(Signature):
@@ -153,8 +153,8 @@ class BrowserTask(Signature):
     - new_tab() - открыть вкладку
     - goto_url(url) - перейти на URL
     - wait_for_load() - ждать загрузку
-    - js(expression) - выполнить JavaScript (ОДИНАРНЫЕ кавычки!)
-    - http_get(url) - выполнить HTTP GET запрос
+    - js(expression) - выполнить JavaScript
+    - http_get(url) - HTTP GET запрос
     - capture_screenshot(filename) - скриншот
     - fill_input(selector, text) - заполнить поле
     - click_at_xy(x, y) - кликнуть
@@ -167,105 +167,59 @@ class BrowserTask(Signature):
     - switch_tab(id) - переключить вкладку
     - close_tab() - закрыть вкладку
     
+    ДОСТУПНЫЙ ТЕКСТ (Accessibility Tree):
+    - get_accessibility_text() - получить структурированный текст страницы
+    - get_accessibility_text_by_type(type) - получить текст определенных элементов
+      Типы: 'headings', 'links', 'buttons', 'inputs', 'labels', 'all'
+    
     ПРАВИЛА:
-    1. В js() используй ОДИНАРНЫЕ кавычки
-    2. ВСЕГДА используй print() для вывода результата
-    3. Для API используй http_get() + json.loads()
-    4. Для веб-страниц используй goto_url() + js()
-    
-    АНАЛИЗ ACCESSIBILITY TREE:
-    Для получения доступного текста страницы используй:
-    - js('() => document.body.innerText') - весь текст
-    - js('() => document.querySelector("h1")?.innerText') - заголовок
-    - js('() => document.querySelector(".price")?.innerText') - цена
-    - js('() => document.querySelector("[data-testid]")?.innerText') - по data атрибуту
-    - js('() => Array.from(document.querySelectorAll("h1, h2, h3")).map(el => el.innerText)') - все заголовки
-    - js('() => Array.from(document.querySelectorAll("a")).map(el => el.innerText)') - все ссылки
-    - js('() => Array.from(document.querySelectorAll("button")).map(el => el.innerText)') - все кнопки
-    - js('() => Array.from(document.querySelectorAll("[data-*]")).map(el => ({tag: el.tagName, data: el.dataset}))') - все data атрибуты
-    
-    Всегда проверяй наличие элемента через ?. (optional chaining)
+    1. ВСЕГДА используй get_accessibility_text() для получения текста
+    2. Для поиска конкретных элементов используй get_accessibility_text_by_type()
+    3. ВСЕГДА используй print() для вывода результата
+    4. В js() используй ОДИНАРНЫЕ кавычки
     
     ПРИМЕРЫ:
     
-    1. Курс биткоина (через Google):
+    1. Поиск возраста на Википедии:
     ```python
-    goto_url('https://www.google.com/search?q=bitcoin+price+usd')
+    goto_url('https://ru.wikipedia.org/wiki/Путин,_Владимир_Владимирович')
     wait_for_load()
-    text = js('() => document.body.innerText')
-    import re
-    match = re.search(r'Bitcoin\s*=\s*\$?([\d,]+\.?\d*)', text)
-    if match:
-        print(f'Цена BTC: ${match.group(1)}')
-    else:
-        print('Не найдено')
+    texts = get_accessibility_text()
+    for item in texts:
+        if 'родился' in item['text'] or 'год рождения' in item['text']:
+            print(f"Найдено: {item['text']}")
+            import re
+            match = re.search(r'(\\d{1,2})\\s+(\\w+)\\s+(\\d{4})', item['text'])
+            if match:
+                day, month, year = match.groups()
+                print(f"Дата рождения: {day} {month} {year}")
+                from datetime import date
+                age = date.today().year - int(year)
+                print(f"Возраст: {age} лет")
     ```
     
-    2. Курс биткоина (через API):
-    ```python
-    import json
-    url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
-    data = http_get(url)
-    price = json.loads(data)['bitcoin']['usd']
-    print(f'Цена BTC: ${price}')
-    ```
-    
-    3. Погода (через API):
-    ```python
-    import json
-    url = 'https://api.open-meteo.com/v1/forecast?latitude=50.45&longitude=30.52&current=temperature_2m&timezone=Europe/Kiev'
-    data = http_get(url)
-    temp = json.loads(data)['current']['temperature_2m']
-    print(f'Температура: {temp}°C')
-    ```
-    
-    4. Получить заголовок страницы:
+    2. Анализ кнопок на странице:
     ```python
     goto_url('https://example.com')
     wait_for_load()
-    title = js('() => document.title')
-    h1 = js('() => document.querySelector("h1")?.innerText')
-    print(f'Title: {title}')
-    print(f'H1: {h1}')
+    buttons = get_accessibility_text_by_type('buttons')
+    print(f"Кнопки: {buttons}")
     ```
     
-    5. Найти элемент по data атрибуту:
+    3. Анализ заголовков:
     ```python
     goto_url('https://example.com')
     wait_for_load()
-    price = js('() => document.querySelector("[data-price]")?.innerText')
-    print(f'Price: {price}')
+    headings = get_accessibility_text_by_type('headings')
+    print(f"Заголовки: {headings}")
     ```
     
-    6. Скриншот:
-    ```python
-    new_tab()
-    goto_url('https://google.com')
-    wait_for_load()
-    capture_screenshot('google.png')
-    print('Скриншот сохранен')
-    ```
-    
-    7. Анализ accessibility tree страницы:
+    4. Получить весь доступный текст:
     ```python
     goto_url('https://example.com')
     wait_for_load()
-    all_text = js('() => document.body.innerText')
-    headers = js('() => Array.from(document.querySelectorAll("h1, h2, h3")).map(el => el.innerText)')
-    links = js('() => Array.from(document.querySelectorAll("a")).map(el => el.innerText)')
-    buttons = js('() => Array.from(document.querySelectorAll("button")).map(el => el.innerText)')
-    print(f'Текст страницы: {all_text[:500]}...')
-    print(f'Заголовки: {headers}')
-    print(f'Ссылки: {links}')
-    print(f'Кнопки: {buttons}')
-    ```
-    
-    8. Получить все data атрибуты:
-    ```python
-    goto_url('https://example.com')
-    wait_for_load()
-    data_elements = js('() => Array.from(document.querySelectorAll("[data-*]")).map(el => ({tag: el.tagName, data: el.dataset}))')
-    print(f'Data элементы: {data_elements}')
+    all_text = get_accessibility_text()
+    print(f"Доступный текст: {all_text}")
     ```
     """
     task = InputField(desc="Задача пользователя")
@@ -746,10 +700,119 @@ def execute_code(code):
             try:
                 if isinstance(expression, str):
                     expression = expression.replace('"', "'")
-                return js(expression)
+                result = js(expression)
+                # Если результат - dict, извлекаем значение
+                if isinstance(result, dict):
+                    if 'result' in result:
+                        return result['result']
+                    elif 'value' in result:
+                        return result['value']
+                    return result
+                return result
             except Exception as e:
                 logger.error(f"❌ JS ошибка: {e}")
                 return None
+        
+        # ============================================================
+        # ACCESSIBILITY TREE ФУНКЦИИ
+        # ============================================================
+        
+        def get_accessibility_text():
+            """Получить доступный текст страницы через Accessibility Tree"""
+            try:
+                result = js('''
+                    () => {
+                        const elements = document.querySelectorAll('[role], [aria-label], [aria-labelledby], h1, h2, h3, h4, h5, h6, p, a, button, input, label, [data-testid]');
+                        const texts = [];
+                        elements.forEach(el => {
+                            let accessibleName = '';
+                            if (el.hasAttribute('aria-label')) {
+                                accessibleName = el.getAttribute('aria-label');
+                            } else if (el.hasAttribute('aria-labelledby')) {
+                                const labelId = el.getAttribute('aria-labelledby');
+                                const labelEl = document.getElementById(labelId);
+                                if (labelEl) accessibleName = labelEl.innerText || labelEl.textContent;
+                            } else if (['A', 'BUTTON', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LABEL'].includes(el.tagName)) {
+                                accessibleName = el.innerText || el.textContent;
+                            } else if (el.tagName === 'INPUT' && el.hasAttribute('placeholder')) {
+                                accessibleName = el.getAttribute('placeholder');
+                            } else if (el.hasAttribute('data-testid')) {
+                                accessibleName = `[data-testid="${el.getAttribute('data-testid')}"]`;
+                            } else if (el.hasAttribute('title')) {
+                                accessibleName = el.getAttribute('title');
+                            }
+                            if (accessibleName && accessibleName.trim()) {
+                                texts.push({
+                                    tag: el.tagName.toLowerCase(),
+                                    role: el.getAttribute('role') || 'none',
+                                    text: accessibleName.trim(),
+                                    id: el.id || '',
+                                    classes: el.className || ''
+                                });
+                            }
+                        });
+                        const unique = [];
+                        const seen = new Set();
+                        for (const item of texts) {
+                            const key = item.text + item.tag;
+                            if (!seen.has(key)) {
+                                seen.add(key);
+                                unique.push(item);
+                            }
+                        }
+                        return unique;
+                    }
+                ''')
+                if isinstance(result, dict):
+                    return result.get('result', result)
+                return result
+            except Exception as e:
+                logger.error(f"❌ Ошибка Accessibility Tree: {e}")
+                return []
+        
+        def get_accessibility_text_by_type(element_type='all'):
+            """Получить доступный текст определенных элементов"""
+            try:
+                result = js(f'''
+                    () => {{
+                        const selectors = {{
+                            'headings': 'h1, h2, h3, h4, h5, h6, [role="heading"]',
+                            'links': 'a, [role="link"]',
+                            'buttons': 'button, [role="button"], input[type="submit"], input[type="button"]',
+                            'inputs': 'input, textarea, [role="textbox"]',
+                            'labels': 'label, [role="label"]',
+                            'all': '[role], h1, h2, h3, h4, h5, h6, a, button, input, label, p, [data-testid]'
+                        }};
+                        const selector = selectors['{element_type}'] || selectors['all'];
+                        const elements = document.querySelectorAll(selector);
+                        const texts = [];
+                        elements.forEach(el => {{
+                            let text = '';
+                            if (el.hasAttribute('aria-label')) {{
+                                text = el.getAttribute('aria-label');
+                            }} else if (el.hasAttribute('aria-labelledby')) {{
+                                const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
+                                if (labelEl) text = labelEl.innerText || labelEl.textContent;
+                            }} else if (['A', 'BUTTON', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LABEL'].includes(el.tagName)) {{
+                                text = el.innerText || el.textContent;
+                            }} else if (el.tagName === 'INPUT' && el.hasAttribute('placeholder')) {{
+                                text = el.getAttribute('placeholder');
+                            }} else if (el.hasAttribute('data-testid')) {{
+                                text = `data-testid: ${{el.getAttribute('data-testid')}}`;
+                            }}
+                            if (text && text.trim()) {{
+                                texts.push(text.trim());
+                            }}
+                        }});
+                        return texts;
+                    }}
+                ''')
+                if isinstance(result, dict):
+                    return result.get('result', result)
+                return result
+            except Exception as e:
+                logger.error(f"❌ Ошибка получения текста: {e}")
+                return []
         
         # ============================================================
         # ВСЕ ФУНКЦИИ
@@ -818,6 +881,8 @@ def execute_code(code):
             'set_cookies': set_cookies_global,
             'save_skill': save_skill,
             'add_helper': add_helper,
+            'get_accessibility_text': get_accessibility_text,
+            'get_accessibility_text_by_type': get_accessibility_text_by_type,
             'time': time,
             'json': json,
             'print': print,
