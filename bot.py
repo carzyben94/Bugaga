@@ -143,7 +143,7 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА С ФУНКЦИЯМИ БРАУЗЕРА
+# СИГНАТУРА С ФУНКЦИЯМИ БРАУЗЕРА И АНАЛИЗОМ ACCESSIBILITY TREE
 # ============================================================
 
 class BrowserTask(Signature):
@@ -154,6 +154,7 @@ class BrowserTask(Signature):
     - goto_url(url) - перейти на URL
     - wait_for_load() - ждать загрузку
     - js(expression) - выполнить JavaScript (ОДИНАРНЫЕ кавычки!)
+    - http_get(url) - выполнить HTTP GET запрос
     - capture_screenshot(filename) - скриншот
     - fill_input(selector, text) - заполнить поле
     - click_at_xy(x, y) - кликнуть
@@ -161,47 +162,110 @@ class BrowserTask(Signature):
     - press_key(key) - нажать клавишу
     - scroll(dy, dx) - прокрутить
     - page_info() - информация о странице
-    - http_get(url) - HTTP запрос
     - list_tabs() - список вкладок
     - current_tab() - текущая вкладка
     - switch_tab(id) - переключить вкладку
     - close_tab() - закрыть вкладку
     
     ПРАВИЛА:
-    1. В js() используй ОДИНАРНЫЕ кавычки: js('() => document.querySelector(".price")?.innerText')
+    1. В js() используй ОДИНАРНЫЕ кавычки
     2. ВСЕГДА используй print() для вывода результата
-    3. Результат должен быть понятным для пользователя
+    3. Для API используй http_get() + json.loads()
+    4. Для веб-страниц используй goto_url() + js()
+    
+    АНАЛИЗ ACCESSIBILITY TREE:
+    Для получения доступного текста страницы используй:
+    - js('() => document.body.innerText') - весь текст
+    - js('() => document.querySelector("h1")?.innerText') - заголовок
+    - js('() => document.querySelector(".price")?.innerText') - цена
+    - js('() => document.querySelector("[data-testid]")?.innerText') - по data атрибуту
+    - js('() => Array.from(document.querySelectorAll("h1, h2, h3")).map(el => el.innerText)') - все заголовки
+    - js('() => Array.from(document.querySelectorAll("a")).map(el => el.innerText)') - все ссылки
+    - js('() => Array.from(document.querySelectorAll("button")).map(el => el.innerText)') - все кнопки
+    - js('() => Array.from(document.querySelectorAll("[data-*]")).map(el => ({tag: el.tagName, data: el.dataset}))') - все data атрибуты
+    
+    Всегда проверяй наличие элемента через ?. (optional chaining)
     
     ПРИМЕРЫ:
     
-    Пример: "курс биткоина"
+    1. Курс биткоина (через Google):
     ```python
-    goto_url('https://www.coingecko.com/')
-    wait_for_load()
-    price = js('() => document.querySelector(".price")?.innerText')
-    print(f'Цена BTC: {price}')
-    ```
-    
-    Пример: "сколько лет байдену"
-    ```python
-    goto_url('https://www.google.com/search?q=Joe+Biden+age')
+    goto_url('https://www.google.com/search?q=bitcoin+price+usd')
     wait_for_load()
     text = js('() => document.body.innerText')
     import re
-    match = re.search(r'(\\d+)\\s*years old', text)
+    match = re.search(r'Bitcoin\s*=\s*\$?([\d,]+\.?\d*)', text)
     if match:
-        print(f'Джо Байдену {match.group(1)} лет')
+        print(f'Цена BTC: ${match.group(1)}')
     else:
         print('Не найдено')
     ```
     
-    Пример: "сделай скриншот google.com"
+    2. Курс биткоина (через API):
+    ```python
+    import json
+    url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
+    data = http_get(url)
+    price = json.loads(data)['bitcoin']['usd']
+    print(f'Цена BTC: ${price}')
+    ```
+    
+    3. Погода (через API):
+    ```python
+    import json
+    url = 'https://api.open-meteo.com/v1/forecast?latitude=50.45&longitude=30.52&current=temperature_2m&timezone=Europe/Kiev'
+    data = http_get(url)
+    temp = json.loads(data)['current']['temperature_2m']
+    print(f'Температура: {temp}°C')
+    ```
+    
+    4. Получить заголовок страницы:
+    ```python
+    goto_url('https://example.com')
+    wait_for_load()
+    title = js('() => document.title')
+    h1 = js('() => document.querySelector("h1")?.innerText')
+    print(f'Title: {title}')
+    print(f'H1: {h1}')
+    ```
+    
+    5. Найти элемент по data атрибуту:
+    ```python
+    goto_url('https://example.com')
+    wait_for_load()
+    price = js('() => document.querySelector("[data-price]")?.innerText')
+    print(f'Price: {price}')
+    ```
+    
+    6. Скриншот:
     ```python
     new_tab()
     goto_url('https://google.com')
     wait_for_load()
     capture_screenshot('google.png')
     print('Скриншот сохранен')
+    ```
+    
+    7. Анализ accessibility tree страницы:
+    ```python
+    goto_url('https://example.com')
+    wait_for_load()
+    all_text = js('() => document.body.innerText')
+    headers = js('() => Array.from(document.querySelectorAll("h1, h2, h3")).map(el => el.innerText)')
+    links = js('() => Array.from(document.querySelectorAll("a")).map(el => el.innerText)')
+    buttons = js('() => Array.from(document.querySelectorAll("button")).map(el => el.innerText)')
+    print(f'Текст страницы: {all_text[:500]}...')
+    print(f'Заголовки: {headers}')
+    print(f'Ссылки: {links}')
+    print(f'Кнопки: {buttons}')
+    ```
+    
+    8. Получить все data атрибуты:
+    ```python
+    goto_url('https://example.com')
+    wait_for_load()
+    data_elements = js('() => Array.from(document.querySelectorAll("[data-*]")).map(el => ({tag: el.tagName, data: el.dataset}))')
+    print(f'Data элементы: {data_elements}')
     ```
     """
     task = InputField(desc="Задача пользователя")
@@ -657,11 +721,9 @@ def execute_code(code):
     
     # Автоматически добавляем print если есть js но нет print
     if 'js(' in code and 'print(' not in code:
-        # Находим js выражение и добавляем print
         js_matches = re.findall(r"js\('([^']+)'\)", code)
         for js_expr in js_matches:
             if 'innerText' in js_expr or 'textContent' in js_expr:
-                # Добавляем print перед выполнением
                 code = code.replace(
                     f"js('{js_expr}')",
                     f"result = js('{js_expr}')\nprint(result)"
@@ -682,9 +744,7 @@ def execute_code(code):
         def safe_js(expression):
             """Безопасное выполнение JavaScript с правильными кавычками"""
             try:
-                # Если выражение содержит двойные кавычки внутри - заменяем
                 if isinstance(expression, str):
-                    # Заменяем двойные кавычки на одинарные внутри
                     expression = expression.replace('"', "'")
                 return js(expression)
             except Exception as e:
