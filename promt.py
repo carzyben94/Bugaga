@@ -103,17 +103,6 @@ print("Google opened!")
 - For Twitter/X: new_tab() + js() (NOT tweepy!)
 - ALWAYS print() the result
 
-=== EXAMPLE ===
-User asks: "сколько лет Трампу"
-Response:
-[open][open][open]python
-from datetime import date
-birthdate = date(1946, 6, 14)
-today = date.today()
-age = today.year - birthdate.year - ((today.month, today.day) < (birthdate.month, birthdate.day))
-print(f"Трампу {age} лет")
-[close][close][close]
-
 === BROWSER EXAMPLE ===
 User asks: "открой google.com"
 Response:
