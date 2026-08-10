@@ -71,11 +71,11 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ - КАСТОМНЫЙ LM
+# DSPy ИНТЕГРАЦИЯ - ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI"""
+    """Адаптер для Agnes AI - с полной обработкой ошибок"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
@@ -84,99 +84,94 @@ class AgnesLM(dspy.LM):
         self.provider = "agnes-ai"
         self.model_type = "chat"
         self.forward_contract = "legacy"
-        self._model = model
         self.cache = False
-        
-        # Не вызываем super().__init__() чтобы избежать litellm
-        # Просто сохраняем параметры
     
     def _call_agnes(self, messages, **kwargs):
-        """Непосредственный вызов Agnes API"""
+        """Непосредственный вызов Agnes API с обработкой ошибок"""
         if not self.api_key:
-            return {"choices": [{"message": {"content": "Ошибка: API ключ не задан"}}]}
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        params = {**self.kwargs, **kwargs}
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": params.get("temperature", 0.3),
-            "max_tokens": params.get("max_tokens", 2000)
-        }
+            logger.error("❌ AGNES_API_KEY не задан")
+            return ["Ошибка: API ключ не задан"]
         
         try:
-            with httpx.Client(timeout=45.0) as client:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            params = {**self.kwargs, **kwargs}
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": params.get("temperature", 0.3),
+                "max_tokens": params.get("max_tokens", 2000)
+            }
+            
+            logger.debug(f"📤 Запрос к Agnes: {payload['model']}, messages: {len(messages)}")
+            
+            with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
                 response = client.post(
                     "https://apihub.agnes-ai.com/v1/chat/completions",
                     headers=headers,
                     json=payload
                 )
                 response.raise_for_status()
-                return response.json()
+                data = response.json()
+                
+                # Проверяем структуру ответа
+                if "choices" in data and len(data["choices"]) > 0:
+                    choice = data["choices"][0]
+                    if "message" in choice and "content" in choice["message"]:
+                        result = choice["message"]["content"]
+                        logger.debug(f"📥 Ответ от Agnes: {result[:100]}...")
+                        return [result]
+                    elif "text" in choice:
+                        result = choice["text"]
+                        logger.debug(f"📥 Ответ от Agnes: {result[:100]}...")
+                        return [result]
+                
+                # Если структура неожиданная
+                logger.error(f"❌ Неожиданный ответ от Agnes: {data}")
+                return ["Ошибка: неожиданный формат ответа от API"]
+                
+        except httpx.TimeoutException:
+            logger.error("❌ Таймаут запроса к Agnes API")
+            return ["Ошибка: таймаут запроса к Agnes API (60 секунд)"]
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP ошибка: {e.response.status_code}")
+            try:
+                error_text = e.response.text[:200]
+            except:
+                error_text = "Нет данных"
+            return [f"Ошибка HTTP {e.response.status_code}: {error_text}"]
+        except httpx.RequestError as e:
+            logger.error(f"❌ Ошибка запроса: {e}")
+            return [f"Ошибка сети: {str(e)[:100]}"]
         except Exception as e:
-            logger.error(f"❌ Agnes API ошибка: {e}")
-            return {"choices": [{"message": {"content": f"Ошибка: {str(e)}"}}]}
-    
-    def forward(self, prompt=None, messages=None, **kwargs):
-        """Метод forward для DSPy."""
-        if messages:
-            api_messages = messages
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
-        
-        return self._call_agnes(api_messages, **kwargs)
-    
-    async def aforward(self, prompt=None, messages=None, **kwargs):
-        """Асинхронная версия forward."""
-        if messages:
-            api_messages = messages
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
-        
-        if not self.api_key:
-            return {"choices": [{"message": {"content": "Ошибка: API ключ не задан"}}]}
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        params = {**self.kwargs, **kwargs}
-        payload = {
-            "model": self.model,
-            "messages": api_messages,
-            "temperature": params.get("temperature", 0.3),
-            "max_tokens": params.get("max_tokens", 2000)
-        }
-        
-        try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.post(
-                    "https://apihub.agnes-ai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                return response.json()
-        except Exception as e:
-            logger.error(f"❌ Agnes API ошибка: {e}")
-            return {"choices": [{"message": {"content": f"Ошибка: {str(e)}"}}]}
+            logger.error(f"❌ Неизвестная ошибка: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return [f"Ошибка: {str(e)[:200]}"]
     
     def __call__(self, prompt=None, messages=None, **kwargs):
-        """Вызов LM как функции."""
-        if messages:
-            api_messages = messages
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
-        
-        result = self._call_agnes(api_messages, **kwargs)
-        if "choices" in result and len(result["choices"]) > 0:
-            return [result["choices"][0]["message"]["content"]]
-        return ["Ошибка: пустой ответ"]
+        """Основной метод для вызова LM. Возвращает list[str]"""
+        try:
+            if messages:
+                api_messages = messages
+            else:
+                api_messages = [{"role": "user", "content": prompt or ""}]
+            
+            return self._call_agnes(api_messages, **kwargs)
+        except Exception as e:
+            logger.error(f"❌ Ошибка в __call__: {e}")
+            return [f"Ошибка: {str(e)[:200]}"]
+    
+    def forward(self, prompt=None, messages=None, **kwargs):
+        """Метод forward для DSPy"""
+        return self.__call__(prompt=prompt, messages=messages, **kwargs)
+    
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        """Асинхронная версия forward"""
+        return self.__call__(prompt=prompt, messages=messages, **kwargs)
 
 # Сигнатуры
 class BrowserTask(Signature):
@@ -197,14 +192,22 @@ class AnalysisTask(Signature):
     answer = OutputField(desc="Ответ")
     confidence = OutputField(desc="Уверенность (0-1)")
 
-# Модули - БЕЗ ПЕРЕДАЧИ lm
+# Модули
 class BrowserAgent(Module):
     def __init__(self):
         super().__init__()
         self.generate_code = ChainOfThought(BrowserTask)
     
     def forward(self, task, context=""):
-        return self.generate_code(task=task, context=context)
+        try:
+            return self.generate_code(task=task, context=context)
+        except Exception as e:
+            logger.error(f"❌ BrowserAgent ошибка: {e}")
+            # Возвращаем объект с полями по умолчанию
+            class Result:
+                code = f"# Ошибка: {str(e)[:200]}\nprint('Ошибка генерации кода')"
+                explanation = f"Ошибка при генерации: {str(e)[:200]}"
+            return Result()
 
 class ImageEnhancer(Module):
     def __init__(self):
@@ -212,7 +215,14 @@ class ImageEnhancer(Module):
         self.enhance = ChainOfThought(ImageEnhanceTask)
     
     def forward(self, prompt, image_info=""):
-        return self.enhance(prompt=prompt, image_info=image_info)
+        try:
+            return self.enhance(prompt=prompt, image_info=image_info)
+        except Exception as e:
+            logger.error(f"❌ ImageEnhancer ошибка: {e}")
+            class Result:
+                enhanced_prompt = prompt
+                style = "realistic"
+            return Result()
 
 class PageAnalyzer(Module):
     def __init__(self):
@@ -220,7 +230,14 @@ class PageAnalyzer(Module):
         self.analyze = ChainOfThought(AnalysisTask)
     
     def forward(self, query, content):
-        return self.analyze(query=query, content=content)
+        try:
+            return self.analyze(query=query, content=content)
+        except Exception as e:
+            logger.error(f"❌ PageAnalyzer ошибка: {e}")
+            class Result:
+                answer = f"Ошибка анализа: {str(e)[:200]}"
+                confidence = "0.0"
+            return Result()
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ DSPy
@@ -233,14 +250,10 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 # Настройка DSPy
 if AGNES_API_KEY:
     try:
-        # Создаем кастомный LM
         lm = AgnesLM(api_key=AGNES_API_KEY)
-        
-        # Настраиваем ГЛОБАЛЬНЫЙ LM через settings
         settings.configure(lm=lm)
-        logger.info("✅ DSPy настроен с кастомным AgnesLM")
+        logger.info("✅ DSPy настроен с AgnesLM")
         
-        # Создаем модули (они используют глобальный LM)
         browser_agent = BrowserAgent()
         image_enhancer = ImageEnhancer()
         page_analyzer = PageAnalyzer()
@@ -362,8 +375,12 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
-ensure_daemon()
-logger.info("✅ Браузер готов")
+try:
+    ensure_daemon()
+    logger.info("✅ Браузер готов")
+except Exception as e:
+    logger.error(f"❌ Ошибка запуска браузера: {e}")
+    sys.exit(1)
 
 set_cookies_global()
 set_viewport_global()
@@ -628,14 +645,33 @@ async def ask_agnes_dspy(messages):
         
         result = browser_agent(task=user_query, context=context)
         
+        # Извлекаем результат с проверкой
+        if result is None:
+            logger.warning("⚠️ DSPy вернул None")
+            return await ask_agnes_fallback(messages)
+        
         if hasattr(result, 'code'):
             code = result.code
             explanation = getattr(result, 'explanation', '')
+        elif hasattr(result, 'completion'):
+            code = result.completion
+            explanation = ""
+        elif hasattr(result, 'answer'):
+            code = result.answer
+            explanation = ""
+        elif isinstance(result, dict):
+            code = result.get('code', result.get('answer', str(result)))
+            explanation = result.get('explanation', '')
         else:
             code = str(result)
             explanation = ""
         
-        if code and "```python" not in code:
+        # Проверяем, что код не пустой
+        if not code or code.strip() == "":
+            logger.warning("⚠️ DSPy вернул пустой код")
+            return await ask_agnes_fallback(messages)
+        
+        if "```python" not in code:
             response = f"```python\n{code}\n```\n\n💡 {explanation}"
         else:
             response = code
@@ -938,6 +974,10 @@ async def dspy_command(update, context):
         
         result = browser_agent(task=query, context=context_str)
         
+        if result is None or not hasattr(result, 'code'):
+            await status_msg.edit_text("❌ DSPy вернул пустой результат")
+            return
+        
         response = f"📝 **Код:**\n```python\n{result.code}\n```\n\n💡 **Объяснение:**\n{result.explanation}"
         await status_msg.edit_text(response, parse_mode='Markdown')
         
@@ -979,7 +1019,14 @@ async def analyze_command(update, context):
         
         result = page_analyzer(query=query, content=content)
         
-        response = f"📊 **Ответ:**\n{result.answer}\n\n🎯 **Уверенность:** {result.confidence}"
+        if result is None:
+            await status_msg.edit_text("❌ Анализ не дал результата")
+            return
+        
+        answer = getattr(result, 'answer', 'Нет ответа')
+        confidence = getattr(result, 'confidence', '0.0')
+        
+        response = f"📊 **Ответ:**\n{answer}\n\n🎯 **Уверенность:** {confidence}"
         await status_msg.edit_text(response, parse_mode='Markdown')
         
     except Exception as e:
