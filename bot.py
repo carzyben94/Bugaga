@@ -1,6 +1,6 @@
 import os
 import sys
-import time 
+import time
 import logging
 import asyncio
 import json
@@ -36,7 +36,6 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("dspy").setLevel(logging.INFO)
-logging.getLogger("websockets").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +53,13 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy АДАПТЕР ДЛЯ AGNES AI
+# DSPy АДАПТЕР
 # ============================================================
 
 class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI"""
-    
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
-        
         super().__init__(
             model=model, 
             model_type="chat",
@@ -71,21 +67,15 @@ class AgnesLM(dspy.LM):
             max_tokens=kwargs.get("max_tokens", 2000),
             cache=False
         )
-        
         self.provider = "agnes-ai"
         self.forward_contract = "legacy"
     
     def forward(self, prompt=None, messages=None, **kwargs):
         if not self.api_key:
-            logger.error("❌ AGNES_API_KEY не задан")
             return ["Ошибка: API ключ не задан"]
         
         params = {**self.kwargs, **kwargs}
-        
-        if messages:
-            api_messages = messages
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
+        api_messages = messages or [{"role": "user", "content": prompt or ""}]
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -108,31 +98,29 @@ class AgnesLM(dspy.LM):
                 )
                 response.raise_for_status()
                 data = response.json()
-                
                 if "choices" in data and len(data["choices"]) > 0:
-                    result = data["choices"][0]["message"]["content"]
-                    return [result]
-                return ["Ошибка: пустой ответ от API"]
-                
-        except httpx.TimeoutException:
-            return ["Ошибка: таймаут API (60 сек)"]
+                    return [data["choices"][0]["message"]["content"]]
+                return ["Ошибка: пустой ответ"]
         except Exception as e:
             logger.error(f"❌ Ошибка Agnes API: {e}")
             return [f"Ошибка: {str(e)}"]
     
     def __call__(self, prompt=None, messages=None, **kwargs):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
-    
-    async def aforward(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА
+# СИГНАТУРА С ИНСТРУКЦИЕЙ ПО РАБОТЕ С ОДНОЙ ВКЛАДКОЙ
 # ============================================================
 
 class BrowserTask(Signature):
     """Ты агент с доступом к браузеру.
-    Используй инструменты для выполнения задач пользователя.
+    
+    ВАЖНО:
+    - РАБОТАЙ В ОДНОЙ ВКЛАДКЕ! Не открывай новые вкладки без крайней необходимости.
+    - Используй tool_goto_url для перехода по ссылкам в ТЕКУЩЕЙ вкладке.
+    - Открывай новую вкладку ТОЛЬКО если нужно сохранить текущую страницу.
+    - Если открыл новую вкладку - закрой её после использования.
+    - tool_new_tab используй ТОЛЬКО если tool_goto_url не подходит.
     """
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
@@ -142,7 +130,7 @@ class BrowserTask(Signature):
 # ============================================================
 
 def tool_new_tab() -> str:
-    """Открыть новую вкладку"""
+    """Открыть новую вкладку (ТОЛЬКО если нужно сохранить текущую страницу)"""
     try:
         new_tab()
         return "✅ Новая вкладка открыта"
@@ -150,16 +138,28 @@ def tool_new_tab() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_goto_url(url: str) -> str:
-    """Перейти на URL и дождаться загрузки"""
+    """Перейти на URL в текущей вкладке (ОСНОВНОЙ СПОСОБ)"""
     try:
         goto_url(url)
         wait_for_load()
-        return f"✅ Перешел на {url}"
+        return f"✅ Перешел на {url} в текущей вкладке"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_cleanup_tabs() -> str:
+    """Закрыть все лишние вкладки, оставить только одну"""
+    try:
+        tabs = list_tabs()
+        if len(tabs) > 1:
+            for tab in tabs[1:]:
+                switch_tab(tab)
+                close_tab()
+            return f"🧹 Закрыто {len(tabs)-1} лишних вкладок"
+        return "✅ Уже одна вкладка"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
 def tool_wait_for_load() -> str:
-    """Дождаться загрузки страницы"""
     try:
         wait_for_load()
         return "✅ Страница загружена"
@@ -167,7 +167,6 @@ def tool_wait_for_load() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_js(expression: str) -> str:
-    """Выполнить JavaScript на странице"""
     try:
         result = js(expression)
         if isinstance(result, dict):
@@ -177,7 +176,6 @@ def tool_js(expression: str) -> str:
         return f"❌ Ошибка JavaScript: {e}"
 
 def tool_capture_screenshot(filename: str = None) -> str:
-    """Сделать скриншот страницы"""
     try:
         if not filename:
             timestamp = int(time.time())
@@ -189,7 +187,6 @@ def tool_capture_screenshot(filename: str = None) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_fill_input(selector: str, text: str) -> str:
-    """Заполнить поле ввода по CSS селектору"""
     try:
         fill_input(selector, text)
         return f"✅ Заполнено: {selector} -> {text}"
@@ -197,7 +194,6 @@ def tool_fill_input(selector: str, text: str) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_click_at_xy(x: int, y: int) -> str:
-    """Кликнуть по координатам"""
     try:
         click_at_xy(x, y)
         return f"✅ Клик по ({x}, {y})"
@@ -205,7 +201,6 @@ def tool_click_at_xy(x: int, y: int) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_type_text(text: str) -> str:
-    """Ввести текст"""
     try:
         type_text(text)
         return f"✅ Введено: {text}"
@@ -213,7 +208,6 @@ def tool_type_text(text: str) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_press_key(key: str) -> str:
-    """Нажать клавишу"""
     try:
         press_key(key)
         return f"✅ Нажата клавиша: {key}"
@@ -221,7 +215,6 @@ def tool_press_key(key: str) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_scroll(dx: int, dy: int) -> str:
-    """Прокрутить страницу"""
     try:
         scroll(dx, dy)
         return f"✅ Прокрутка на ({dx}, {dy})"
@@ -229,7 +222,6 @@ def tool_scroll(dx: int, dy: int) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_page_info() -> str:
-    """Получить информацию о странице"""
     try:
         info = page_info()
         return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
@@ -237,7 +229,6 @@ def tool_page_info() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_list_tabs() -> str:
-    """Список всех открытых вкладок"""
     try:
         tabs = list_tabs()
         return f"Вкладки: {tabs}"
@@ -245,7 +236,6 @@ def tool_list_tabs() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_current_tab() -> str:
-    """ID текущей вкладки"""
     try:
         tab = current_tab()
         return f"Текущая вкладка: {tab}"
@@ -253,7 +243,6 @@ def tool_current_tab() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_switch_tab(tab_id: int) -> str:
-    """Переключиться на вкладку по ID"""
     try:
         switch_tab(tab_id)
         return f"✅ Переключился на вкладку {tab_id}"
@@ -261,7 +250,6 @@ def tool_switch_tab(tab_id: int) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_close_tab() -> str:
-    """Закрыть текущую вкладку"""
     try:
         close_tab()
         return "✅ Вкладка закрыта"
@@ -275,6 +263,7 @@ def tool_close_tab() -> str:
 tools = [
     Tool(tool_new_tab),
     Tool(tool_goto_url),
+    Tool(tool_cleanup_tabs),  # НОВЫЙ ИНСТРУМЕНТ!
     Tool(tool_wait_for_load),
     Tool(tool_js),
     Tool(tool_capture_screenshot),
@@ -295,17 +284,16 @@ tools = [
 # ============================================================
 
 def create_browser_agent():
-    """Создать ReActV2 агента"""
     try:
         agent = ReActV2(
-            signature=BrowserTask,
+            signature=BrowserTask,  # ← ОБНОВЛЕННАЯ СИГНАТУРА
             tools=tools,
             max_iters=10,
         )
         logger.info("✅ ReActV2 агент создан")
         return agent
     except Exception as e:
-        logger.error(f"❌ Ошибка создания ReActV2 агента: {e}")
+        logger.error(f"❌ Ошибка создания агента: {e}")
         return None
 
 # ============================================================
@@ -322,26 +310,19 @@ browser_agent = None
 
 if AGNES_API_KEY:
     try:
-        lm = AgnesLM(
-            api_key=AGNES_API_KEY,
-            temperature=0.3,
-            max_tokens=2000
-        )
-        
+        lm = AgnesLM(api_key=AGNES_API_KEY, temperature=0.3, max_tokens=2000)
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
-        
         browser_agent = create_browser_agent()
         if browser_agent:
             logger.info("✅ BrowserAgent инициализирован")
         else:
             logger.warning("⚠️ Не удалось создать агента")
-        
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
         browser_agent = None
 else:
-    logger.warning("⚠️ AGNES_API_KEY не задан, DSPy не инициализирован")
+    logger.warning("⚠️ AGNES_API_KEY не задан")
 
 # ============================================================
 # КУКИ
@@ -352,39 +333,28 @@ try:
     import websockets
     
     async def set_cookies_async():
-        """Установить куки через WebSocket"""
         try:
             resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
             pages = resp.json()
             if not pages:
-                logger.error("❌ Нет активных вкладок")
                 return False
-            
             ws_url = pages[0]["webSocketDebuggerUrl"]
-            
             async with websockets.connect(ws_url) as ws:
-                # Устанавливаем куки
                 await ws.send(json.dumps({
                     "id": 1,
                     "method": "Network.setCookies",
                     "params": {"cookies": COOKIES}
                 }))
-                
                 response = json.loads(await ws.recv())
-                
                 if "error" in response:
-                    logger.error(f"❌ CDP ошибка: {response['error']}")
                     return False
-                
                 logger.info(f"🍪 Установлено {len(COOKIES)} кук")
                 return True
-                
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
             return False
     
     def set_cookies_global():
-        """Обертка для синхронного вызова"""
         try:
             loop = asyncio.get_running_loop()
             return asyncio.run_coroutine_threadsafe(set_cookies_async(), loop).result(timeout=10)
@@ -397,9 +367,7 @@ try:
 except ImportError:
     logger.warning("⚠️ websockets или cookies.py не найдены")
     COOKIES = []
-    
     def set_cookies_global():
-        logger.warning("⚠️ Куки не установлены (нет websockets)")
         return False
 
 # ============================================================
@@ -407,16 +375,12 @@ except ImportError:
 # ============================================================
 
 async def set_viewport_async():
-    """Установить размер окна через WebSocket"""
     try:
         resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
         pages = resp.json()
         if not pages:
-            logger.warning("⚠️ Нет активных вкладок для установки размера")
             return False
-        
         ws_url = pages[0]["webSocketDebuggerUrl"]
-        
         async with websockets.connect(ws_url) as ws:
             await ws.send(json.dumps({
                 "id": 2,
@@ -432,22 +396,16 @@ async def set_viewport_async():
                     "positionY": 0
                 }
             }))
-            
             response = json.loads(await ws.recv())
-            
             if "error" in response:
-                logger.warning(f"⚠️ CDP ошибка: {response['error']}")
                 return False
-            
-            logger.info("✅ Размер окна установлен: 1280x720")
+            logger.info("✅ Размер окна: 1280x720")
             return True
-            
     except Exception as e:
         logger.warning(f"⚠️ Не удалось установить размер окна: {e}")
         return False
 
 def set_viewport_global():
-    """Обертка для синхронного вызова"""
     try:
         loop = asyncio.get_running_loop()
         return asyncio.run_coroutine_threadsafe(set_viewport_async(), loop).result(timeout=10)
@@ -470,13 +428,11 @@ except Exception as e:
     logger.error(f"❌ Ошибка запуска браузера: {e}")
     sys.exit(1)
 
-# Устанавливаем куки
 if COOKIES:
     set_cookies_global()
 else:
-    logger.info("ℹ️ Куки не установлены (нет cookies.py)")
+    logger.info("ℹ️ Куки не установлены")
 
-# Устанавливаем размер окна
 set_viewport_global()
 
 # ============================================================
@@ -486,12 +442,12 @@ set_viewport_global()
 async def start(update, context):
     await update.message.reply_text(
         "🧠 **DSPy Браузерный агент**\n\n"
-        "/dspy <запрос> — выполнить задачу через агента\n"
-        "/log — скачать логи\n\n"
+        "/dspy <запрос> — выполнить задачу\n"
+        "/log — скачать логи\n"
+        "/clean — закрыть лишние вкладки\n\n"
         "📌 **Примеры:**\n"
-        "/dspy открыть google.com и сделать скриншот\n"
-        "/dspy найти новости о Трампе на BBC\n"
-        "/dspy перейти на сайт и показать заголовки"
+        "/dspy открой google.com и сделай скриншот\n"
+        "/dspy найди новости о Трампе на BBC"
     )
 
 async def log(update, context):
@@ -500,44 +456,55 @@ async def log(update, context):
         if not os.path.exists(log_file):
             await update.message.reply_text("📭 Лог-файл не найден")
             return
-        
         with open(log_file, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename='bot.log',
-                caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
-            )
+            await update.message.reply_document(f, filename='bot.log')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def clean_command(update, context):
+    """Закрыть все лишние вкладки"""
+    try:
+        tabs = list_tabs()
+        if len(tabs) > 1:
+            for tab in tabs[1:]:
+                switch_tab(tab)
+                close_tab()
+            await update.message.reply_text(f"🧹 Закрыто {len(tabs)-1} лишних вкладок. Осталась 1.")
+        else:
+            await update.message.reply_text("✅ Уже одна вкладка")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update, context):
-    """Обработчик команды /dspy"""
     if not browser_agent:
-        await update.message.reply_text(
-            "❌ DSPy не инициализирован.\n"
-            "Проверьте AGNES_API_KEY"
-        )
+        await update.message.reply_text("❌ DSPy не инициализирован")
         return
     
     if not context.args:
-        await update.message.reply_text(
-            "📝 **Пример использования:**\n"
-            "/dspy открыть google.com и сделать скриншот",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("Пример: /dspy открой google.com")
         return
     
     query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
-    logger.info(f"🧠 {username} запросил: {query}")
+    logger.info(f"🧠 {username}: {query}")
+    
+    # 🔥 АВТОМАТИЧЕСКАЯ ОЧИСТКА ПЕРЕД ЗАПРОСОМ
+    try:
+        tabs = list_tabs()
+        if len(tabs) > 3:  # Если больше 3 вкладок
+            logger.info(f"🧹 Очистка: {len(tabs)} вкладок")
+            for tab in tabs[1:]:
+                switch_tab(tab)
+                close_tab()
+    except:
+        pass
     
     status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
-        # Вызываем агента
         result = browser_agent(question=query)
         
-        # 🔥 ПРАВИЛЬНАЯ ОБРАБОТКА ОТВЕТА
+        # Обработка ответа
         if isinstance(result, list):
             answer = result[0] if result else "Пустой ответ"
         elif hasattr(result, 'answer'):
@@ -556,8 +523,6 @@ async def dspy_command(update, context):
                 
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
@@ -569,15 +534,12 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", log))
+    app.add_handler(CommandHandler("clean", clean_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
-    logger.info(f"🍪 Куки: {'✅ Установлены' if COOKIES else '❌ Не установлены'}")
-    logger.info(f"📁 Логи: {LOGS_DIR}")
-    logger.info(f"📸 Скриншоты: {SCREENSHOTS_DIR}")
-    
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
