@@ -147,36 +147,66 @@ class AgnesLM(dspy.LM):
 # ============================================================
 
 class BrowserTask(Signature):
-    """Ты агент с доступом к браузеру.
+    """Ты агент с доступом к браузеру через Python.
     
-    ВАЖНО: В js() всегда используй ОДИНАРНЫЕ кавычки внутри!
-    
-    Правильно: js('() => document.querySelector(".price")?.innerText')
-    Неправильно: js("() => document.querySelector('.price')?.innerText")
-    
-    Используй функции:
+    ДОСТУПНЫЕ ФУНКЦИИ:
     - new_tab() - открыть вкладку
     - goto_url(url) - перейти на URL
-    - wait_for_load() - ждать загрузку страницы
-    - js(expression) - выполнить JavaScript (ТОЛЬКО ОДИНАРНЫЕ КАВЫЧКИ!)
-    - http_get(url) - HTTP запрос
+    - wait_for_load() - ждать загрузку
+    - js(expression) - выполнить JavaScript (ОДИНАРНЫЕ кавычки!)
     - capture_screenshot(filename) - скриншот
-    - fill_input(selector, text) - заполнить поле ввода
-    - click_at_xy(x, y) - кликнуть по координатам
+    - fill_input(selector, text) - заполнить поле
+    - click_at_xy(x, y) - кликнуть
     - type_text(text) - ввести текст
     - press_key(key) - нажать клавишу
-    - scroll(dy, dx) - прокрутить страницу
-    - page_info() - получить информацию о странице
-    - list_tabs() - список всех вкладок
-    - current_tab() - ID текущей вкладки
-    - switch_tab(id) - переключиться на вкладку
-    - close_tab() - закрыть текущую вкладку
+    - scroll(dy, dx) - прокрутить
+    - page_info() - информация о странице
+    - http_get(url) - HTTP запрос
+    - list_tabs() - список вкладок
+    - current_tab() - текущая вкладка
+    - switch_tab(id) - переключить вкладку
+    - close_tab() - закрыть вкладку
     
-    Пример: goto_url('https://google.com/search?q=test')
+    ПРАВИЛА:
+    1. В js() используй ОДИНАРНЫЕ кавычки: js('() => document.querySelector(".price")?.innerText')
+    2. ВСЕГДА используй print() для вывода результата
+    3. Результат должен быть понятным для пользователя
+    
+    ПРИМЕРЫ:
+    
+    Пример: "курс биткоина"
+    ```python
+    goto_url('https://www.coingecko.com/')
+    wait_for_load()
+    price = js('() => document.querySelector(".price")?.innerText')
+    print(f'Цена BTC: {price}')
+    ```
+    
+    Пример: "сколько лет байдену"
+    ```python
+    goto_url('https://www.google.com/search?q=Joe+Biden+age')
+    wait_for_load()
+    text = js('() => document.body.innerText')
+    import re
+    match = re.search(r'(\\d+)\\s*years old', text)
+    if match:
+        print(f'Джо Байдену {match.group(1)} лет')
+    else:
+        print('Не найдено')
+    ```
+    
+    Пример: "сделай скриншот google.com"
+    ```python
+    new_tab()
+    goto_url('https://google.com')
+    wait_for_load()
+    capture_screenshot('google.png')
+    print('Скриншот сохранен')
+    ```
     """
     task = InputField(desc="Задача пользователя")
     context = InputField(desc="Контекст страницы")
-    code = OutputField(desc="Код на Python с использованием браузера")
+    code = OutputField(desc="Код Python с print() для вывода результата")
     explanation = OutputField(desc="Объяснение")
 
 # ============================================================
@@ -625,6 +655,20 @@ def execute_code(code):
     code = re.sub(r'```\s*$', '', code)
     code = code.strip()
     
+    # Автоматически добавляем print если есть js но нет print
+    if 'js(' in code and 'print(' not in code:
+        # Находим js выражение и добавляем print
+        js_matches = re.findall(r"js\('([^']+)'\)", code)
+        for js_expr in js_matches:
+            if 'innerText' in js_expr or 'textContent' in js_expr:
+                # Добавляем print перед выполнением
+                code = code.replace(
+                    f"js('{js_expr}')",
+                    f"result = js('{js_expr}')\nprint(result)"
+                )
+                logger.info("🔄 Автоматически добавлен print() для вывода результата")
+                break
+    
     logger.info(f"⚙️ КОД ПОСЛЕ ОЧИСТКИ:\n{code[:200]}...")
     
     try:
@@ -638,7 +682,7 @@ def execute_code(code):
         def safe_js(expression):
             """Безопасное выполнение JavaScript с правильными кавычками"""
             try:
-                # Если выражение содержит двойные кавычки внутри - экранируем
+                # Если выражение содержит двойные кавычки внутри - заменяем
                 if isinstance(expression, str):
                     # Заменяем двойные кавычки на одинарные внутри
                     expression = expression.replace('"', "'")
@@ -699,7 +743,7 @@ def execute_code(code):
             'press_key': press_key,
             'scroll': scroll,
             'scroll_at_xy': scroll,
-            'js': safe_js,  # ← БЕЗОПАСНАЯ ВЕРСИЯ!
+            'js': safe_js,
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
             'wait_for_element': wait_for_element,
@@ -724,6 +768,19 @@ def execute_code(code):
         
         sys.stdout = old_stdout
         output = stdout_buffer.getvalue()
+        
+        # Если нет вывода, но есть js - пытаемся получить результат
+        if not output and 'js(' in code:
+            js_matches = re.findall(r"js\('([^']+)'\)", code)
+            for js_expr in js_matches:
+                try:
+                    result = safe_js(js_expr)
+                    if result:
+                        output = str(result)
+                        logger.info(f"📤 Получен результат из js: {output[:100]}...")
+                        break
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось получить результат js: {e}")
         
         if output:
             logger.info(f"📤 ВЫВОД КОДА:\n{output}")
