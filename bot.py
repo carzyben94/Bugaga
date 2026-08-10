@@ -12,6 +12,7 @@ import httpx
 import warnings
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.helpers import escape_markdown
 from promt import SYSTEM_PROMPT
 from PIL import Image
 
@@ -962,7 +963,7 @@ async def ask(update, context):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# DSPy КОМАНДЫ
+# DSPy КОМАНДЫ (ИСПРАВЛЕННЫЕ)
 # ============================================================
 
 async def dspy_command(update, context):
@@ -994,14 +995,20 @@ async def dspy_command(update, context):
             await status_msg.edit_text("❌ DSPy вернул пустой результат")
             return
         
-        response = f"📝 **Код:**\n```python\n{result.code}\n```\n\n💡 **Объяснение:**\n{result.explanation}"
-        await status_msg.edit_text(response, parse_mode='Markdown')
+        # Экранируем специальные символы для Markdown
+        code_escaped = escape_markdown(result.code, version=2)
+        explanation_escaped = escape_markdown(result.explanation, version=2)
+        
+        response = f"📝 **Код:**\n```python\n{code_escaped}\n```\n\n💡 **Объяснение:**\n{explanation_escaped}"
+        await status_msg.edit_text(response, parse_mode='MarkdownV2')
         
         if hasattr(result, 'code') and result.code:
             await update.message.reply_text("⚙️ Выполняю код...")
             output, success = execute_code(result.code)
             if success:
-                await update.message.reply_text(f"✅ Результат:\n{output[:1000]}")
+                # Экранируем вывод для безопасности
+                output_escaped = escape_markdown(output[:1000], version=2)
+                await update.message.reply_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
             else:
                 await update.message.reply_text(f"❌ Ошибка выполнения:\n{output}")
                 
@@ -1042,8 +1049,12 @@ async def analyze_command(update, context):
         answer = getattr(result, 'answer', 'Нет ответа')
         confidence = getattr(result, 'confidence', '0.0')
         
-        response = f"📊 **Ответ:**\n{answer}\n\n🎯 **Уверенность:** {confidence}"
-        await status_msg.edit_text(response, parse_mode='Markdown')
+        # Экранируем специальные символы
+        answer_escaped = escape_markdown(answer, version=2)
+        confidence_escaped = escape_markdown(confidence, version=2)
+        
+        response = f"📊 **Ответ:**\n{answer_escaped}\n\n🎯 **Уверенность:** {confidence_escaped}"
+        await status_msg.edit_text(response, parse_mode='MarkdownV2')
         
     except Exception as e:
         logger.error(f"❌ Ошибка анализа: {e}")
