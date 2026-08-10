@@ -96,10 +96,12 @@ print("Google opened!")
 - js() returns dict, list or primitive. Check type before using len().
 
 === ADDITIONAL NOTES ===
-- You can use standard Python: datetime, requests, json, re, math, random
-- For weather, use Open-Meteo API: https://api.open-meteo.com
-- For calculations, use Python math
-- ALWAYS print the result with print()
+- Built-in modules (no import needed): datetime, json, re, math, random
+- For weather: http_get("https://api.open-meteo.com/...")
+- For calculations: use Python math
+- For Google: new_tab() + js()
+- For Twitter/X: new_tab() + js() (NOT tweepy!)
+- ALWAYS print() the result
 
 === EXAMPLE ===
 User asks: "сколько лет Трампу"
