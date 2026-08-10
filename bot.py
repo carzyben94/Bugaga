@@ -18,7 +18,7 @@ from PIL import Image
 
 # DSPy импорты
 import dspy
-from dspy import ChainOfThought, Module, InputField, OutputField, Signature, settings
+from dspy import Signature, InputField, OutputField, Module, settings, ReAct
 
 warnings.filterwarnings("ignore")
 
@@ -143,101 +143,275 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА С ACCESSIBILITY TREE
+# ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА
+# ============================================================
+
+def tool_new_tab() -> str:
+    """Открыть новую вкладку"""
+    try:
+        new_tab()
+        return "✅ Новая вкладка открыта"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_goto_url(url: str) -> str:
+    """Перейти на URL и дождаться загрузки"""
+    try:
+        goto_url(url)
+        wait_for_load()
+        return f"✅ Перешел на {url}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_wait_for_load() -> str:
+    """Дождаться загрузки страницы"""
+    try:
+        wait_for_load()
+        return "✅ Страница загружена"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_js(expression: str) -> str:
+    """Выполнить JavaScript на странице"""
+    try:
+        result = js(expression)
+        if isinstance(result, dict):
+            return str(result.get('result', result))
+        return str(result)
+    except Exception as e:
+        return f"❌ Ошибка JavaScript: {e}"
+
+def tool_http_get(url: str) -> str:
+    """Выполнить HTTP GET запрос"""
+    try:
+        return http_get(url)
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_capture_screenshot(filename: str = None) -> str:
+    """Сделать скриншот страницы"""
+    try:
+        if not filename:
+            timestamp = int(time.time())
+            filename = f"screenshot_{timestamp}.png"
+        full_path = os.path.join(SCREENSHOTS_DIR, filename)
+        capture_screenshot(path=full_path)
+        return f"✅ Скриншот сохранен: {filename}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_fill_input(selector: str, text: str) -> str:
+    """Заполнить поле ввода по CSS селектору"""
+    try:
+        fill_input(selector, text)
+        return f"✅ Заполнено: {selector}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_click_at_xy(x: int, y: int) -> str:
+    """Кликнуть по координатам"""
+    try:
+        click_at_xy(x, y)
+        return f"✅ Клик по ({x}, {y})"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_type_text(text: str) -> str:
+    """Ввести текст"""
+    try:
+        type_text(text)
+        return f"✅ Введено: {text}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_press_key(key: str) -> str:
+    """Нажать клавишу"""
+    try:
+        press_key(key)
+        return f"✅ Нажата клавиша: {key}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_scroll(dx: int, dy: int) -> str:
+    """Прокрутить страницу"""
+    try:
+        scroll(dx, dy)
+        return f"✅ Прокрутка на ({dx}, {dy})"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_page_info() -> str:
+    """Получить информацию о странице"""
+    try:
+        info = page_info()
+        return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_list_tabs() -> str:
+    """Список всех вкладок"""
+    try:
+        tabs = list_tabs()
+        return f"Вкладки: {tabs}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_current_tab() -> str:
+    """ID текущей вкладки"""
+    try:
+        tab = current_tab()
+        return f"Текущая вкладка: {tab}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_switch_tab(tab_id: int) -> str:
+    """Переключиться на вкладку"""
+    try:
+        switch_tab(tab_id)
+        return f"✅ Переключился на вкладку {tab_id}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_close_tab() -> str:
+    """Закрыть текущую вкладку"""
+    try:
+        close_tab()
+        return "✅ Вкладка закрыта"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_get_accessibility_text() -> str:
+    """Получить доступный текст страницы через Accessibility Tree"""
+    try:
+        result = js('''
+            () => {
+                const elements = document.querySelectorAll('[role], [aria-label], [aria-labelledby], h1, h2, h3, h4, h5, h6, p, a, button, input, label, [data-testid]');
+                const texts = [];
+                elements.forEach(el => {
+                    let accessibleName = '';
+                    if (el.hasAttribute('aria-label')) {
+                        accessibleName = el.getAttribute('aria-label');
+                    } else if (el.hasAttribute('aria-labelledby')) {
+                        const labelId = el.getAttribute('aria-labelledby');
+                        const labelEl = document.getElementById(labelId);
+                        if (labelEl) accessibleName = labelEl.innerText || labelEl.textContent;
+                    } else if (['A', 'BUTTON', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LABEL'].includes(el.tagName)) {
+                        accessibleName = el.innerText || el.textContent;
+                    } else if (el.tagName === 'INPUT' && el.hasAttribute('placeholder')) {
+                        accessibleName = el.getAttribute('placeholder');
+                    } else if (el.hasAttribute('data-testid')) {
+                        accessibleName = `[data-testid="${el.getAttribute('data-testid')}"]`;
+                    } else if (el.hasAttribute('title')) {
+                        accessibleName = el.getAttribute('title');
+                    }
+                    if (accessibleName && accessibleName.trim()) {
+                        texts.push({
+                            tag: el.tagName.toLowerCase(),
+                            role: el.getAttribute('role') || 'none',
+                            text: accessibleName.trim(),
+                            id: el.id || '',
+                            classes: el.className || ''
+                        });
+                    }
+                });
+                return JSON.stringify(texts.slice(0, 50));
+            }
+        ''')
+        if isinstance(result, dict):
+            return result.get('result', str(result))
+        return str(result)
+    except Exception as e:
+        return f"❌ Ошибка Accessibility Tree: {e}"
+
+def tool_find_element(selector: str) -> str:
+    """Найти элемент по CSS селектору и вернуть его текст"""
+    try:
+        result = js(f'''
+            () => {{
+                const el = document.querySelector('{selector}');
+                if (!el) return null;
+                return {{
+                    tag: el.tagName.toLowerCase(),
+                    text: el.innerText || el.textContent || '',
+                    html: el.outerHTML || '',
+                    id: el.id || '',
+                    classes: el.className || '',
+                    href: el.href || '',
+                    src: el.src || '',
+                    value: el.value || '',
+                }};
+            }}
+        ''')
+        if isinstance(result, dict):
+            return str(result)
+        return str(result) if result else "❌ Элемент не найден"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_click_element(selector: str) -> str:
+    """Кликнуть по элементу по CSS селектору"""
+    try:
+        result = js(f'''
+            () => {{
+                const el = document.querySelector('{selector}');
+                if (!el) return false;
+                el.click();
+                return true;
+            }}
+        ''')
+        if result:
+            return f"✅ Кликнул по {selector}"
+        return "❌ Элемент не найден"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+# ============================================================
+# SIGNATURE ДЛЯ REACT
 # ============================================================
 
 class BrowserTask(Signature):
-    """Ты агент с доступом к браузеру через Python.
+    """Ты агент с доступом к браузеру.
     
-    ДОСТУПНЫЕ ФУНКЦИИ:
-    - new_tab() - открыть вкладку
-    - goto_url(url) - перейти на URL
-    - wait_for_load() - ждать загрузку
-    - js(expression) - выполнить JavaScript
-    - http_get(url) - HTTP GET запрос
-    - capture_screenshot(filename) - скриншот
-    - fill_input(selector, text) - заполнить поле
-    - click_at_xy(x, y) - кликнуть
-    - type_text(text) - ввести текст
-    - press_key(key) - нажать клавишу
-    - scroll(dy, dx) - прокрутить
-    - page_info() - информация о странице
-    - list_tabs() - список вкладок
-    - current_tab() - текущая вкладка
-    - switch_tab(id) - переключить вкладку
-    - close_tab() - закрыть вкладку
-    
-    ДОСТУПНЫЙ ТЕКСТ (Accessibility Tree):
-    - get_accessibility_text() - получить структурированный текст страницы
-    - get_accessibility_text_by_type(type) - получить текст определенных элементов
-      Типы: 'headings', 'links', 'buttons', 'inputs', 'labels', 'all'
-    
-    ПРАВИЛА:
-    1. ВСЕГДА используй get_accessibility_text() для получения текста
-    2. Для поиска конкретных элементов используй get_accessibility_text_by_type()
-    3. ВСЕГДА используй print() для вывода результата
-    4. В js() используй ОДИНАРНЫЕ кавычки
-    
-    ПРИМЕРЫ:
-    
-    1. Поиск возраста на Википедии:
-    ```python
-    goto_url('https://ru.wikipedia.org/wiki/Путин,_Владимир_Владимирович')
-    wait_for_load()
-    texts = get_accessibility_text()
-    for item in texts:
-        if 'родился' in item['text'] or 'год рождения' in item['text']:
-            print(f"Найдено: {item['text']}")
-            import re
-            match = re.search(r'(\\d{1,2})\\s+(\\w+)\\s+(\\d{4})', item['text'])
-            if match:
-                day, month, year = match.groups()
-                print(f"Дата рождения: {day} {month} {year}")
-                from datetime import date
-                age = date.today().year - int(year)
-                print(f"Возраст: {age} лет")
-    ```
-    
-    2. Анализ кнопок на странице:
-    ```python
-    goto_url('https://example.com')
-    wait_for_load()
-    buttons = get_accessibility_text_by_type('buttons')
-    print(f"Кнопки: {buttons}")
-    ```
-    
-    3. Анализ заголовков:
-    ```python
-    goto_url('https://example.com')
-    wait_for_load()
-    headings = get_accessibility_text_by_type('headings')
-    print(f"Заголовки: {headings}")
-    ```
-    
-    4. Получить весь доступный текст:
-    ```python
-    goto_url('https://example.com')
-    wait_for_load()
-    all_text = get_accessibility_text()
-    print(f"Доступный текст: {all_text}")
-    ```
+    Используй доступные инструменты для выполнения задач пользователя.
+    Всегда проверяй результат выполнения действий.
     """
-    task = InputField(desc="Задача пользователя")
-    context = InputField(desc="Контекст страницы")
-    code = OutputField(desc="Код Python с print() для вывода результата")
-    explanation = OutputField(desc="Объяснение")
+    question = InputField(desc="Задача пользователя")
+    answer = OutputField(desc="Ответ на задачу")
 
 # ============================================================
-# АГЕНТ
+# СОЗДАЕМ REACT АГЕНТА С ИНСТРУМЕНТАМИ
 # ============================================================
 
-class BrowserAgent(Module):
-    def __init__(self):
-        super().__init__()
-        self.generate = ChainOfThought(BrowserTask)
+def create_browser_agent():
+    """Создать ReAct агента с инструментами браузера"""
     
-    def forward(self, task, context=""):
-        return self.generate(task=task, context=context)
+    tools = [
+        tool_new_tab,
+        tool_goto_url,
+        tool_wait_for_load,
+        tool_js,
+        tool_http_get,
+        tool_capture_screenshot,
+        tool_fill_input,
+        tool_click_at_xy,
+        tool_type_text,
+        tool_press_key,
+        tool_scroll,
+        tool_page_info,
+        tool_list_tabs,
+        tool_current_tab,
+        tool_switch_tab,
+        tool_close_tab,
+        tool_get_accessibility_text,
+        tool_find_element,
+        tool_click_element,
+    ]
+    
+    return ReAct(
+        signature=BrowserTask,
+        tools=tools,
+        max_iters=10,
+    )
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ DSPy
@@ -246,6 +420,8 @@ class BrowserAgent(Module):
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+
+browser_agent = None
 
 if AGNES_API_KEY:
     try:
@@ -258,15 +434,14 @@ if AGNES_API_KEY:
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
         
-        browser_agent = BrowserAgent()
-        logger.info("✅ DSPy модули инициализированы")
+        browser_agent = create_browser_agent()
+        logger.info("✅ ReAct агент с инструментами инициализирован")
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
         browser_agent = None
 else:
     logger.warning("⚠️ AGNES_API_KEY не задан, DSPy не инициализирован")
-    browser_agent = None
 
 # ============================================================
 # КУКИ
@@ -585,46 +760,32 @@ async def ask_agnes_dspy(messages):
         return await ask_agnes_fallback(messages)
     
     try:
-        user_query = ""
+        # Извлекаем вопрос пользователя
+        user_question = ""
         for msg in messages:
             if msg.get("role") == "user":
-                user_query = msg.get("content", "")
+                user_question = msg.get("content", "")
         
-        if not user_query:
-            return "❌ Нет запроса для обработки"
+        if not user_question:
+            return "❌ Нет вопроса для обработки"
         
-        try:
-            page_info_data = page_info()
-            context = f"URL: {page_info_data.get('url', 'unknown')}, Title: {page_info_data.get('title', 'unknown')}"
-        except:
-            context = "Нет активной страницы"
+        logger.info(f"🧠 DSPy ReAct обрабатывает: {user_question}")
         
-        logger.info(f"🧠 DSPy обрабатывает: {user_query}")
+        # Вызываем ReAct агента
+        result = browser_agent(question=user_question)
         
-        result = browser_agent(task=user_query, context=context)
+        # Извлекаем ответ
+        answer = getattr(result, 'answer', str(result))
         
-        if result is None:
+        if not answer or answer.strip() == "":
             return await ask_agnes_fallback(messages)
         
-        if hasattr(result, 'code'):
-            code = result.code
-            explanation = getattr(result, 'explanation', '')
-        else:
-            code = str(result)
-            explanation = ""
-        
-        if not code or code.strip() == "":
-            return await ask_agnes_fallback(messages)
-        
-        if "```python" not in code:
-            response = f"```python\n{code}\n```\n\n💡 {explanation}"
-        else:
-            response = code
-        
-        return response
+        return answer
             
     except Exception as e:
-        logger.error(f"❌ DSPy ошибка: {e}")
+        logger.error(f"❌ DSPy ReAct ошибка: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return await ask_agnes_fallback(messages)
 
 async def ask_agnes_fallback(messages):
@@ -652,274 +813,6 @@ async def ask_agnes_fallback(messages):
     except Exception as e:
         logger.error(f"❌ Ошибка Agnes AI: {e}")
         return f"Ошибка LLM: {str(e)[:200]}"
-
-# ============================================================
-# ВЫПОЛНИТЕЛЬ
-# ============================================================
-
-def execute_code(code):
-    logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
-    
-    code = code.strip()
-    
-    if code.startswith('```python'):
-        code = code[10:]
-    elif code.startswith('```'):
-        code = code[3:]
-    
-    if code.endswith('```'):
-        code = code[:-3]
-    
-    code = re.sub(r'```\s*$', '', code)
-    code = code.strip()
-    
-    # Автоматически добавляем print если есть js но нет print
-    if 'js(' in code and 'print(' not in code:
-        js_matches = re.findall(r"js\('([^']+)'\)", code)
-        for js_expr in js_matches:
-            if 'innerText' in js_expr or 'textContent' in js_expr:
-                code = code.replace(
-                    f"js('{js_expr}')",
-                    f"result = js('{js_expr}')\nprint(result)"
-                )
-                logger.info("🔄 Автоматически добавлен print() для вывода результата")
-                break
-    
-    logger.info(f"⚙️ КОД ПОСЛЕ ОЧИСТКИ:\n{code[:200]}...")
-    
-    try:
-        stdout_buffer = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = stdout_buffer
-        
-        # ============================================================
-        # БЕЗОПАСНАЯ ОБЕРТКА ДЛЯ js()
-        # ============================================================
-        def safe_js(expression):
-            """Безопасное выполнение JavaScript с правильными кавычками"""
-            try:
-                if isinstance(expression, str):
-                    expression = expression.replace('"', "'")
-                result = js(expression)
-                # Если результат - dict, извлекаем значение
-                if isinstance(result, dict):
-                    if 'result' in result:
-                        return result['result']
-                    elif 'value' in result:
-                        return result['value']
-                    return result
-                return result
-            except Exception as e:
-                logger.error(f"❌ JS ошибка: {e}")
-                return None
-        
-        # ============================================================
-        # ACCESSIBILITY TREE ФУНКЦИИ
-        # ============================================================
-        
-        def get_accessibility_text():
-            """Получить доступный текст страницы через Accessibility Tree"""
-            try:
-                result = js('''
-                    () => {
-                        const elements = document.querySelectorAll('[role], [aria-label], [aria-labelledby], h1, h2, h3, h4, h5, h6, p, a, button, input, label, [data-testid]');
-                        const texts = [];
-                        elements.forEach(el => {
-                            let accessibleName = '';
-                            if (el.hasAttribute('aria-label')) {
-                                accessibleName = el.getAttribute('aria-label');
-                            } else if (el.hasAttribute('aria-labelledby')) {
-                                const labelId = el.getAttribute('aria-labelledby');
-                                const labelEl = document.getElementById(labelId);
-                                if (labelEl) accessibleName = labelEl.innerText || labelEl.textContent;
-                            } else if (['A', 'BUTTON', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LABEL'].includes(el.tagName)) {
-                                accessibleName = el.innerText || el.textContent;
-                            } else if (el.tagName === 'INPUT' && el.hasAttribute('placeholder')) {
-                                accessibleName = el.getAttribute('placeholder');
-                            } else if (el.hasAttribute('data-testid')) {
-                                accessibleName = `[data-testid="${el.getAttribute('data-testid')}"]`;
-                            } else if (el.hasAttribute('title')) {
-                                accessibleName = el.getAttribute('title');
-                            }
-                            if (accessibleName && accessibleName.trim()) {
-                                texts.push({
-                                    tag: el.tagName.toLowerCase(),
-                                    role: el.getAttribute('role') || 'none',
-                                    text: accessibleName.trim(),
-                                    id: el.id || '',
-                                    classes: el.className || ''
-                                });
-                            }
-                        });
-                        const unique = [];
-                        const seen = new Set();
-                        for (const item of texts) {
-                            const key = item.text + item.tag;
-                            if (!seen.has(key)) {
-                                seen.add(key);
-                                unique.push(item);
-                            }
-                        }
-                        return unique;
-                    }
-                ''')
-                if isinstance(result, dict):
-                    return result.get('result', result)
-                return result
-            except Exception as e:
-                logger.error(f"❌ Ошибка Accessibility Tree: {e}")
-                return []
-        
-        def get_accessibility_text_by_type(element_type='all'):
-            """Получить доступный текст определенных элементов"""
-            try:
-                result = js(f'''
-                    () => {{
-                        const selectors = {{
-                            'headings': 'h1, h2, h3, h4, h5, h6, [role="heading"]',
-                            'links': 'a, [role="link"]',
-                            'buttons': 'button, [role="button"], input[type="submit"], input[type="button"]',
-                            'inputs': 'input, textarea, [role="textbox"]',
-                            'labels': 'label, [role="label"]',
-                            'all': '[role], h1, h2, h3, h4, h5, h6, a, button, input, label, p, [data-testid]'
-                        }};
-                        const selector = selectors['{element_type}'] || selectors['all'];
-                        const elements = document.querySelectorAll(selector);
-                        const texts = [];
-                        elements.forEach(el => {{
-                            let text = '';
-                            if (el.hasAttribute('aria-label')) {{
-                                text = el.getAttribute('aria-label');
-                            }} else if (el.hasAttribute('aria-labelledby')) {{
-                                const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
-                                if (labelEl) text = labelEl.innerText || labelEl.textContent;
-                            }} else if (['A', 'BUTTON', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LABEL'].includes(el.tagName)) {{
-                                text = el.innerText || el.textContent;
-                            }} else if (el.tagName === 'INPUT' && el.hasAttribute('placeholder')) {{
-                                text = el.getAttribute('placeholder');
-                            }} else if (el.hasAttribute('data-testid')) {{
-                                text = `data-testid: ${{el.getAttribute('data-testid')}}`;
-                            }}
-                            if (text && text.trim()) {{
-                                texts.push(text.trim());
-                            }}
-                        }});
-                        return texts;
-                    }}
-                ''')
-                if isinstance(result, dict):
-                    return result.get('result', result)
-                return result
-            except Exception as e:
-                logger.error(f"❌ Ошибка получения текста: {e}")
-                return []
-        
-        # ============================================================
-        # ВСЕ ФУНКЦИИ
-        # ============================================================
-        
-        def save_skill(host, name, content):
-            skills_dir = os.path.join(agent_workspace, "domain-skills", host)
-            os.makedirs(skills_dir, exist_ok=True)
-            os.chmod(skills_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-            
-            skill_path = os.path.join(skills_dir, f"{name}.md")
-            with open(skill_path, "w", encoding='utf-8') as f:
-                f.write(content)
-            os.chmod(skill_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-            
-            logger.info(f"✅ Навык сохранён локально: {skill_path}")
-            push_to_github(content, f"{name}.md", host)
-            return skill_path
-        
-        def add_helper(code):
-            helpers_path = os.path.join(agent_workspace, "agent_helpers.py")
-            if not os.path.exists(helpers_path):
-                with open(helpers_path, "w") as f:
-                    f.write('"""Agent-editable browser helpers."""\n')
-            with open(helpers_path, "a", encoding='utf-8') as f:
-                f.write(f"\n\n{code}\n")
-            logger.info(f"✅ Helper добавлен в agent_helpers.py")
-            push_helpers_to_github()
-            return True
-        
-        def capture_screenshot_with_path(path=None, full=False, max_dim=None):
-            if path is None:
-                timestamp = int(time.time())
-                filename = f"screenshot_{timestamp}.png"
-                full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            else:
-                filename = os.path.basename(path)
-                full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            logger.info(f"📸 Сохраняю скриншот в: {full_path}")
-            return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
-        
-        # Функции для exec
-        globals_dict = {
-            'new_tab': new_tab,
-            'goto_url': goto_url,
-            'wait_for_load': wait_for_load,
-            'page_info': page_info,
-            'capture_screenshot': capture_screenshot_with_path,
-            'click_at_xy': click_at_xy,
-            'type_text': type_text,
-            'press_key': press_key,
-            'scroll': scroll,
-            'scroll_at_xy': scroll,
-            'js': safe_js,
-            'cdp': cdp,
-            'ensure_real_tab': ensure_real_tab,
-            'wait_for_element': wait_for_element,
-            'list_tabs': list_tabs,
-            'current_tab': current_tab,
-            'close_tab': close_tab,
-            'switch_tab': switch_tab,
-            'fill_input': fill_input,
-            'upload_file': upload_file,
-            'http_get': http_get,
-            'drain_events': drain_events,
-            'set_cookies': set_cookies_global,
-            'save_skill': save_skill,
-            'add_helper': add_helper,
-            'get_accessibility_text': get_accessibility_text,
-            'get_accessibility_text_by_type': get_accessibility_text_by_type,
-            'time': time,
-            'json': json,
-            'print': print,
-            '__builtins__': __builtins__,
-        }
-        
-        exec(code, globals_dict)
-        
-        sys.stdout = old_stdout
-        output = stdout_buffer.getvalue()
-        
-        # Если нет вывода, но есть js - пытаемся получить результат
-        if not output and 'js(' in code:
-            js_matches = re.findall(r"js\('([^']+)'\)", code)
-            for js_expr in js_matches:
-                try:
-                    result = safe_js(js_expr)
-                    if result:
-                        output = str(result)
-                        logger.info(f"📤 Получен результат из js: {output[:100]}...")
-                        break
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось получить результат js: {e}")
-        
-        if output:
-            logger.info(f"📤 ВЫВОД КОДА:\n{output}")
-            return output.strip(), True
-        elif 'result' in globals_dict:
-            result = str(globals_dict['result'])
-            logger.info(f"📤 РЕЗУЛЬТАТ: {result}")
-            return result, True
-        
-        logger.warning("⚠️ Код выполнен, но нет вывода")
-        return "⚠️ Код выполнен, но нет вывода. Добавьте print() в код.", False
-    except Exception as e:
-        logger.error(f"❌ Ошибка выполнения: {e}")
-        return str(e), False
 
 # ============================================================
 # КОМАНДЫ
@@ -1025,38 +918,29 @@ async def ask(update, context):
     status_msg = await update.message.reply_text("🤔 Думаю...")
 
     try:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_query}
-        ]
-
         if browser_agent:
+            # Используем ReAct агента
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query}
+            ]
             response = await ask_agnes_dspy(messages)
-        else:
-            response = await ask_agnes_fallback(messages)
-
-        if "```python" in response:
-            code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
-            code = code_match.group(1) if code_match else response
             
-            logger.info(f"📝 Сгенерированный код для /ask:\n{code}")
-
-            await status_msg.edit_text("⚙️ Шаг 1/2: Генерирую код...")
-            
-            output, success = execute_code(code)
-
-            await status_msg.edit_text("⚙️ Шаг 2/2: Выполняю код...")
-
-            if not success:
-                await status_msg.edit_text(f"❌ Ошибка: {output}")
+            # Если ответ содержит код - показываем как есть
+            if response and response.strip():
+                response_escaped = escape_markdown(response[:4000], version=2)
+                await status_msg.edit_text(f"✅ Результат:\n{response_escaped}", parse_mode='MarkdownV2')
             else:
-                logger.info(f"✅ Успешное выполнение для {username}")
-                output_escaped = escape_markdown(output[:4000], version=2)
-                await status_msg.edit_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
+                await status_msg.edit_text("❌ Агент вернул пустой ответ")
         else:
-            logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
+            # Fallback
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query}
+            ]
+            response = await ask_agnes_fallback(messages)
             response_escaped = escape_markdown(response[:4000], version=2)
-            await status_msg.edit_text(response_escaped, parse_mode='MarkdownV2')
+            await status_msg.edit_text(f"💬 Ответ:\n{response_escaped}", parse_mode='MarkdownV2')
 
     except Exception as e:
         logger.error(f"❌ Ошибка в /ask для {username}: {e}")
@@ -1064,7 +948,7 @@ async def ask(update, context):
 
 async def dspy_command(update, context):
     if not browser_agent:
-        await update.message.reply_text("❌ DSPy не инициализирован. Проверьте AGNES_API_KEY")
+        await update.message.reply_text("❌ DSPy ReAct не инициализирован. Проверьте AGNES_API_KEY")
         return
     
     if not context.args:
@@ -1073,43 +957,24 @@ async def dspy_command(update, context):
     
     query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
-    logger.info(f"🧠 {username} DSPy запрос: {query}")
+    logger.info(f"🧠 {username} DSPy ReAct запрос: {query}")
     
     status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
-        try:
-            page_info_data = page_info()
-            context_str = f"URL: {page_info_data.get('url', 'unknown')}, Title: {page_info_data.get('title', 'unknown')}"
-        except:
-            context_str = "Нет активной страницы"
+        # Используем ReAct агента
+        result = browser_agent(question=query)
+        answer = getattr(result, 'answer', str(result))
         
-        result = browser_agent(task=query, context=context_str)
-        
-        if result is None or not hasattr(result, 'code'):
-            await status_msg.edit_text("❌ DSPy вернул пустой результат")
-            return
-        
-        logger.info(f"📝 Сгенерированный код:\n{result.code}")
-        
-        await status_msg.edit_text("⚙️ Шаг 1/2: Генерирую код...")
-        
-        if hasattr(result, 'code') and result.code:
-            await status_msg.edit_text("⚙️ Шаг 2/2: Выполняю код...")
-            
-            output, success = execute_code(result.code)
-            
-            if success:
-                output_escaped = escape_markdown(output[:4000], version=2)
-                await status_msg.edit_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
-            else:
-                await status_msg.edit_text(f"❌ Ошибка: {output}")
+        if answer and answer.strip():
+            answer_escaped = escape_markdown(answer[:4000], version=2)
+            await status_msg.edit_text(f"✅ Результат:\n{answer_escaped}", parse_mode='MarkdownV2')
         else:
-            await status_msg.edit_text("❌ Нет кода для выполнения")
+            await status_msg.edit_text("❌ Агент вернул пустой ответ")
                 
     except Exception as e:
-        logger.error(f"❌ DSPy ошибка: {e}")
-        await status_msg.edit_text(f"❌ Ошибка DSPy: {str(e)[:200]}")
+        logger.error(f"❌ DSPy ReAct ошибка: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def clear_command(update, context):
     if 'last_image' in context.user_data:
@@ -1214,7 +1079,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReAct)' if browser_agent else '❌ Отключен'}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
