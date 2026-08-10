@@ -70,17 +70,18 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ (ИСПРАВЛЕННАЯ)
+# DSPy ИНТЕГРАЦИЯ (ИСПРАВЛЕННАЯ ДЛЯ DSPy 2.5.0)
 # ============================================================
 
-class AgnesLM(dspy.BaseLM):
+class AgnesLM(dspy.LM):  # ← ИЗМЕНЕНО: BaseLM → LM
     """Адаптер для Agnes AI"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
         self.kwargs = kwargs
-        super().__init__(model=model, model_type="chat", **kwargs)
+        # В DSPy 2.5.0 LM принимает model и model_type
+        super().__init__(model=model, model_type="chat")
         self.provider = "agnes-ai"
     
     def basic_request(self, prompt, **kwargs):
@@ -117,6 +118,7 @@ class AgnesLM(dspy.BaseLM):
             return [f"Ошибка: {str(e)}"]
     
     def __call__(self, prompt, **kwargs):
+        """DSPy вызывает этот метод"""
         return self.basic_request(prompt, **kwargs)
 
 # Сигнатуры
@@ -175,7 +177,7 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
-        dspy.configure(lm=lm)
+        dspy.settings.configure(lm=lm)  # ← ИЗМЕНЕНО: dspy.configure → dspy.settings.configure
         logger.info("✅ DSPy настроен с Agnes AI")
         
         browser_agent = BrowserAgent()
@@ -185,6 +187,8 @@ if AGNES_API_KEY:
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         browser_agent = None
         image_enhancer = None
         page_analyzer = None
