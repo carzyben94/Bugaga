@@ -70,25 +70,38 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ (ИСПРАВЛЕННАЯ ДЛЯ DSPy 2.5.0)
+# DSPy ИНТЕГРАЦИЯ (ИСПРАВЛЕННАЯ)
 # ============================================================
 
-class AgnesLM(dspy.LM):  # ← ИЗМЕНЕНО: BaseLM → LM
-    """Адаптер для Agnes AI"""
+class AgnesLM(dspy.LM):
+    """Адаптер для Agnes AI через OpenAI-совместимый API"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
         self.kwargs = kwargs
-        # В DSPy 2.5.0 LM принимает model и model_type
-        super().__init__(model=model, model_type="chat")
+        # Важно: указываем forward_contract = "legacy" для OpenAI-подобного API
+        super().__init__(model=model, model_type="chat", **kwargs)
         self.provider = "agnes-ai"
+        self.forward_contract = "legacy"  # ← КЛЮЧЕВОЙ МОМЕНТ
     
-    def basic_request(self, prompt, **kwargs):
-        """Базовый запрос"""
+    def forward(self, prompt=None, messages=None, **kwargs):
+        """
+        Метод forward для контракта "legacy".
+        Принимает prompt или messages, возвращает OpenAI-подобный ответ.
+        """
         if not self.api_key:
-            return ["Ошибка: API ключ не задан"]
+            return {
+                "choices": [{"message": {"content": "Ошибка: API ключ не задан"}}]
+            }
         
+        # Подготовка сообщений
+        if messages:
+            api_messages = messages
+        else:
+            api_messages = [{"role": "user", "content": prompt or ""}]
+        
+        # Формируем запрос к Agnes AI
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -97,7 +110,7 @@ class AgnesLM(dspy.LM):  # ← ИЗМЕНЕНО: BaseLM → LM
         params = {**self.kwargs, **kwargs}
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": api_messages,
             "temperature": params.get("temperature", 0.3),
             "max_tokens": params.get("max_tokens", 2000)
         }
@@ -111,15 +124,53 @@ class AgnesLM(dspy.LM):  # ← ИЗМЕНЕНО: BaseLM → LM
                 )
                 response.raise_for_status()
                 data = response.json()
-                result = data["choices"][0]["message"]["content"]
-                return [result]
+                # Возвращаем в OpenAI-подобном формате
+                return data
         except Exception as e:
             logger.error(f"❌ DSPy ошибка: {e}")
-            return [f"Ошибка: {str(e)}"]
+            return {
+                "choices": [{"message": {"content": f"Ошибка: {str(e)}"}}]
+            }
     
-    def __call__(self, prompt, **kwargs):
-        """DSPy вызывает этот метод"""
-        return self.basic_request(prompt, **kwargs)
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        """Асинхронная версия forward"""
+        if not self.api_key:
+            return {
+                "choices": [{"message": {"content": "Ошибка: API ключ не задан"}}]
+            }
+        
+        if messages:
+            api_messages = messages
+        else:
+            api_messages = [{"role": "user", "content": prompt or ""}]
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        params = {**self.kwargs, **kwargs}
+        payload = {
+            "model": self.model,
+            "messages": api_messages,
+            "temperature": params.get("temperature", 0.3),
+            "max_tokens": params.get("max_tokens", 2000)
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                response = await client.post(
+                    "https://apihub.agnes-ai.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"❌ DSPy ошибка: {e}")
+            return {
+                "choices": [{"message": {"content": f"Ошибка: {str(e)}"}}]
+            }
 
 # Сигнатуры
 class BrowserTask(Signature):
@@ -177,7 +228,7 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
-        dspy.settings.configure(lm=lm)  # ← ИЗМЕНЕНО: dspy.configure → dspy.settings.configure
+        dspy.configure(lm=lm)
         logger.info("✅ DSPy настроен с Agnes AI")
         
         browser_agent = BrowserAgent()
