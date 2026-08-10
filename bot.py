@@ -109,21 +109,18 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА С ПРИОРИТЕТАМИ
+# СИГНАТУРА
 # ============================================================
 
 class BrowserTask(Signature):
     """Ты агент с доступом к браузеру.
     
     ПРИОРИТЕТ ИНСТРУМЕНТОВ:
-    1. Сначала используй tool_get_accessibility_tree() - чтобы понять структуру страницы
-    2. Для кликов - используй tool_click_by_ref() с ref из дерева
-    3. Для поиска - используй tool_find_in_accessibility()
-    4. Для ввода/скролла - используй tool_type_text(), tool_scroll()
-    5. Только если AX Tree не дает данных - используй tool_js()
-    
-    НЕ ПИШИ СЛОЖНЫЕ СЕЛЕКТОРЫ В tool_js()!
-    Используй AX Tree для навигации, JS только для действий.
+    1. Сначала используй tool_wait_for_spa() после перехода на SPA-сайты
+    2. tool_get_accessibility_tree() - чтобы понять структуру страницы
+    3. Для кликов - tool_click_by_ref() с ref из дерева
+    4. Для поиска - tool_find_in_accessibility()
+    5. Только если AX Tree не дает данных - tool_js()
     """
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
@@ -142,8 +139,81 @@ def tool_new_tab() -> str:
 def tool_goto_url(url: str) -> str:
     try:
         goto_url(url)
-        wait_for_load()
         return f"✅ Перешел на {url} в текущей вкладке"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_wait_for_spa(timeout: int = 10000) -> str:
+    """
+    Ожидание загрузки SPA (React/Vue/Angular).
+    Ждет пока DOM стабилизируется (количество элементов перестанет меняться).
+    """
+    try:
+        script = f'''
+            () => {{
+                const timeout = {timeout};
+                const start = Date.now();
+                
+                return new Promise((resolve) => {{
+                    let prevCount = document.querySelectorAll('*').length;
+                    let stableChecks = 0;
+                    const requiredStableChecks = 3;  // нужно 3 проверки подряд без изменений
+                    
+                    const check = () => {{
+                        const currCount = document.querySelectorAll('*').length;
+                        const change = Math.abs(currCount - prevCount) / Math.max(prevCount, 1);
+                        
+                        if (change < 0.15) {{
+                            stableChecks++;
+                            if (stableChecks >= requiredStableChecks) {{
+                                resolve(`DOM стабилен: ${{currCount}} элементов, ${{requiredStableChecks}} проверок подряд`);
+                                return;
+                            }}
+                        }} else {{
+                            stableChecks = 0;  // сброс, если DOM меняется
+                        }}
+                        
+                        prevCount = currCount;
+                        
+                        if (Date.now() - start < timeout) {{
+                            setTimeout(check, 500);  // проверка каждые 500 мс
+                        }} else {{
+                            resolve(`Таймаут: ${{currCount}} элементов`);
+                        }}
+                    }};
+                    
+                    setTimeout(check, 500);  // первая проверка через 500 мс
+                }});
+            }}
+        '''
+        result = js(script)
+        return str(result) if result else "✅ SPA загружена"
+    except Exception as e:
+        return f"❌ Ошибка ожидания SPA: {e}"
+
+def tool_wait_for_selector(selector: str, timeout: int = 15000) -> str:
+    """Ожидание появления элемента по CSS селектору"""
+    try:
+        script = f'''
+            (selector, timeout) => {{
+                const start = Date.now();
+                return new Promise((resolve, reject) => {{
+                    const check = () => {{
+                        const el = document.querySelector(selector);
+                        if (el) {{
+                            resolve(`Элемент найден: ${{selector}}`);
+                        }} else if (Date.now() - start > timeout) {{
+                            reject(`Таймаут: ${{selector}} не найден`);
+                        }} else {{
+                            setTimeout(check, 300);
+                        }}
+                    }};
+                    check();
+                }});
+            }}
+        '''
+        result = js(f'({script})("{selector}", {timeout})')
+        return str(result) if result else f"✅ {selector} найден"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
@@ -156,13 +226,6 @@ def tool_cleanup_tabs() -> str:
                 close_tab()
             return f"🧹 Закрыто {len(tabs)-1} лишних вкладок"
         return "✅ Уже одна вкладка"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
-def tool_wait_for_load() -> str:
-    try:
-        wait_for_load()
-        return "✅ Страница загружена"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
@@ -257,7 +320,7 @@ def tool_close_tab() -> str:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
-# НОВЫЕ ИНСТРУМЕНТЫ - ACCESSIBILITY TREE
+# ACCESSIBILITY TREE ИНСТРУМЕНТЫ
 # ============================================================
 
 def tool_get_accessibility_tree() -> str:
@@ -275,7 +338,6 @@ def tool_get_accessibility_tree() -> str:
                         state: 'active'
                     };
                     
-                    // Получаем доступное имя
                     if (el.hasAttribute('aria-label')) {
                         ax.name = el.getAttribute('aria-label');
                     } else if (el.hasAttribute('aria-labelledby')) {
@@ -288,7 +350,6 @@ def tool_get_accessibility_tree() -> str:
                         ax.name = ax.name.trim().slice(0, 100);
                     }
                     
-                    // Определяем интерактивность
                     const interactiveRoles = ['button', 'link', 'textbox', 'checkbox', 'radio', 'menuitem', 'tab', 'option', 'searchbox', 'slider', 'spinbutton', 'switch'];
                     const interactiveTags = ['button', 'a', 'input', 'select', 'textarea', 'details', 'summary'];
                     
@@ -296,7 +357,6 @@ def tool_get_accessibility_tree() -> str:
                         ax.interactive = true;
                     }
                     
-                    // Состояния
                     if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') {
                         ax.state = 'disabled';
                     } else if (el.getAttribute('aria-expanded') === 'true') {
@@ -338,7 +398,6 @@ def tool_get_accessibility_tree() -> str:
         if isinstance(result, dict):
             result = result.get('result', str(result))
         
-        # Форматируем вывод
         if result and result != '[]':
             try:
                 data = json.loads(result)
@@ -487,8 +546,9 @@ tools = [
     # Основные
     Tool(tool_new_tab),
     Tool(tool_goto_url),
+    Tool(tool_wait_for_spa),        # НОВЫЙ - для SPA
+    Tool(tool_wait_for_selector),   # НОВЫЙ - для ожидания элементов
     Tool(tool_cleanup_tabs),
-    Tool(tool_wait_for_load),
     Tool(tool_js),
     Tool(tool_capture_screenshot),
     Tool(tool_fill_input),
@@ -518,7 +578,7 @@ def create_browser_agent():
             tools=tools,
             max_iters=10,
         )
-        logger.info("✅ ReActV2 агент создан с AX Tree инструментами")
+        logger.info("✅ ReActV2 агент создан с SPA поддержкой")
         return agent
     except Exception as e:
         logger.error(f"❌ Ошибка создания агента: {e}")
@@ -669,14 +729,13 @@ set_viewport_global()
 
 async def start(update, context):
     await update.message.reply_text(
-        "🧠 **DSPy Браузерный агент с Accessibility Tree**\n\n"
+        "🧠 **DSPy Браузерный агент с SPA поддержкой**\n\n"
         "/dspy <запрос> — выполнить задачу\n"
         "/log — скачать логи\n"
         "/clean — закрыть лишние вкладки\n\n"
         "📌 **Примеры:**\n"
-        "/dspy открой x.com и покажи структуру страницы\n"
-        "/dspy найди на x.com твиты про Трампа\n"
-        "/dspy покажи все кнопки на странице"
+        "/dspy открой x.com и покажи твиты про Трампа\n"
+        "/dspy открой google.com и сделай скриншот"
     )
 
 async def log(update, context):
@@ -709,7 +768,7 @@ async def dspy_command(update, context):
         return
     
     if not context.args:
-        await update.message.reply_text("Пример: /dspy открой x.com и покажи структуру")
+        await update.message.reply_text("Пример: /dspy открой x.com и покажи твиты про Трампа")
         return
     
     query = " ".join(context.args)
@@ -763,9 +822,9 @@ def main():
     app.add_handler(CommandHandler("clean", clean_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
-    logger.info("🚀 Бот запущен с Accessibility Tree!")
+    logger.info("🚀 Бот запущен с SPA поддержкой!")
     logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
-    logger.info(f"📦 Инструментов: {len(tools)} (включая AX Tree)")
+    logger.info(f"📦 Инструментов: {len(tools)} (включая SPA + AX Tree)")
     app.run_polling()
 
 if __name__ == "__main__":
