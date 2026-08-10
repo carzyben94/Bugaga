@@ -17,7 +17,7 @@ from PIL import Image
 
 # DSPy импорты
 import dspy
-from dspy import ChainOfThought, Predict, Module, InputField, OutputField, Signature
+from dspy import ChainOfThought, Module, InputField, OutputField, Signature
 
 warnings.filterwarnings("ignore")
 
@@ -70,61 +70,38 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPY ИНТЕГРАЦИЯ
+# DSPy ИНТЕГРАЦИЯ (ИСПРАВЛЕННАЯ)
 # ============================================================
 
 class AgnesLM(dspy.BaseLM):
-    """Адаптер для Agnes AI, соответствующий DSPy."""
+    """Адаптер для Agnes AI"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
         self.kwargs = kwargs
-        # Вызываем super() с правильными параметрами
         super().__init__(model=model, model_type="chat", **kwargs)
+        self.provider = "agnes-ai"
     
-    def forward(self, prompt=None, messages=None, **kwargs):
-        """
-        Основной метод, который DSPy вызывает для получения ответа.
-        ДОЛЖЕН возвращать list[str]!
-        """
+    def basic_request(self, prompt, **kwargs):
+        """Базовый запрос"""
         if not self.api_key:
-            logger.error("❌ AGNES_API_KEY не задан!")
             return ["Ошибка: API ключ не задан"]
         
-        # 1. Подготовка сообщений
-        if messages:
-            # Преобразуем сообщения DSPy в формат Agnes AI
-            api_messages = []
-            for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                api_messages.append({"role": role, "content": content})
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
-        
-        # 2. Отправка запроса к Agnes AI
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        # Объединяем параметры
         params = {**self.kwargs, **kwargs}
-        temperature = params.get("temperature", 0.3)
-        max_tokens = params.get("max_tokens", 2000)
-        
         payload = {
             "model": self.model,
-            "messages": api_messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": params.get("temperature", 0.3),
+            "max_tokens": params.get("max_tokens", 2000)
         }
         
         try:
-            # Логируем запрос
-            logger.debug(f"📤 DSPy запрос к {self.model}: {api_messages[-1]['content'][:100]}...")
-            
             with httpx.Client(timeout=45.0) as client:
                 response = client.post(
                     "https://apihub.agnes-ai.com/v1/chat/completions",
@@ -133,53 +110,36 @@ class AgnesLM(dspy.BaseLM):
                 )
                 response.raise_for_status()
                 data = response.json()
-                
-                # 3. ВАЖНО: возвращаем СПИСОК строк (как требует DSPy)
                 result = data["choices"][0]["message"]["content"]
-                logger.debug(f"📥 DSPy ответ: {result[:100]}...")
                 return [result]
-                
-        except httpx.TimeoutException:
-            logger.error("❌ DSPy: таймаут 45 секунд")
-            return ["Ошибка: таймаут при обращении к Agnes AI"]
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ DSPy: HTTP ошибка {e.response.status_code}")
-            return [f"Ошибка API: {e.response.status_code}"]
         except Exception as e:
             logger.error(f"❌ DSPy ошибка: {e}")
             return [f"Ошибка: {str(e)}"]
+    
+    def __call__(self, prompt, **kwargs):
+        return self.basic_request(prompt, **kwargs)
 
-# ============================================================
-# DSPy СИГНАТУРЫ
-# ============================================================
-
+# Сигнатуры
 class BrowserTask(Signature):
-    """Сигнатура для генерации кода браузерной автоматизации"""
-    task = InputField(desc="Задача пользователя на естественном языке")
-    context = InputField(desc="Контекст текущей страницы (URL, заголовок)")
-    code = OutputField(desc="Код на Python с использованием browser-harness функций")
-    explanation = OutputField(desc="Краткое объяснение действий на русском")
+    task = InputField(desc="Задача пользователя")
+    context = InputField(desc="Контекст страницы")
+    code = OutputField(desc="Код на Python")
+    explanation = OutputField(desc="Объяснение")
 
 class ImageEnhanceTask(Signature):
-    """Сигнатура для улучшения промпта генерации изображения"""
-    prompt = InputField(desc="Описание фона от пользователя")
-    image_info = InputField(desc="Информация об изображении (размер, формат)")
-    enhanced_prompt = OutputField(desc="Улучшенный промпт на английском")
-    style = OutputField(desc="Рекомендуемый стиль (realistic, artistic, etc)")
+    prompt = InputField(desc="Описание фона")
+    image_info = InputField(desc="Информация об изображении")
+    enhanced_prompt = OutputField(desc="Улучшенный промпт")
+    style = OutputField(desc="Стиль")
 
 class AnalysisTask(Signature):
-    """Сигнатура для анализа страницы"""
-    query = InputField(desc="Что нужно найти на странице")
+    query = InputField(desc="Что нужно найти")
     content = InputField(desc="Содержимое страницы")
-    answer = OutputField(desc="Ответ на вопрос пользователя")
-    confidence = OutputField(desc="Уверенность в ответе (0-1)")
+    answer = OutputField(desc="Ответ")
+    confidence = OutputField(desc="Уверенность (0-1)")
 
-# ============================================================
-# DSPy МОДУЛИ
-# ============================================================
-
+# Модули
 class BrowserAgent(Module):
-    """Агент для генерации кода браузерной автоматизации"""
     def __init__(self):
         super().__init__()
         self.generate_code = ChainOfThought(BrowserTask)
@@ -188,7 +148,6 @@ class BrowserAgent(Module):
         return self.generate_code(task=task, context=context)
 
 class ImageEnhancer(Module):
-    """Модуль для улучшения промптов изображений"""
     def __init__(self):
         super().__init__()
         self.enhance = ChainOfThought(ImageEnhanceTask)
@@ -197,7 +156,6 @@ class ImageEnhancer(Module):
         return self.enhance(prompt=prompt, image_info=image_info)
 
 class PageAnalyzer(Module):
-    """Модуль для анализа содержимого страницы"""
     def __init__(self):
         super().__init__()
         self.analyze = ChainOfThought(AnalysisTask)
@@ -220,7 +178,6 @@ if AGNES_API_KEY:
         dspy.configure(lm=lm)
         logger.info("✅ DSPy настроен с Agnes AI")
         
-        # Создаем экземпляры модулей для повторного использования
         browser_agent = BrowserAgent()
         image_enhancer = ImageEnhancer()
         page_analyzer = PageAnalyzer()
@@ -597,12 +554,9 @@ async def ask_agnes_dspy(messages):
     try:
         # Извлекаем пользовательский запрос
         user_query = ""
-        system_prompt = ""
         for msg in messages:
             if msg.get("role") == "user":
                 user_query = msg.get("content", "")
-            elif msg.get("role") == "system":
-                system_prompt = msg.get("content", "")
         
         if not user_query:
             return "❌ Нет запроса для обработки"
@@ -616,19 +570,29 @@ async def ask_agnes_dspy(messages):
         
         # Генерируем код через DSPy
         logger.info(f"🧠 DSPy обрабатывает: {user_query}")
+        
         result = browser_agent(task=user_query, context=context)
         
-        # Формируем ответ
-        if hasattr(result, 'code') and result.code:
-            response = f"```python\n{result.code}\n```\n\n💡 {result.explanation}"
-            logger.info(f"✅ DSPy сгенерировал код")
-            return response
+        # Извлекаем результат
+        if hasattr(result, 'code'):
+            code = result.code
+            explanation = getattr(result, 'explanation', '')
         else:
-            logger.warning("⚠️ DSPy не сгенерировал код")
-            return await ask_agnes_fallback(messages)
+            code = str(result)
+            explanation = ""
+        
+        if code and "```python" not in code:
+            response = f"```python\n{code}\n```\n\n💡 {explanation}"
+        else:
+            response = code
+        
+        logger.info(f"✅ DSPy сгенерировал ответ")
+        return response
             
     except Exception as e:
-        logger.error(f"❌ DSPy ошибка: {e}, использую fallback")
+        logger.error(f"❌ DSPy ошибка: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return await ask_agnes_fallback(messages)
 
 async def ask_agnes_fallback(messages):
