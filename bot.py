@@ -18,7 +18,7 @@ from PIL import Image
 
 # DSPy импорты
 import dspy
-from dspy import ChainOfThought, Module, InputField, OutputField, Signature, settings, Tool
+from dspy import ChainOfThought, Module, InputField, OutputField, Signature, settings
 
 warnings.filterwarnings("ignore")
 
@@ -142,35 +142,36 @@ class AgnesLM(dspy.LM):
     async def aforward(self, prompt=None, messages=None, **kwargs):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
-# Сигнатуры
+# ============================================================
+# СИГНАТУРА С ФУНКЦИЯМИ БРАУЗЕРА
+# ============================================================
+
 class BrowserTask(Signature):
+    """Ты агент с доступом к браузеру. Используй эти функции:
+    
+    - new_tab() - открыть вкладку
+    - goto_url(url) - перейти на URL
+    - wait_for_load() - ждать загрузку страницы
+    - js(expression) - выполнить JavaScript
+    - http_get(url) - HTTP запрос
+    - capture_screenshot(filename) - скриншот
+    - fill_input(selector, text) - заполнить поле ввода
+    - click_at_xy(x, y) - кликнуть по координатам
+    - type_text(text) - ввести текст
+    - press_key(key) - нажать клавишу
+    - scroll(dy, dx) - прокрутить страницу
+    - page_info() - получить информацию о странице
+    - list_tabs() - список всех вкладок
+    - current_tab() - ID текущей вкладки
+    - switch_tab(id) - переключиться на вкладку
+    - close_tab() - закрыть текущую вкладку
+    
+    Пример: goto_url('https://google.com/search?q=test')
+    """
     task = InputField(desc="Задача пользователя")
     context = InputField(desc="Контекст страницы")
-    code = OutputField(desc="Код на Python")
+    code = OutputField(desc="Код на Python с использованием браузера")
     explanation = OutputField(desc="Объяснение")
-
-# ============================================================
-# ИНСТРУМЕНТЫ ДЛЯ DSPy
-# ============================================================
-
-tools = [
-    Tool(name="new_tab", description="Открыть новую вкладку", fn=new_tab),
-    Tool(name="goto_url", description="Перейти на URL", fn=lambda url: (goto_url(url), wait_for_load())[1]),
-    Tool(name="wait_for_load", description="Дождаться загрузки страницы", fn=wait_for_load),
-    Tool(name="js", description="Выполнить JavaScript на странице", fn=js),
-    Tool(name="http_get", description="Выполнить HTTP GET запрос", fn=http_get),
-    Tool(name="capture_screenshot", description="Сделать скриншот", fn=lambda path=None: capture_screenshot(path=path or f"/app/screenshots/{int(time.time())}.png")),
-    Tool(name="fill_input", description="Заполнить поле ввода", fn=fill_input),
-    Tool(name="click_at_xy", description="Кликнуть по координатам", fn=click_at_xy),
-    Tool(name="type_text", description="Ввести текст", fn=type_text),
-    Tool(name="press_key", description="Нажать клавишу", fn=press_key),
-    Tool(name="scroll", description="Прокрутить страницу", fn=scroll),
-    Tool(name="page_info", description="Получить информацию о странице", fn=page_info),
-    Tool(name="list_tabs", description="Список всех вкладок", fn=list_tabs),
-    Tool(name="current_tab", description="ID текущей вкладки", fn=current_tab),
-    Tool(name="switch_tab", description="Переключиться на вкладку по ID", fn=switch_tab),
-    Tool(name="close_tab", description="Закрыть текущую вкладку", fn=close_tab),
-]
 
 # ============================================================
 # АГЕНТ
@@ -179,12 +180,9 @@ tools = [
 class BrowserAgent(Module):
     def __init__(self):
         super().__init__()
-        self.tools = tools
         self.generate = ChainOfThought(BrowserTask)
     
     def forward(self, task, context=""):
-        tools_desc = "\n".join([f"• {tool.name}: {tool.description}" for tool in self.tools])
-        context = f"{context}\n\nДоступные инструменты:\n{tools_desc}\n\nИспользуй их для работы с браузером."
         return self.generate(task=task, context=context)
 
 # ============================================================
