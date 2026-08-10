@@ -920,6 +920,10 @@ async def images(update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
+# ============================================================
+# ОСНОВНЫЕ КОМАНДЫ (ИСПРАВЛЕННЫЕ - ВСЁ В ОДНОМ СООБЩЕНИИ)
+# ============================================================
+
 async def ask(update, context):
     if not context.args:
         await update.message.reply_text("Пример: /ask сделай скриншот google.com")
@@ -945,26 +949,34 @@ async def ask(update, context):
         if "```python" in response:
             code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
             code = code_match.group(1) if code_match else response
+            
+            # Логируем код в лог-файл
+            logger.info(f"📝 Сгенерированный код для /ask:\n{code}")
 
-            await status_msg.edit_text("⚙️ Выполняю код...")
+            # ШАГ 1
+            await status_msg.edit_text("⚙️ Шаг 1/2: Генерирую код...")
+            
+            # Выполняем код
             output, success = execute_code(code)
 
+            # ШАГ 2
+            await status_msg.edit_text("⚙️ Шаг 2/2: Выполняю код...")
+
             if not success:
-                await status_msg.edit_text(f"❌ {output}")
+                await status_msg.edit_text(f"❌ Ошибка: {output}")
             else:
+                # ФИНАЛ: Результат в том же сообщении
                 logger.info(f"✅ Успешное выполнение для {username}")
-                await status_msg.edit_text(f"✅ Результат:\n{output[:4000]}")
+                output_escaped = escape_markdown(output[:4000], version=2)
+                await status_msg.edit_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
         else:
             logger.info(f"💬 Ответ без кода для {username}: {response[:100]}...")
-            await status_msg.edit_text(response[:4000])
+            response_escaped = escape_markdown(response[:4000], version=2)
+            await status_msg.edit_text(response_escaped, parse_mode='MarkdownV2')
 
     except Exception as e:
         logger.error(f"❌ Ошибка в /ask для {username}: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# DSPy КОМАНДЫ (ИСПРАВЛЕННЫЕ)
-# ============================================================
 
 async def dspy_command(update, context):
     """Использовать DSPy напрямую"""
@@ -980,7 +992,7 @@ async def dspy_command(update, context):
     username = update.effective_user.username or "unknown"
     logger.info(f"🧠 {username} DSPy запрос: {query}")
     
-    status_msg = await update.message.reply_text("🧠 DSPy думает...")
+    status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
         try:
@@ -995,22 +1007,27 @@ async def dspy_command(update, context):
             await status_msg.edit_text("❌ DSPy вернул пустой результат")
             return
         
-        # Экранируем специальные символы для Markdown
-        code_escaped = escape_markdown(result.code, version=2)
-        explanation_escaped = escape_markdown(result.explanation, version=2)
+        # Логируем код в лог-файл
+        logger.info(f"📝 Сгенерированный код:\n{result.code}")
         
-        response = f"📝 **Код:**\n```python\n{code_escaped}\n```\n\n💡 **Объяснение:**\n{explanation_escaped}"
-        await status_msg.edit_text(response, parse_mode='MarkdownV2')
+        # ШАГ 1
+        await status_msg.edit_text("⚙️ Шаг 1/2: Генерирую код...")
         
+        # Выполняем код
         if hasattr(result, 'code') and result.code:
-            await update.message.reply_text("⚙️ Выполняю код...")
+            # ШАГ 2
+            await status_msg.edit_text("⚙️ Шаг 2/2: Выполняю код...")
+            
             output, success = execute_code(result.code)
+            
             if success:
-                # Экранируем вывод для безопасности
-                output_escaped = escape_markdown(output[:1000], version=2)
-                await update.message.reply_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
+                # ФИНАЛ: Результат в том же сообщении
+                output_escaped = escape_markdown(output[:4000], version=2)
+                await status_msg.edit_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
             else:
-                await update.message.reply_text(f"❌ Ошибка выполнения:\n{output}")
+                await status_msg.edit_text(f"❌ Ошибка: {output}")
+        else:
+            await status_msg.edit_text("❌ Нет кода для выполнения")
                 
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
