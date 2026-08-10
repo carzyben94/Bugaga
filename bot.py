@@ -154,18 +154,16 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Ответ на задачу")
 
 # ============================================================
-# ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА
+# ВСЕ ИНСТРУМЕНТЫ BROWSER_HARNESS
 # ============================================================
 
-def safe_js(expression: str) -> str:
-    """Выполнить JavaScript на странице"""
+def tool_new_tab() -> str:
+    """Открыть новую вкладку"""
     try:
-        result = js(expression)
-        if isinstance(result, dict):
-            return str(result.get('result', result))
-        return str(result)
+        new_tab()
+        return "✅ Новая вкладка открыта"
     except Exception as e:
-        return f"❌ Ошибка JavaScript: {e}"
+        return f"❌ Ошибка: {e}"
 
 def tool_goto_url(url: str) -> str:
     """Перейти на URL и дождаться загрузки"""
@@ -176,16 +174,30 @@ def tool_goto_url(url: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
+def tool_wait_for_load() -> str:
+    """Дождаться загрузки страницы"""
+    try:
+        wait_for_load()
+        return "✅ Страница загружена"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
 def tool_js(expression: str) -> str:
-    """Выполнить JavaScript на странице. Используй для получения данных со страницы."""
-    return safe_js(expression)
+    """Выполнить JavaScript на странице"""
+    try:
+        result = js(expression)
+        if isinstance(result, dict):
+            return str(result.get('result', result))
+        return str(result) if result is not None else "✅ JavaScript выполнен (нет результата)"
+    except Exception as e:
+        return f"❌ Ошибка JavaScript: {e}"
 
 def tool_http_get(url: str) -> str:
     """Выполнить HTTP GET запрос"""
     try:
         return http_get(url)
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ Ошибка HTTP: {e}"
 
 def tool_capture_screenshot(filename: str = None) -> str:
     """Сделать скриншот страницы"""
@@ -199,6 +211,46 @@ def tool_capture_screenshot(filename: str = None) -> str:
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
+def tool_fill_input(selector: str, text: str) -> str:
+    """Заполнить поле ввода по CSS селектору"""
+    try:
+        fill_input(selector, text)
+        return f"✅ Заполнено: {selector} -> {text}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_click_at_xy(x: int, y: int) -> str:
+    """Кликнуть по координатам"""
+    try:
+        click_at_xy(x, y)
+        return f"✅ Клик по ({x}, {y})"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_type_text(text: str) -> str:
+    """Ввести текст"""
+    try:
+        type_text(text)
+        return f"✅ Введено: {text}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_press_key(key: str) -> str:
+    """Нажать клавишу"""
+    try:
+        press_key(key)
+        return f"✅ Нажата клавиша: {key}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_scroll(dx: int, dy: int) -> str:
+    """Прокрутить страницу"""
+    try:
+        scroll(dx, dy)
+        return f"✅ Прокрутка на ({dx}, {dy})"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
 def tool_page_info() -> str:
     """Получить информацию о странице (URL, Title)"""
     try:
@@ -206,6 +258,42 @@ def tool_page_info() -> str:
         return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
+
+def tool_list_tabs() -> str:
+    """Список всех открытых вкладок"""
+    try:
+        tabs = list_tabs()
+        return f"Вкладки: {tabs}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_current_tab() -> str:
+    """ID текущей вкладки"""
+    try:
+        tab = current_tab()
+        return f"Текущая вкладка: {tab}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_switch_tab(tab_id: int) -> str:
+    """Переключиться на вкладку по ID"""
+    try:
+        switch_tab(tab_id)
+        return f"✅ Переключился на вкладку {tab_id}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_close_tab() -> str:
+    """Закрыть текущую вкладку"""
+    try:
+        close_tab()
+        return "✅ Вкладка закрыта"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+# ============================================================
+# ДОПОЛНИТЕЛЬНЫЕ УДОБНЫЕ ИНСТРУМЕНТЫ
+# ============================================================
 
 def tool_get_text() -> str:
     """Получить весь текст на странице"""
@@ -215,40 +303,42 @@ def tool_get_text() -> str:
             text = result.get('result', str(result))
         else:
             text = str(result)
-        return text[:5000] if text else "❌ Текст не найден"
+        if text and len(text) > 10:
+            return text[:5000]
+        return "❌ Текст не найден или страница пуста"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
 def tool_get_links() -> str:
     """Получить все ссылки на странице"""
     try:
-        result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href)')
-        if isinstance(result, list):
+        result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
+        if isinstance(result, list) and result:
             links = [str(item) for item in result if item]
-            return f"Ссылки: {links}" if links else "❌ Ссылок не найдено"
-        return f"❌ Ошибка: {result}"
+            return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
+        return "❌ Ссылок не найдено"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
 def tool_get_buttons() -> str:
     """Получить все кнопки на странице"""
     try:
-        result = js('() => Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value)')
-        if isinstance(result, list):
+        result = js('() => Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())')
+        if isinstance(result, list) and result:
             buttons = [str(item).strip() for item in result if item and str(item).strip()]
-            return f"Кнопки: {buttons}" if buttons else "❌ Кнопок не найдено"
-        return f"❌ Ошибка: {result}"
+            return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
+        return "❌ Кнопок не найдено"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
 def tool_get_headings() -> str:
     """Получить все заголовки на странице (h1-h6)"""
     try:
-        result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => el.innerText)')
-        if isinstance(result, list):
+        result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
+        if isinstance(result, list) and result:
             headings = [str(item).strip() for item in result if item and str(item).strip()]
-            return f"Заголовки: {headings}" if headings else "❌ Заголовков не найдено"
-        return f"❌ Ошибка: {result}"
+            return f"Заголовки:\n" + "\n".join(headings)
+        return "❌ Заголовков не найдено"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
@@ -279,57 +369,63 @@ def tool_get_accessibility_text() -> str:
                         });
                     }
                 });
-                return JSON.stringify(texts.slice(0, 30));
+                return JSON.stringify(texts.slice(0, 50));
             }
         ''')
         if isinstance(result, dict):
             return result.get('result', str(result))
-        return str(result)
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
-def tool_find_by_text(text: str) -> str:
-    """Найти элемент по тексту и вернуть его информацию"""
-    try:
-        result = js(f'''
-            () => {{
-                const elements = document.querySelectorAll('*');
-                for (const el of elements) {{
-                    const elText = el.innerText || el.textContent || '';
-                    if (elText.trim() === '{text}') {{
-                        return {{
-                            tag: el.tagName,
-                            id: el.id || '',
-                            classes: el.className || '',
-                            text: elText.trim()
-                        }};
-                    }}
-                }}
-                return null;
-            }}
-        ''')
-        if result and result != 'null':
-            return f"Найден: {result}"
-        return f"❌ Элемент с текстом '{text}' не найден"
+        if result and result != '[]':
+            return f"Доступный текст:\n{result}"
+        return "❌ Доступный текст не найден"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
-# СОЗДАЕМ ИНСТРУМЕНТЫ (БЕЗ description)
+# ПОИСК НОВОСТЕЙ
+# ============================================================
+
+def tool_search_news(query: str) -> str:
+    """Поиск новостей по запросу через Google News RSS"""
+    try:
+        import feedparser
+        url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+        feed = feedparser.parse(url)
+        if feed.entries:
+            results = []
+            for entry in feed.entries[:5]:
+                results.append(f"• {entry.title}\n  {entry.link}")
+            return f"Новости о {query}:\n\n" + "\n\n".join(results)
+        return "❌ Новости не найдены"
+    except Exception as e:
+        return f"❌ Ошибка поиска новостей: {e}"
+
+# ============================================================
+# ВСЕ ИНСТРУМЕНТЫ
 # ============================================================
 
 tools = [
+    Tool(tool_new_tab),
     Tool(tool_goto_url),
+    Tool(tool_wait_for_load),
     Tool(tool_js),
     Tool(tool_http_get),
     Tool(tool_capture_screenshot),
+    Tool(tool_fill_input),
+    Tool(tool_click_at_xy),
+    Tool(tool_type_text),
+    Tool(tool_press_key),
+    Tool(tool_scroll),
     Tool(tool_page_info),
+    Tool(tool_list_tabs),
+    Tool(tool_current_tab),
+    Tool(tool_switch_tab),
+    Tool(tool_close_tab),
     Tool(tool_get_text),
     Tool(tool_get_links),
     Tool(tool_get_buttons),
     Tool(tool_get_headings),
     Tool(tool_get_accessibility_text),
-    Tool(tool_find_by_text),
+    Tool(tool_search_news),
 ]
 
 # ============================================================
@@ -352,17 +448,28 @@ def create_browser_agent():
         # Fallback: пробуем без Tool
         try:
             tools_fallback = [
+                tool_new_tab,
                 tool_goto_url,
+                tool_wait_for_load,
                 tool_js,
                 tool_http_get,
                 tool_capture_screenshot,
+                tool_fill_input,
+                tool_click_at_xy,
+                tool_type_text,
+                tool_press_key,
+                tool_scroll,
                 tool_page_info,
+                tool_list_tabs,
+                tool_current_tab,
+                tool_switch_tab,
+                tool_close_tab,
                 tool_get_text,
                 tool_get_links,
                 tool_get_buttons,
                 tool_get_headings,
                 tool_get_accessibility_text,
-                tool_find_by_text,
+                tool_search_news,
             ]
             
             agent = ReActV2(
@@ -755,10 +862,7 @@ async def ask_agnes_dspy(messages):
         logger.info(f"🧠 DSPy обрабатывает: {user_question}")
         
         # Вызываем агента
-        if hasattr(browser_agent, 'forward'):
-            result = browser_agent(question=user_question)
-        else:
-            result = browser_agent(question=user_question)
+        result = browser_agent(question=user_question)
         
         # Извлекаем ответ
         answer = getattr(result, 'answer', str(result))
@@ -948,11 +1052,7 @@ async def dspy_command(update, context):
     
     try:
         # Вызываем агента
-        if hasattr(browser_agent, 'forward'):
-            result = browser_agent(question=query)
-        else:
-            result = browser_agent(question=query)
-        
+        result = browser_agent(question=query)
         answer = getattr(result, 'answer', str(result))
         
         if answer and answer.strip():
