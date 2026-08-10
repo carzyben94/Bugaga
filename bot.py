@@ -71,56 +71,63 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ - ИСПРАВЛЕННЫЙ LM
+# DSPy ИНТЕГРАЦИЯ - СОГЛАСНО ДОКУМЕНТАЦИИ DSPy 2.5+
 # ============================================================
 
 class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI - с полной обработкой ошибок и параметров"""
+    """Адаптер для Agnes AI в соответствии с DSPy 2.5+"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
+        # Сохраняем API ключ
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
-        self.kwargs = kwargs or {}
+        
+        # Вызываем super() с правильными параметрами как в документации
+        # dspy.LM автоматически создает self.kwargs с temperature, max_tokens и т.д.
+        super().__init__(
+            model=model, 
+            model_type="chat",
+            temperature=kwargs.get("temperature", 0.3),
+            max_tokens=kwargs.get("max_tokens", 2000),
+            cache=False
+        )
+        
         self.provider = "agnes-ai"
-        self.model_type = "chat"
-        self.forward_contract = "legacy"
-        self.cache = False
+        self.forward_contract = "legacy"  # Для совместимости с DSPy 2.5
     
-    def _call_agnes(self, messages, **kwargs):
-        """Непосредственный вызов Agnes API с обработкой ошибок"""
+    def forward(self, prompt=None, messages=None, **kwargs):
+        """Метод forward для DSPy. Возвращает список строк."""
         if not self.api_key:
             logger.error("❌ AGNES_API_KEY не задан")
             return ["Ошибка: API ключ не задан"]
         
+        # Используем self.kwargs от super() для параметров
+        params = {**self.kwargs, **kwargs}
+        
+        # Подготовка сообщений
+        if messages:
+            api_messages = messages
+        else:
+            api_messages = [{"role": "user", "content": prompt or ""}]
+        
+        # Формируем запрос к Agnes AI
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Используем параметры из self.kwargs
+        payload = {
+            "model": self.model,
+            "messages": api_messages,
+            "temperature": params.get("temperature", 0.3),
+            "max_tokens": params.get("max_tokens", 2000)
+        }
+        
+        logger.debug(f"📤 Запрос к Agnes: {payload['model']}, temp={payload['temperature']}, messages={len(api_messages)}")
+        
         try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            # Объединяем параметры с приоритетом у kwargs
-            params = {**self.kwargs, **kwargs}
-            
-            # Безопасное извлечение параметров с значениями по умолчанию
-            temperature = params.get("temperature", 0.3)
-            max_tokens = params.get("max_tokens", 2000)
-            
-            # Проверяем, что temperature - число
-            if not isinstance(temperature, (int, float)):
-                temperature = 0.3
-            if not isinstance(max_tokens, (int, float)):
-                max_tokens = 2000
-            
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": float(temperature),
-                "max_tokens": int(max_tokens)
-            }
-            
-            logger.debug(f"📤 Запрос к Agnes: {payload['model']}, temp={temperature}, messages={len(messages)}")
-            
-            with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            with httpx.Client(timeout=60.0) as client:
                 response = client.post(
                     "https://apihub.agnes-ai.com/v1/chat/completions",
                     headers=headers,
@@ -129,63 +136,29 @@ class AgnesLM(dspy.LM):
                 response.raise_for_status()
                 data = response.json()
                 
-                # Проверяем структуру ответа
                 if "choices" in data and len(data["choices"]) > 0:
-                    choice = data["choices"][0]
-                    if "message" in choice and "content" in choice["message"]:
-                        result = choice["message"]["content"]
-                        logger.debug(f"📥 Ответ от Agnes: {result[:100]}...")
-                        return [result]
-                    elif "text" in choice:
-                        result = choice["text"]
-                        logger.debug(f"📥 Ответ от Agnes: {result[:100]}...")
-                        return [result]
-                
-                # Если структура неожиданная
-                logger.error(f"❌ Неожиданный ответ от Agnes: {data}")
-                return ["Ошибка: неожиданный формат ответа от API"]
+                    result = data["choices"][0]["message"]["content"]
+                    logger.debug(f"📥 Ответ от Agnes: {result[:100]}...")
+                    return [result]
+                return ["Ошибка: пустой ответ от API"]
                 
         except httpx.TimeoutException:
             logger.error("❌ Таймаут запроса к Agnes API")
-            return ["Ошибка: таймаут запроса к Agnes API (60 секунд)"]
+            return ["Ошибка: таймаут запроса к Agnes API"]
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ HTTP ошибка: {e.response.status_code}")
-            try:
-                error_text = e.response.text[:200]
-            except:
-                error_text = "Нет данных"
-            return [f"Ошибка HTTP {e.response.status_code}: {error_text}"]
-        except httpx.RequestError as e:
-            logger.error(f"❌ Ошибка запроса: {e}")
-            return [f"Ошибка сети: {str(e)[:100]}"]
+            return [f"Ошибка HTTP {e.response.status_code}"]
         except Exception as e:
-            logger.error(f"❌ Неизвестная ошибка: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return [f"Ошибка: {str(e)[:200]}"]
+            logger.error(f"❌ Ошибка Agnes API: {e}")
+            return [f"Ошибка: {str(e)}"]
     
     def __call__(self, prompt=None, messages=None, **kwargs):
-        """Основной метод для вызова LM. Возвращает list[str]"""
-        try:
-            # Обрабатываем оба варианта - prompt и messages
-            if messages:
-                api_messages = messages
-            else:
-                api_messages = [{"role": "user", "content": prompt or ""}]
-            
-            # Передаем все kwargs дальше
-            return self._call_agnes(api_messages, **kwargs)
-        except Exception as e:
-            logger.error(f"❌ Ошибка в __call__: {e}")
-            return [f"Ошибка: {str(e)[:200]}"]
-    
-    def forward(self, prompt=None, messages=None, **kwargs):
-        """Метод forward для DSPy"""
-        return self.__call__(prompt=prompt, messages=messages, **kwargs)
+        """DSPy вызывает этот метод. Возвращает list[str]."""
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
     
     async def aforward(self, prompt=None, messages=None, **kwargs):
-        """Асинхронная версия forward"""
-        return self.__call__(prompt=prompt, messages=messages, **kwargs)
+        """Асинхронная версия forward."""
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # Сигнатуры
 class BrowserTask(Signature):
@@ -264,7 +237,14 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 # Настройка DSPy
 if AGNES_API_KEY:
     try:
-        lm = AgnesLM(api_key=AGNES_API_KEY)
+        # Создаем LM с параметрами
+        lm = AgnesLM(
+            api_key=AGNES_API_KEY,
+            temperature=0.3,
+            max_tokens=2000
+        )
+        
+        # Настраиваем глобальный LM через settings
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
         
