@@ -14,17 +14,36 @@ from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 
 warnings.filterwarnings("ignore")
 
-# Логи
+# ============================================================
+# НАСТРОЙКА
+# ============================================================
+
 LOGS_DIR = '/app/logs'
 SCREENSHOTS_DIR = '/app/screenshots'
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("dspy").setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
-# Пути
+# ============================================================
+# ПУТИ
+# ============================================================
+
 sys.path.insert(0, "browser-harness/src")
+
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, page_info, capture_screenshot,
     click_at_xy, type_text, press_key, scroll, js,
@@ -33,102 +52,259 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy АДАПТЕР
+# DSPy АДАПТЕР ДЛЯ AGNES AI
 # ============================================================
 
 class AgnesLM(dspy.LM):
+    """Адаптер для Agnes AI"""
+    
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
-        super().__init__(model=model, model_type="chat", temperature=0.3, max_tokens=2000, cache=False)
+        
+        super().__init__(
+            model=model, 
+            model_type="chat",
+            temperature=kwargs.get("temperature", 0.3),
+            max_tokens=kwargs.get("max_tokens", 2000),
+            cache=False
+        )
+        
         self.provider = "agnes-ai"
         self.forward_contract = "legacy"
     
     def forward(self, prompt=None, messages=None, **kwargs):
         if not self.api_key:
+            logger.error("❌ AGNES_API_KEY не задан")
             return ["Ошибка: API ключ не задан"]
         
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        params = {**self.kwargs, **kwargs}
+        
+        if messages:
+            api_messages = messages
+        else:
+            api_messages = [{"role": "user", "content": prompt or ""}]
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
         payload = {
             "model": self.model,
-            "messages": messages or [{"role": "user", "content": prompt or ""}],
-            "temperature": 0.3,
-            "max_tokens": 2000
+            "messages": api_messages,
+            "temperature": params.get("temperature", 0.3),
+            "max_tokens": params.get("max_tokens", 2000)
         }
         
         try:
             with httpx.Client(timeout=60.0) as client:
-                response = client.post("https://apihub.agnes-ai.com/v1/chat/completions", headers=headers, json=payload)
+                response = client.post(
+                    "https://apihub.agnes-ai.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
                 response.raise_for_status()
                 data = response.json()
-                return [data["choices"][0]["message"]["content"]] if data.get("choices") else ["Ошибка: пустой ответ"]
+                
+                if "choices" in data and len(data["choices"]) > 0:
+                    result = data["choices"][0]["message"]["content"]
+                    return [result]
+                return ["Ошибка: пустой ответ от API"]
+                
+        except httpx.TimeoutException:
+            return ["Ошибка: таймаут API (60 сек)"]
         except Exception as e:
+            logger.error(f"❌ Ошибка Agnes API: {e}")
             return [f"Ошибка: {str(e)}"]
+    
+    def __call__(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
+    
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА И ИНСТРУМЕНТЫ
+# СИГНАТУРА
 # ============================================================
 
 class BrowserTask(Signature):
+    """Ты агент с доступом к браузеру.
+    Используй инструменты для выполнения задач пользователя.
+    """
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
-def tool_new_tab():
-    try: new_tab(); return "✅ Новая вкладка открыта"
-    except Exception as e: return f"❌ Ошибка: {e}"
+# ============================================================
+# ИНСТРУМЕНТЫ
+# ============================================================
 
-def tool_goto_url(url: str):
-    try: goto_url(url); wait_for_load(); return f"✅ Перешел на {url}"
-    except Exception as e: return f"❌ Ошибка: {e}"
-
-def tool_capture_screenshot(filename: str = None):
+def tool_new_tab() -> str:
+    """Открыть новую вкладку"""
     try:
-        if not filename: filename = f"screenshot_{int(time.time())}.png"
-        capture_screenshot(path=os.path.join(SCREENSHOTS_DIR, filename))
-        return f"✅ Скриншот: {filename}"
-    except Exception as e: return f"❌ Ошибка: {e}"
+        new_tab()
+        return "✅ Новая вкладка открыта"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def tool_fill_input(selector: str, text: str):
-    try: fill_input(selector, text); return f"✅ Заполнено: {selector}"
-    except Exception as e: return f"❌ Ошибка: {e}"
+def tool_goto_url(url: str) -> str:
+    """Перейти на URL и дождаться загрузки"""
+    try:
+        goto_url(url)
+        wait_for_load()
+        return f"✅ Перешел на {url}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def tool_click_at_xy(x: int, y: int):
-    try: click_at_xy(x, y); return f"✅ Клик по ({x}, {y})"
-    except Exception as e: return f"❌ Ошибка: {e}"
+def tool_wait_for_load() -> str:
+    """Дождаться загрузки страницы"""
+    try:
+        wait_for_load()
+        return "✅ Страница загружена"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def tool_type_text(text: str):
-    try: type_text(text); return f"✅ Введено: {text}"
-    except Exception as e: return f"❌ Ошибка: {e}"
-
-def tool_press_key(key: str):
-    try: press_key(key); return f"✅ Нажата клавиша: {key}"
-    except Exception as e: return f"❌ Ошибка: {e}"
-
-def tool_scroll(dx: int, dy: int):
-    try: scroll(dx, dy); return f"✅ Прокрутка на ({dx}, {dy})"
-    except Exception as e: return f"❌ Ошибка: {e}"
-
-def tool_js(expression: str):
+def tool_js(expression: str) -> str:
+    """Выполнить JavaScript на странице"""
     try:
         result = js(expression)
-        return str(result.get('result', result)) if isinstance(result, dict) else str(result)
-    except Exception as e: return f"❌ Ошибка: {e}"
+        if isinstance(result, dict):
+            return str(result.get('result', result))
+        return str(result) if result is not None else "✅ JavaScript выполнен"
+    except Exception as e:
+        return f"❌ Ошибка JavaScript: {e}"
 
-def tool_page_info():
-    try: info = page_info(); return f"URL: {info.get('url')}\nTitle: {info.get('title')}"
-    except Exception as e: return f"❌ Ошибка: {e}"
+def tool_capture_screenshot(filename: str = None) -> str:
+    """Сделать скриншот страницы"""
+    try:
+        if not filename:
+            timestamp = int(time.time())
+            filename = f"screenshot_{timestamp}.png"
+        full_path = os.path.join(SCREENSHOTS_DIR, filename)
+        capture_screenshot(path=full_path)
+        return f"✅ Скриншот сохранен: {filename}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def tool_list_tabs():
-    try: return f"Вкладки: {list_tabs()}"
-    except Exception as e: return f"❌ Ошибка: {e}"
+def tool_fill_input(selector: str, text: str) -> str:
+    """Заполнить поле ввода по CSS селектору"""
+    try:
+        fill_input(selector, text)
+        return f"✅ Заполнено: {selector} -> {text}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def tool_switch_tab(tab_id: int):
-    try: switch_tab(tab_id); return f"✅ Переключился на {tab_id}"
-    except Exception as e: return f"❌ Ошибка: {e}"
+def tool_click_at_xy(x: int, y: int) -> str:
+    """Кликнуть по координатам"""
+    try:
+        click_at_xy(x, y)
+        return f"✅ Клик по ({x}, {y})"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def tool_close_tab():
-    try: close_tab(); return "✅ Вкладка закрыта"
-    except Exception as e: return f"❌ Ошибка: {e}"
+def tool_type_text(text: str) -> str:
+    """Ввести текст"""
+    try:
+        type_text(text)
+        return f"✅ Введено: {text}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_press_key(key: str) -> str:
+    """Нажать клавишу"""
+    try:
+        press_key(key)
+        return f"✅ Нажата клавиша: {key}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_scroll(dx: int, dy: int) -> str:
+    """Прокрутить страницу"""
+    try:
+        scroll(dx, dy)
+        return f"✅ Прокрутка на ({dx}, {dy})"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_page_info() -> str:
+    """Получить информацию о странице"""
+    try:
+        info = page_info()
+        return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_list_tabs() -> str:
+    """Список всех открытых вкладок"""
+    try:
+        tabs = list_tabs()
+        return f"Вкладки: {tabs}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_current_tab() -> str:
+    """ID текущей вкладки"""
+    try:
+        tab = current_tab()
+        return f"Текущая вкладка: {tab}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_switch_tab(tab_id: int) -> str:
+    """Переключиться на вкладку по ID"""
+    try:
+        switch_tab(tab_id)
+        return f"✅ Переключился на вкладку {tab_id}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def tool_close_tab() -> str:
+    """Закрыть текущую вкладку"""
+    try:
+        close_tab()
+        return "✅ Вкладка закрыта"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+# ============================================================
+# ВСЕ ИНСТРУМЕНТЫ
+# ============================================================
+
+tools = [
+    Tool(tool_new_tab),
+    Tool(tool_goto_url),
+    Tool(tool_wait_for_load),
+    Tool(tool_js),
+    Tool(tool_capture_screenshot),
+    Tool(tool_fill_input),
+    Tool(tool_click_at_xy),
+    Tool(tool_type_text),
+    Tool(tool_press_key),
+    Tool(tool_scroll),
+    Tool(tool_page_info),
+    Tool(tool_list_tabs),
+    Tool(tool_current_tab),
+    Tool(tool_switch_tab),
+    Tool(tool_close_tab),
+]
+
+# ============================================================
+# СОЗДАНИЕ АГЕНТА
+# ============================================================
+
+def create_browser_agent():
+    """Создать ReActV2 агента"""
+    try:
+        agent = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=10,
+        )
+        logger.info("✅ ReActV2 агент создан")
+        return agent
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания ReActV2 агента: {e}")
+        return None
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ
@@ -137,67 +313,127 @@ def tool_close_tab():
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+
 browser_agent = None
+
 if AGNES_API_KEY:
     try:
-        settings.configure(lm=AgnesLM(api_key=AGNES_API_KEY))
-        browser_agent = ReActV2(
-            signature=BrowserTask,
-            tools=[
-                Tool(tool_new_tab), Tool(tool_goto_url), Tool(tool_capture_screenshot),
-                Tool(tool_fill_input), Tool(tool_click_at_xy), Tool(tool_type_text),
-                Tool(tool_press_key), Tool(tool_scroll), Tool(tool_js),
-                Tool(tool_page_info), Tool(tool_list_tabs), Tool(tool_switch_tab),
-                Tool(tool_close_tab)
-            ],
-            max_iters=10
+        lm = AgnesLM(
+            api_key=AGNES_API_KEY,
+            temperature=0.3,
+            max_tokens=2000
         )
-        logger.info("✅ ReActV2 агент создан")
+        
+        settings.configure(lm=lm)
+        logger.info("✅ DSPy настроен с AgnesLM")
+        
+        browser_agent = create_browser_agent()
+        if browser_agent:
+            logger.info("✅ BrowserAgent инициализирован")
+        else:
+            logger.warning("⚠️ Не удалось создать агента")
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
+        browser_agent = None
+else:
+    logger.warning("⚠️ AGNES_API_KEY не задан, DSPy не инициализирован")
 
 # ============================================================
 # ЗАПУСК БРАУЗЕРА
 # ============================================================
 
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
-
 os.environ["BU_CDP_URL"] = "http://localhost:9222"
-ensure_daemon()
-logger.info("✅ Браузер готов")
+
+try:
+    ensure_daemon()
+    logger.info("✅ Браузер готов")
+except Exception as e:
+    logger.error(f"❌ Ошибка запуска браузера: {e}")
+    sys.exit(1)
 
 # ============================================================
 # КОМАНДЫ
 # ============================================================
 
 async def start(update, context):
-    await update.message.reply_text("🧠 **DSPy Браузерный агент**\n\n/dspy <запрос> — выполнить задачу\n/log — скачать логи")
+    await update.message.reply_text(
+        "🧠 **DSPy Браузерный агент**\n\n"
+        "/dspy <запрос> — выполнить задачу через агента\n"
+        "/log — скачать логи\n\n"
+        "📌 **Примеры:**\n"
+        "/dspy открыть google.com и сделать скриншот\n"
+        "/dspy найти новости о Трампе на BBC\n"
+        "/dspy перейти на сайт и показать заголовки"
+    )
 
 async def log(update, context):
     try:
-        with open(os.path.join(LOGS_DIR, 'bot.log'), 'rb') as f:
-            await update.message.reply_document(f, filename='bot.log')
+        log_file = os.path.join(LOGS_DIR, 'bot.log')
+        if not os.path.exists(log_file):
+            await update.message.reply_text("📭 Лог-файл не найден")
+            return
+        
+        with open(log_file, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename='bot.log',
+                caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
+            )
     except Exception as e:
-        await update.message.reply_text(f"❌ {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update, context):
+    """Обработчик команды /dspy"""
     if not browser_agent:
-        await update.message.reply_text("❌ DSPy не инициализирован")
+        await update.message.reply_text(
+            "❌ DSPy не инициализирован.\n"
+            "Проверьте AGNES_API_KEY"
+        )
         return
+    
     if not context.args:
-        await update.message.reply_text("Пример: /dspy открыть google.com и сделать скриншот")
+        await update.message.reply_text(
+            "📝 **Пример использования:**\n"
+            "/dspy открыть google.com и сделать скриншот",
+            parse_mode='Markdown'
+        )
         return
     
     query = " ".join(context.args)
-    msg = await update.message.reply_text("🧠 Думаю...")
+    username = update.effective_user.username or "unknown"
+    logger.info(f"🧠 {username} запросил: {query}")
+    
+    status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
+        # Вызываем агента
         result = browser_agent(question=query)
-        answer = getattr(result, 'answer', str(result))
-        await msg.edit_text(f"✅ {escape_markdown(answer[:4000], version=2)}", parse_mode='MarkdownV2')
+        
+        # 🔥 ПРАВИЛЬНАЯ ОБРАБОТКА ОТВЕТА
+        if isinstance(result, list):
+            answer = result[0] if result else "Пустой ответ"
+        elif hasattr(result, 'answer'):
+            answer = result.answer
+        else:
+            answer = str(result)
+        
+        if answer and answer.strip():
+            answer_escaped = escape_markdown(answer[:4000], version=2)
+            await status_msg.edit_text(
+                f"✅ **Результат:**\n{answer_escaped}",
+                parse_mode='MarkdownV2'
+            )
+        else:
+            await status_msg.edit_text("❌ Агент вернул пустой ответ")
+                
     except Exception as e:
-        await msg.edit_text(f"❌ {str(e)[:200]}")
+        logger.error(f"❌ DSPy ошибка: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
 # ЗАПУСК
@@ -205,11 +441,17 @@ async def dspy_command(update, context):
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("dspy", dspy_command))
-    logger.info("🚀 Запущен!")
-    app.run_polling()
+    
+    logger.info("🚀 Бот запущен!")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
+    logger.info(f"📁 Логи: {LOGS_DIR}")
+    logger.info(f"📸 Скриншоты: {SCREENSHOTS_DIR}")
+    
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
