@@ -2,6 +2,4 @@ python-telegram-bot>=22.8
 Pillow>=10.0.0
 websockets>=15.0.1
 httpx>=0.28.1
-browser-harness @ git+https://github.com/browser-use/browser-harness.git
-prime-agent-python-client>=0.2.0
 dspy>=2.0.0
