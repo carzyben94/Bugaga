@@ -485,17 +485,18 @@ set_viewport_global()
 
 async def start(update, context):
     await update.message.reply_text(
-        "🧠 **DSPy Браузерный агент**\n\n"
+        "🧠 *DSPy Браузерный агент*\n\n"
         "/dspy <запрос> — выполнить задачу через агента\n"
         "/tab — показать все открытые вкладки\n"
         "/switch <id> — переключиться на вкладку по ID\n"
         "/close — закрыть текущую вкладку\n"
         "/newtab — открыть новую вкладку\n"
         "/log — скачать логи\n\n"
-        "📌 **Примеры:**\n"
-        "/dspy открыть google.com и сделать скриншот\n"
+        "*Примеры:*\n"
+        "/dspy открыть google\\.com и сделать скриншот\n"
         "/dspy найти новости о Трампе на BBC\n"
-        "/dspy перейти на сайт и показать заголовки"
+        "/dspy перейти на сайт и показать заголовки",
+        parse_mode='MarkdownV2'
     )
 
 async def log(update, context):
@@ -525,8 +526,8 @@ async def tab_command(update, context):
             return
         
         # Форматируем вывод
-        result = "📑 **Открытые вкладки:**\n\n"
-        for i, tab in enumerate(tabs):
+        result = "📑 *Открытые вкладки:*\n\n"
+        for tab in tabs:
             # Получаем информацию о вкладке
             try:
                 # Переключаемся на вкладку чтобы получить информацию
@@ -534,21 +535,32 @@ async def tab_command(update, context):
                 info = page_info()
                 title = info.get('title', 'Без названия')[:50]
                 url = info.get('url', 'unknown')[:60]
-                marker = "👉 **ТЕКУЩАЯ**" if tab == current else f"ID: {tab}"
-                result += f"`{tab}` {marker}\n   📄 {title}\n   🔗 {url}\n\n"
-            except:
-                result += f"`{tab}` ID: {tab}\n   ❌ Недоступно\n\n"
+                
+                # Экранируем специальные символы для Markdown
+                title = escape_markdown(title, version=2)
+                url = escape_markdown(url, version=2)
+                
+                if tab == current:
+                    result += f"👉 *ТЕКУЩАЯ* \\(ID: `{tab}`\\)\n"
+                else:
+                    result += f"ID: `{tab}`\n"
+                result += f"   📄 {title}\n"
+                result += f"   🔗 {url}\n\n"
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось получить инфо для вкладки {tab}: {e}")
+                result += f"ID: `{tab}`\n"
+                result += f"   ❌ Недоступно\n\n"
         
         # Возвращаемся на текущую вкладку
         switch_tab(current)
         
         # Отправляем результат
         if len(result) > 4000:
-            result = result[:4000] + "\n\n... (обрезано)"
+            result = result[:4000] + "\n\n\\.\\.\\. \\(обрезано\\)"
         
         await update.message.reply_text(
             result,
-            parse_mode='Markdown'
+            parse_mode='MarkdownV2'
         )
         
     except Exception as e:
@@ -559,9 +571,10 @@ async def switch_command(update, context):
     """Переключиться на вкладку по ID"""
     if not context.args:
         await update.message.reply_text(
-            "📝 **Использование:**\n"
+            "📝 *Использование:*\n"
             "/switch <id_вкладки>\n\n"
-            "Сначала используйте /tab чтобы увидеть ID вкладок"
+            "Сначала используйте /tab чтобы увидеть ID вкладок",
+            parse_mode='MarkdownV2'
         )
         return
     
@@ -571,14 +584,14 @@ async def switch_command(update, context):
         
         # Получаем информацию о новой вкладке
         info = page_info()
-        title = info.get('title', 'Без названия')
-        url = info.get('url', 'unknown')
+        title = escape_markdown(info.get('title', 'Без названия'), version=2)
+        url = escape_markdown(info.get('url', 'unknown')[:100], version=2)
         
         await update.message.reply_text(
             f"✅ Переключился на вкладку `{tab_id}`\n"
             f"📄 {title}\n"
-            f"🔗 {url[:100]}",
-            parse_mode='Markdown'
+            f"🔗 {url}",
+            parse_mode='MarkdownV2'
         )
         
     except ValueError:
@@ -592,7 +605,10 @@ async def close_command(update, context):
     try:
         current = current_tab()
         close_tab()
-        await update.message.reply_text(f"✅ Вкладка `{current}` закрыта", parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ Вкладка `{current}` закрыта",
+            parse_mode='MarkdownV2'
+        )
     except Exception as e:
         logger.error(f"❌ Ошибка в /close: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
@@ -607,7 +623,7 @@ async def newtab_command(update, context):
         await update.message.reply_text(
             f"✅ Новая вкладка открыта\n"
             f"ID: `{current}`",
-            parse_mode='Markdown'
+            parse_mode='MarkdownV2'
         )
     except Exception as e:
         logger.error(f"❌ Ошибка в /newtab: {e}")
@@ -624,9 +640,9 @@ async def dspy_command(update, context):
     
     if not context.args:
         await update.message.reply_text(
-            "📝 **Пример использования:**\n"
-            "/dspy открыть google.com и сделать скриншот",
-            parse_mode='Markdown'
+            "📝 *Пример использования:*\n"
+            "/dspy открыть google\\.com и сделать скриншот",
+            parse_mode='MarkdownV2'
         )
         return
     
@@ -651,7 +667,7 @@ async def dspy_command(update, context):
         if answer and answer.strip():
             answer_escaped = escape_markdown(answer[:4000], version=2)
             await status_msg.edit_text(
-                f"✅ **Результат:**\n{answer_escaped}",
+                f"✅ *Результат:*\n{answer_escaped}",
                 parse_mode='MarkdownV2'
             )
         else:
