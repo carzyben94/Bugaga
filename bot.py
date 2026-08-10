@@ -16,9 +16,9 @@ from telegram.helpers import escape_markdown
 from promt import SYSTEM_PROMPT
 from PIL import Image
 
-# DSPy импорты
+# DSPy импорты для версии 3.3.0b1
 import dspy
-from dspy import Signature, InputField, OutputField, Module, settings, ReActV2
+from dspy import Signature, InputField, OutputField, Module, settings, ReActV2, Tool
 
 warnings.filterwarnings("ignore")
 
@@ -72,7 +72,7 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ
+# DSPy ИНТЕГРАЦИЯ (DSPy 3.3.0b1)
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -154,7 +154,7 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Ответ на задачу")
 
 # ============================================================
-# ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА
+# ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА (С ИСПОЛЬЗОВАНИЕМ Tool)
 # ============================================================
 
 def safe_js(expression: str) -> str:
@@ -242,7 +242,7 @@ def tool_get_buttons() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_get_headings() -> str:
-    """Получить все заголовки на странице"""
+    """Получить все заголовки на странице (h1-h6)"""
     try:
         result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => el.innerText)')
         if isinstance(result, list):
@@ -315,21 +315,21 @@ def tool_find_by_text(text: str) -> str:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
-# СОЗДАЕМ СПИСОК ИНСТРУМЕНТОВ
+# СОЗДАЕМ ИНСТРУМЕНТЫ ЧЕРЕЗ dspy.Tool
 # ============================================================
 
 tools = [
-    tool_goto_url,
-    tool_js,
-    tool_http_get,
-    tool_capture_screenshot,
-    tool_page_info,
-    tool_get_text,
-    tool_get_links,
-    tool_get_buttons,
-    tool_get_headings,
-    tool_get_accessibility_text,
-    tool_find_by_text,
+    Tool(name="goto_url", description="Перейти на URL и дождаться загрузки", fn=tool_goto_url),
+    Tool(name="js", description="Выполнить JavaScript на странице", fn=tool_js),
+    Tool(name="http_get", description="Выполнить HTTP GET запрос", fn=tool_http_get),
+    Tool(name="capture_screenshot", description="Сделать скриншот страницы", fn=tool_capture_screenshot),
+    Tool(name="page_info", description="Получить информацию о странице (URL, Title)", fn=tool_page_info),
+    Tool(name="get_text", description="Получить весь текст на странице", fn=tool_get_text),
+    Tool(name="get_links", description="Получить все ссылки на странице", fn=tool_get_links),
+    Tool(name="get_buttons", description="Получить все кнопки на странице", fn=tool_get_buttons),
+    Tool(name="get_headings", description="Получить все заголовки на странице (h1-h6)", fn=tool_get_headings),
+    Tool(name="get_accessibility_text", description="Получить доступный текст страницы через Accessibility Tree", fn=tool_get_accessibility_text),
+    Tool(name="find_by_text", description="Найти элемент по тексту", fn=tool_find_by_text),
 ]
 
 # ============================================================
@@ -339,19 +339,33 @@ tools = [
 def create_browser_agent():
     """Создать ReActV2 агента с отключенным JSON"""
     try:
-        # Отключаем нативный JSON через ChatAdapter
-        adapter = dspy.ChatAdapter(use_native_function_calling=False)
-        
+        # Для DSPy 3.3.0b1
         agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
             max_iters=10,
-            adapter=adapter  # Передаем адаптер
         )
         return agent
     except Exception as e:
-        logger.error(f"❌ Ошибка создания агента: {e}")
-        return None
+        logger.error(f"❌ Ошибка создания ReActV2 агента: {e}")
+        
+        # Fallback: пробуем без ReActV2
+        try:
+            from dspy import ChainOfThought, Module
+            
+            class SimpleAgent(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.generate = ChainOfThought(BrowserTask)
+                
+                def forward(self, question):
+                    return self.generate(question=question)
+            
+            logger.info("⚠️ Использую ChainOfThought как fallback")
+            return SimpleAgent()
+        except Exception as e2:
+            logger.error(f"❌ Fallback тоже не работает: {e2}")
+            return None
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ DSPy
@@ -376,9 +390,9 @@ if AGNES_API_KEY:
         
         browser_agent = create_browser_agent()
         if browser_agent:
-            logger.info("✅ ReActV2 агент с инструментами инициализирован (JSON отключен)")
+            logger.info("✅ BrowserAgent инициализирован")
         else:
-            logger.warning("⚠️ Не удалось создать ReActV2 агента")
+            logger.warning("⚠️ Не удалось создать агента")
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
@@ -712,10 +726,14 @@ async def ask_agnes_dspy(messages):
         if not user_question:
             return "❌ Нет вопроса для обработки"
         
-        logger.info(f"🧠 DSPy ReActV2 обрабатывает: {user_question}")
+        logger.info(f"🧠 DSPy обрабатывает: {user_question}")
         
-        # Вызываем ReActV2 агента
-        result = browser_agent(question=user_question)
+        # Вызываем агента
+        if hasattr(browser_agent, 'forward'):
+            result = browser_agent(question=user_question)
+        else:
+            # Если это SimpleAgent (fallback)
+            result = browser_agent(question=user_question)
         
         # Извлекаем ответ
         answer = getattr(result, 'answer', str(result))
@@ -726,7 +744,7 @@ async def ask_agnes_dspy(messages):
         return answer
             
     except Exception as e:
-        logger.error(f"❌ DSPy ReActV2 ошибка: {e}")
+        logger.error(f"❌ DSPy ошибка: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return await ask_agnes_fallback(messages)
@@ -773,7 +791,7 @@ async def start(update, context):
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш\n\n"
         "🧠 DSPy:\n"
-        "/dspy <запрос> — использовать DSPy ReActV2"
+        "/dspy <запрос> — использовать DSPy"
     )
 
 async def log(update, context):
@@ -862,7 +880,7 @@ async def ask(update, context):
 
     try:
         if browser_agent:
-            # Используем ReActV2 агента
+            # Используем агента
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
@@ -890,7 +908,7 @@ async def ask(update, context):
 
 async def dspy_command(update, context):
     if not browser_agent:
-        await update.message.reply_text("❌ DSPy ReActV2 не инициализирован. Проверьте AGNES_API_KEY")
+        await update.message.reply_text("❌ DSPy не инициализирован. Проверьте AGNES_API_KEY")
         return
     
     if not context.args:
@@ -899,13 +917,17 @@ async def dspy_command(update, context):
     
     query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
-    logger.info(f"🧠 {username} DSPy ReActV2 запрос: {query}")
+    logger.info(f"🧠 {username} DSPy запрос: {query}")
     
     status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
-        # Используем ReActV2 агента
-        result = browser_agent(question=query)
+        # Вызываем агента
+        if hasattr(browser_agent, 'forward'):
+            result = browser_agent(question=query)
+        else:
+            result = browser_agent(question=query)
+        
         answer = getattr(result, 'answer', str(result))
         
         if answer and answer.strip():
@@ -915,7 +937,7 @@ async def dspy_command(update, context):
             await status_msg.edit_text("❌ Агент вернул пустой ответ")
                 
     except Exception as e:
-        logger.error(f"❌ DSPy ReActV2 ошибка: {e}")
+        logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def clear_command(update, context):
@@ -1021,7 +1043,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
