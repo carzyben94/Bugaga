@@ -18,7 +18,7 @@ from PIL import Image
 
 # DSPy импорты
 import dspy
-from dspy import ChainOfThought, Module, InputField, OutputField, Signature, settings
+from dspy import ChainOfThought, Module, InputField, OutputField, Signature, settings, Tool
 
 warnings.filterwarnings("ignore")
 
@@ -72,19 +72,16 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ - СОГЛАСНО ДОКУМЕНТАЦИИ DSPy 2.5+
+# DSPy ИНТЕГРАЦИЯ
 # ============================================================
 
 class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI в соответствии с DSPy 2.5+"""
+    """Адаптер для Agnes AI"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
-        # Сохраняем API ключ
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
         
-        # Вызываем super() с правильными параметрами как в документации
-        # dspy.LM автоматически создает self.kwargs с temperature, max_tokens и т.д.
         super().__init__(
             model=model, 
             model_type="chat",
@@ -94,38 +91,31 @@ class AgnesLM(dspy.LM):
         )
         
         self.provider = "agnes-ai"
-        self.forward_contract = "legacy"  # Для совместимости с DSPy 2.5
+        self.forward_contract = "legacy"
     
     def forward(self, prompt=None, messages=None, **kwargs):
-        """Метод forward для DSPy. Возвращает список строк."""
         if not self.api_key:
             logger.error("❌ AGNES_API_KEY не задан")
             return ["Ошибка: API ключ не задан"]
         
-        # Используем self.kwargs от super() для параметров
         params = {**self.kwargs, **kwargs}
         
-        # Подготовка сообщений
         if messages:
             api_messages = messages
         else:
             api_messages = [{"role": "user", "content": prompt or ""}]
         
-        # Формируем запрос к Agnes AI
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
-        # Используем параметры из self.kwargs
         payload = {
             "model": self.model,
             "messages": api_messages,
             "temperature": params.get("temperature", 0.3),
             "max_tokens": params.get("max_tokens", 2000)
         }
-        
-        logger.debug(f"📤 Запрос к Agnes: {payload['model']}, temp={payload['temperature']}, messages={len(api_messages)}")
         
         try:
             with httpx.Client(timeout=60.0) as client:
@@ -139,26 +129,17 @@ class AgnesLM(dspy.LM):
                 
                 if "choices" in data and len(data["choices"]) > 0:
                     result = data["choices"][0]["message"]["content"]
-                    logger.debug(f"📥 Ответ от Agnes: {result[:100]}...")
                     return [result]
                 return ["Ошибка: пустой ответ от API"]
                 
-        except httpx.TimeoutException:
-            logger.error("❌ Таймаут запроса к Agnes API")
-            return ["Ошибка: таймаут запроса к Agnes API"]
-        except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP ошибка: {e.response.status_code}")
-            return [f"Ошибка HTTP {e.response.status_code}"]
         except Exception as e:
             logger.error(f"❌ Ошибка Agnes API: {e}")
             return [f"Ошибка: {str(e)}"]
     
     def __call__(self, prompt=None, messages=None, **kwargs):
-        """DSPy вызывает этот метод. Возвращает list[str]."""
         return self.forward(prompt=prompt, messages=messages, **kwargs)
     
     async def aforward(self, prompt=None, messages=None, **kwargs):
-        """Асинхронная версия forward."""
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # Сигнатуры
@@ -168,64 +149,43 @@ class BrowserTask(Signature):
     code = OutputField(desc="Код на Python")
     explanation = OutputField(desc="Объяснение")
 
-class ImageEnhanceTask(Signature):
-    prompt = InputField(desc="Описание фона")
-    image_info = InputField(desc="Информация об изображении")
-    enhanced_prompt = OutputField(desc="Улучшенный промпт")
-    style = OutputField(desc="Стиль")
+# ============================================================
+# ИНСТРУМЕНТЫ ДЛЯ DSPy
+# ============================================================
 
-class AnalysisTask(Signature):
-    query = InputField(desc="Что нужно найти")
-    content = InputField(desc="Содержимое страницы")
-    answer = OutputField(desc="Ответ")
-    confidence = OutputField(desc="Уверенность (0-1)")
+tools = [
+    Tool(name="new_tab", description="Открыть новую вкладку", fn=new_tab),
+    Tool(name="goto_url", description="Перейти на URL", fn=lambda url: (goto_url(url), wait_for_load())[1]),
+    Tool(name="wait_for_load", description="Дождаться загрузки страницы", fn=wait_for_load),
+    Tool(name="js", description="Выполнить JavaScript на странице", fn=js),
+    Tool(name="http_get", description="Выполнить HTTP GET запрос", fn=http_get),
+    Tool(name="capture_screenshot", description="Сделать скриншот", fn=lambda path=None: capture_screenshot(path=path or f"/app/screenshots/{int(time.time())}.png")),
+    Tool(name="fill_input", description="Заполнить поле ввода", fn=fill_input),
+    Tool(name="click_at_xy", description="Кликнуть по координатам", fn=click_at_xy),
+    Tool(name="type_text", description="Ввести текст", fn=type_text),
+    Tool(name="press_key", description="Нажать клавишу", fn=press_key),
+    Tool(name="scroll", description="Прокрутить страницу", fn=scroll),
+    Tool(name="page_info", description="Получить информацию о странице", fn=page_info),
+    Tool(name="list_tabs", description="Список всех вкладок", fn=list_tabs),
+    Tool(name="current_tab", description="ID текущей вкладки", fn=current_tab),
+    Tool(name="switch_tab", description="Переключиться на вкладку по ID", fn=switch_tab),
+    Tool(name="close_tab", description="Закрыть текущую вкладку", fn=close_tab),
+]
 
-# Модули с обработкой ошибок
+# ============================================================
+# АГЕНТ
+# ============================================================
+
 class BrowserAgent(Module):
     def __init__(self):
         super().__init__()
-        self.generate_code = ChainOfThought(BrowserTask)
+        self.tools = tools
+        self.generate = ChainOfThought(BrowserTask)
     
     def forward(self, task, context=""):
-        try:
-            return self.generate_code(task=task, context=context)
-        except Exception as e:
-            logger.error(f"❌ BrowserAgent ошибка: {e}")
-            # Возвращаем объект с полями по умолчанию
-            class Result:
-                code = f"# Ошибка: {str(e)[:200]}\nprint('Ошибка генерации кода')"
-                explanation = f"Ошибка при генерации: {str(e)[:200]}"
-            return Result()
-
-class ImageEnhancer(Module):
-    def __init__(self):
-        super().__init__()
-        self.enhance = ChainOfThought(ImageEnhanceTask)
-    
-    def forward(self, prompt, image_info=""):
-        try:
-            return self.enhance(prompt=prompt, image_info=image_info)
-        except Exception as e:
-            logger.error(f"❌ ImageEnhancer ошибка: {e}")
-            class Result:
-                enhanced_prompt = prompt
-                style = "realistic"
-            return Result()
-
-class PageAnalyzer(Module):
-    def __init__(self):
-        super().__init__()
-        self.analyze = ChainOfThought(AnalysisTask)
-    
-    def forward(self, query, content):
-        try:
-            return self.analyze(query=query, content=content)
-        except Exception as e:
-            logger.error(f"❌ PageAnalyzer ошибка: {e}")
-            class Result:
-                answer = f"Ошибка анализа: {str(e)[:200]}"
-                confidence = "0.0"
-            return Result()
+        tools_desc = "\n".join([f"• {tool.name}: {tool.description}" for tool in self.tools])
+        context = f"{context}\n\nДоступные инструменты:\n{tools_desc}\n\nИспользуй их для работы с браузером."
+        return self.generate(task=task, context=context)
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ DSPy
@@ -235,40 +195,29 @@ AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
-# Настройка DSPy
 if AGNES_API_KEY:
     try:
-        # Создаем LM с параметрами
         lm = AgnesLM(
             api_key=AGNES_API_KEY,
             temperature=0.3,
             max_tokens=2000
         )
         
-        # Настраиваем глобальный LM через settings
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
         
         browser_agent = BrowserAgent()
-        image_enhancer = ImageEnhancer()
-        page_analyzer = PageAnalyzer()
         logger.info("✅ DSPy модули инициализированы")
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         browser_agent = None
-        image_enhancer = None
-        page_analyzer = None
 else:
     logger.warning("⚠️ AGNES_API_KEY не задан, DSPy не инициализирован")
     browser_agent = None
-    image_enhancer = None
-    page_analyzer = None
 
 # ============================================================
-# КУКИ (WebSocket)
+# КУКИ
 # ============================================================
 
 try:
@@ -284,7 +233,6 @@ try:
                 logger.error("❌ Нет активных вкладок")
                 return False
             ws_url = pages[0]["webSocketDebuggerUrl"]
-            logger.info("🔗 Подключаюсь к WebSocket...")
             async with websockets.connect(ws_url) as ws:
                 await ws.send(json.dumps({"id": 1, "method": "Network.setCookies", "params": {"cookies": COOKIES}}))
                 response = json.loads(await ws.recv())
@@ -314,7 +262,7 @@ except ImportError:
         return False
 
 # ============================================================
-# НАСТРОЙКА РАЗМЕРА ОКНА (WebSocket)
+# НАСТРОЙКА РАЗМЕРА ОКНА
 # ============================================================
 
 async def set_viewport_async():
@@ -326,7 +274,6 @@ async def set_viewport_async():
             logger.warning("⚠️ Нет активных вкладок для установки размера")
             return False
         ws_url = pages[0]["webSocketDebuggerUrl"]
-        logger.info("🔗 Подключаюсь к WebSocket для установки размера...")
         async with websockets.connect(ws_url) as ws:
             await ws.send(json.dumps({
                 "id": 2,
@@ -385,7 +332,6 @@ set_viewport_global()
 # ============================================================
 
 def push_to_github(content, filename, host="x.com"):
-    """Отправить файл навыка в GitHub."""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан")
         return False
@@ -430,7 +376,6 @@ def push_to_github(content, filename, host="x.com"):
         return False
 
 def push_helpers_to_github():
-    """Отправить agent_helpers.py в GitHub"""
     if not GITHUB_TOKEN:
         logger.warning("⚠️ GITHUB_TOKEN не задан")
         return False
@@ -480,24 +425,21 @@ def push_helpers_to_github():
         return False
 
 # ============================================================
-# ФОТОШОП (AGNES AI)
+# ФОТОШОП
 # ============================================================
 
 AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
 
 def get_image_size(image_data):
-    """Определяет размер изображения"""
     try:
         img = Image.open(io.BytesIO(image_data))
         width, height = img.size
-        logger.info(f"📐 Размер изображения: {width}x{height}")
         return width, height
     except Exception as e:
         logger.error(f"Ошибка при определении размера: {e}")
         return None, None
 
 def replace_background(image_data, new_background_prompt: str):
-    """Заменяет фон изображения через Agnes AI."""
     if not AGNES_API_KEY:
         return None, "AGNES_API_KEY не установлен!"
     
@@ -508,19 +450,6 @@ def replace_background(image_data, new_background_prompt: str):
         return None, "Слишком короткое описание фона"
     
     try:
-        enhanced_prompt_text = new_background_prompt
-        if image_enhancer:
-            try:
-                width, height = get_image_size(image_data)
-                image_info = f"Размер: {width}x{height}" if width and height else "Неизвестный размер"
-                
-                result = image_enhancer(prompt=new_background_prompt, image_info=image_info)
-                if hasattr(result, 'enhanced_prompt') and result.enhanced_prompt:
-                    enhanced_prompt_text = result.enhanced_prompt
-                    logger.info(f"✨ DSPy улучшил промпт: {enhanced_prompt_text[:50]}...")
-            except Exception as e:
-                logger.warning(f"⚠️ DSPy улучшение промпта не удалось: {e}")
-        
         width, height = get_image_size(image_data)
         MAX_SIZE = 1024
         MIN_SIZE = 256
@@ -537,9 +466,6 @@ def replace_background(image_data, new_background_prompt: str):
             size = f"{width}x{height}"
         else:
             size = "1024x1024"
-            logger.warning("⚠️ Использую стандартный размер: 1024x1024")
-        
-        logger.info(f"📐 Размер для API: {size}")
         
         try:
             img = Image.open(io.BytesIO(image_data))
@@ -555,7 +481,7 @@ def replace_background(image_data, new_background_prompt: str):
         data_uri = f"data:image/jpeg;base64,{img_b64}"
         
         enhanced_prompt = f"""
-        Replace the background with: {enhanced_prompt_text}.
+        Replace the background with: {new_background_prompt}.
         Keep the main subject exactly as is.
         Maintain the original lighting and shadows.
         Make the background look natural and realistic.
@@ -577,9 +503,6 @@ def replace_background(image_data, new_background_prompt: str):
             }
         }
         
-        logger.info(f"📤 Отправка запроса к Agnes AI...")
-        logger.info(f"   Промпт: {new_background_prompt[:50]}...")
-        
         with httpx.Client(timeout=90.0) as client:
             response = client.post(
                 AGNES_IMAGE_API_URL,
@@ -589,35 +512,23 @@ def replace_background(image_data, new_background_prompt: str):
             response.raise_for_status()
             result = response.json()
         
-        logger.info("✅ Изображение сгенерировано")
-        
         if 'data' in result and len(result['data']) > 0:
             if 'url' in result['data'][0]:
                 return result['data'][0]['url'], None
             elif 'b64_json' in result['data'][0]:
                 return result['data'][0]['b64_json'], None
         
-        logger.error(f"❌ Неожиданный ответ: {result}")
         return None, "Неожиданный формат ответа от API"
         
-    except httpx.TimeoutException:
-        return None, "⏰ Превышено время ожидания (90 секунд)"
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code if e.response else "unknown"
-        return None, f"HTTP ошибка {status}: {str(e)}"
-    except httpx.RequestError as e:
-        logger.error(f"❌ Ошибка запроса: {e}")
-        return None, f"Ошибка сети: {str(e)}"
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
         return None, f"Внутренняя ошибка: {str(e)[:100]}"
 
 # ============================================================
-# LLM (с поддержкой DSPy)
+# LLM
 # ============================================================
 
 async def ask_agnes_dspy(messages):
-    """Использует DSPy для обработки запросов"""
     if not browser_agent:
         return await ask_agnes_fallback(messages)
     
@@ -640,30 +551,17 @@ async def ask_agnes_dspy(messages):
         
         result = browser_agent(task=user_query, context=context)
         
-        # Извлекаем результат с проверкой
         if result is None:
-            logger.warning("⚠️ DSPy вернул None")
             return await ask_agnes_fallback(messages)
         
         if hasattr(result, 'code'):
             code = result.code
             explanation = getattr(result, 'explanation', '')
-        elif hasattr(result, 'completion'):
-            code = result.completion
-            explanation = ""
-        elif hasattr(result, 'answer'):
-            code = result.answer
-            explanation = ""
-        elif isinstance(result, dict):
-            code = result.get('code', result.get('answer', str(result)))
-            explanation = result.get('explanation', '')
         else:
             code = str(result)
             explanation = ""
         
-        # Проверяем, что код не пустой
         if not code or code.strip() == "":
-            logger.warning("⚠️ DSPy вернул пустой код")
             return await ask_agnes_fallback(messages)
         
         if "```python" not in code:
@@ -671,17 +569,13 @@ async def ask_agnes_dspy(messages):
         else:
             response = code
         
-        logger.info(f"✅ DSPy сгенерировал ответ")
         return response
             
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         return await ask_agnes_fallback(messages)
 
 async def ask_agnes_fallback(messages):
-    """Обычный запрос к Agnes AI (без DSPy)"""
     logger.info("=" * 60)
     logger.info("📤 ОТПРАВКА В AGNES AI (FALLBACK):")
     for msg in messages:
@@ -708,32 +602,26 @@ async def ask_agnes_fallback(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# ВЫПОЛНИТЕЛЬ (ИСПРАВЛЕННЫЙ)
+# ВЫПОЛНИТЕЛЬ
 # ============================================================
 
 def execute_code(code):
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
     
-    # ===== ОЧИСТКА КОДА ОТ MARKDOWN-РАЗМЕТКИ =====
     code = code.strip()
     
-    # Удаляем ```python в начале
     if code.startswith('```python'):
-        code = code[10:]  # длина ```python = 10
+        code = code[10:]
     elif code.startswith('```'):
-        code = code[3:]   # длина ``` = 3
+        code = code[3:]
     
-    # Удаляем ``` в конце
     if code.endswith('```'):
         code = code[:-3]
     
-    # Удаляем ``` с пробелами/переносами в конце
     code = re.sub(r'```\s*$', '', code)
-    
-    # Финальная очистка
     code = code.strip()
+    
     logger.info(f"⚙️ КОД ПОСЛЕ ОЧИСТКИ:\n{code[:200]}...")
-    # =============================================
     
     try:
         stdout_buffer = io.StringIO()
@@ -777,22 +665,22 @@ def execute_code(code):
             return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
         
         globals_dict = {
-            'new_tab': new_tab, 
-            'goto_url': goto_url, 
+            'new_tab': new_tab,
+            'goto_url': goto_url,
             'wait_for_load': wait_for_load,
-            'page_info': page_info, 
+            'page_info': page_info,
             'capture_screenshot': capture_screenshot_with_path,
-            'click_at_xy': click_at_xy, 
-            'type_text': type_text, 
+            'click_at_xy': click_at_xy,
+            'type_text': type_text,
             'press_key': press_key,
             'scroll': scroll,
             'scroll_at_xy': scroll,
-            'js': js, 
-            'cdp': cdp, 
+            'js': js,
+            'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
-            'wait_for_element': wait_for_element, 
+            'wait_for_element': wait_for_element,
             'list_tabs': list_tabs,
-            'current_tab': current_tab, 
+            'current_tab': current_tab,
             'close_tab': close_tab,
             'switch_tab': switch_tab,
             'fill_input': fill_input,
@@ -804,7 +692,7 @@ def execute_code(code):
             'add_helper': add_helper,
             'time': time,
             'json': json,
-            'print': print, 
+            'print': print,
             '__builtins__': __builtins__,
         }
         
@@ -843,8 +731,7 @@ async def start(update, context):
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш\n\n"
         "🧠 DSPy:\n"
-        "/dspy <запрос> — использовать DSPy\n"
-        "/analyze <вопрос> — анализ страницы"
+        "/dspy <запрос> — использовать DSPy"
     )
 
 async def log(update, context):
@@ -920,10 +807,6 @@ async def images(update, context):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-# ============================================================
-# ОСНОВНЫЕ КОМАНДЫ (ИСПРАВЛЕННЫЕ - ВСЁ В ОДНОМ СООБЩЕНИИ)
-# ============================================================
-
 async def ask(update, context):
     if not context.args:
         await update.message.reply_text("Пример: /ask сделай скриншот google.com")
@@ -950,22 +833,17 @@ async def ask(update, context):
             code_match = re.search(r'```python\n(.*?)\n```', response, re.DOTALL)
             code = code_match.group(1) if code_match else response
             
-            # Логируем код в лог-файл
             logger.info(f"📝 Сгенерированный код для /ask:\n{code}")
 
-            # ШАГ 1
             await status_msg.edit_text("⚙️ Шаг 1/2: Генерирую код...")
             
-            # Выполняем код
             output, success = execute_code(code)
 
-            # ШАГ 2
             await status_msg.edit_text("⚙️ Шаг 2/2: Выполняю код...")
 
             if not success:
                 await status_msg.edit_text(f"❌ Ошибка: {output}")
             else:
-                # ФИНАЛ: Результат в том же сообщении
                 logger.info(f"✅ Успешное выполнение для {username}")
                 output_escaped = escape_markdown(output[:4000], version=2)
                 await status_msg.edit_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
@@ -979,7 +857,6 @@ async def ask(update, context):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update, context):
-    """Использовать DSPy напрямую"""
     if not browser_agent:
         await update.message.reply_text("❌ DSPy не инициализирован. Проверьте AGNES_API_KEY")
         return
@@ -1007,21 +884,16 @@ async def dspy_command(update, context):
             await status_msg.edit_text("❌ DSPy вернул пустой результат")
             return
         
-        # Логируем код в лог-файл
         logger.info(f"📝 Сгенерированный код:\n{result.code}")
         
-        # ШАГ 1
         await status_msg.edit_text("⚙️ Шаг 1/2: Генерирую код...")
         
-        # Выполняем код
         if hasattr(result, 'code') and result.code:
-            # ШАГ 2
             await status_msg.edit_text("⚙️ Шаг 2/2: Выполняю код...")
             
             output, success = execute_code(result.code)
             
             if success:
-                # ФИНАЛ: Результат в том же сообщении
                 output_escaped = escape_markdown(output[:4000], version=2)
                 await status_msg.edit_text(f"✅ Результат:\n{output_escaped}", parse_mode='MarkdownV2')
             else:
@@ -1032,54 +904,6 @@ async def dspy_command(update, context):
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка DSPy: {str(e)[:200]}")
-
-async def analyze_command(update, context):
-    """Анализ содержимого страницы через DSPy"""
-    if not page_analyzer:
-        await update.message.reply_text("❌ DSPy не инициализирован")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Пример: /analyze какой сегодня курс доллара?")
-        return
-    
-    query = " ".join(context.args)
-    username = update.effective_user.username or "unknown"
-    logger.info(f"🔍 {username} анализирует: {query}")
-    
-    status_msg = await update.message.reply_text("🔍 Анализирую страницу...")
-    
-    try:
-        try:
-            content = js("() => document.body.innerText.slice(0, 5000)")
-            if not content:
-                content = "Не удалось получить содержимое страницы"
-        except:
-            content = "Ошибка получения содержимого"
-        
-        result = page_analyzer(query=query, content=content)
-        
-        if result is None:
-            await status_msg.edit_text("❌ Анализ не дал результата")
-            return
-        
-        answer = getattr(result, 'answer', 'Нет ответа')
-        confidence = getattr(result, 'confidence', '0.0')
-        
-        # Экранируем специальные символы
-        answer_escaped = escape_markdown(answer, version=2)
-        confidence_escaped = escape_markdown(confidence, version=2)
-        
-        response = f"📊 **Ответ:**\n{answer_escaped}\n\n🎯 **Уверенность:** {confidence_escaped}"
-        await status_msg.edit_text(response, parse_mode='MarkdownV2')
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
-
-# ============================================================
-# ФОТОШОП КОМАНДЫ
-# ============================================================
 
 async def clear_command(update, context):
     if 'last_image' in context.user_data:
@@ -1178,7 +1002,6 @@ def main():
     app.add_handler(CommandHandler("images", images))
     
     app.add_handler(CommandHandler("dspy", dspy_command))
-    app.add_handler(CommandHandler("analyze", analyze_command))
     
     app.add_handler(CommandHandler("bg", bg_command))
     app.add_handler(CommandHandler("clear", clear_command))
