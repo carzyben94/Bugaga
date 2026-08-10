@@ -18,7 +18,7 @@ from PIL import Image
 
 # DSPy импорты
 import dspy
-from dspy import Signature, InputField, OutputField, Module, settings, ReAct
+from dspy import Signature, InputField, OutputField, Module, settings, ReActV2
 
 warnings.filterwarnings("ignore")
 
@@ -143,16 +143,29 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
+# СИГНАТУРА
+# ============================================================
+
+class BrowserTask(Signature):
+    """Ты агент с доступом к браузеру.
+    Используй инструменты для выполнения задач пользователя.
+    """
+    question = InputField(desc="Задача пользователя")
+    answer = OutputField(desc="Ответ на задачу")
+
+# ============================================================
 # ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА
 # ============================================================
 
-def tool_new_tab() -> str:
-    """Открыть новую вкладку"""
+def safe_js(expression: str) -> str:
+    """Выполнить JavaScript на странице"""
     try:
-        new_tab()
-        return "✅ Новая вкладка открыта"
+        result = js(expression)
+        if isinstance(result, dict):
+            return str(result.get('result', result))
+        return str(result)
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ Ошибка JavaScript: {e}"
 
 def tool_goto_url(url: str) -> str:
     """Перейти на URL и дождаться загрузки"""
@@ -163,23 +176,9 @@ def tool_goto_url(url: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_wait_for_load() -> str:
-    """Дождаться загрузки страницы"""
-    try:
-        wait_for_load()
-        return "✅ Страница загружена"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
 def tool_js(expression: str) -> str:
-    """Выполнить JavaScript на странице"""
-    try:
-        result = js(expression)
-        if isinstance(result, dict):
-            return str(result.get('result', result))
-        return str(result)
-    except Exception as e:
-        return f"❌ Ошибка JavaScript: {e}"
+    """Выполнить JavaScript на странице. Используй для получения данных со страницы."""
+    return safe_js(expression)
 
 def tool_http_get(url: str) -> str:
     """Выполнить HTTP GET запрос"""
@@ -200,83 +199,56 @@ def tool_capture_screenshot(filename: str = None) -> str:
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_fill_input(selector: str, text: str) -> str:
-    """Заполнить поле ввода по CSS селектору"""
-    try:
-        fill_input(selector, text)
-        return f"✅ Заполнено: {selector}"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
-def tool_click_at_xy(x: int, y: int) -> str:
-    """Кликнуть по координатам"""
-    try:
-        click_at_xy(x, y)
-        return f"✅ Клик по ({x}, {y})"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
-def tool_type_text(text: str) -> str:
-    """Ввести текст"""
-    try:
-        type_text(text)
-        return f"✅ Введено: {text}"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
-def tool_press_key(key: str) -> str:
-    """Нажать клавишу"""
-    try:
-        press_key(key)
-        return f"✅ Нажата клавиша: {key}"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
-def tool_scroll(dx: int, dy: int) -> str:
-    """Прокрутить страницу"""
-    try:
-        scroll(dx, dy)
-        return f"✅ Прокрутка на ({dx}, {dy})"
-    except Exception as e:
-        return f"❌ Ошибка: {e}"
-
 def tool_page_info() -> str:
-    """Получить информацию о странице"""
+    """Получить информацию о странице (URL, Title)"""
     try:
         info = page_info()
         return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_list_tabs() -> str:
-    """Список всех вкладок"""
+def tool_get_text() -> str:
+    """Получить весь текст на странице"""
     try:
-        tabs = list_tabs()
-        return f"Вкладки: {tabs}"
+        result = js('() => document.body.innerText')
+        if isinstance(result, dict):
+            text = result.get('result', str(result))
+        else:
+            text = str(result)
+        return text[:5000] if text else "❌ Текст не найден"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_current_tab() -> str:
-    """ID текущей вкладки"""
+def tool_get_links() -> str:
+    """Получить все ссылки на странице"""
     try:
-        tab = current_tab()
-        return f"Текущая вкладка: {tab}"
+        result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href)')
+        if isinstance(result, list):
+            links = [str(item) for item in result if item]
+            return f"Ссылки: {links}" if links else "❌ Ссылок не найдено"
+        return f"❌ Ошибка: {result}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_switch_tab(tab_id: int) -> str:
-    """Переключиться на вкладку"""
+def tool_get_buttons() -> str:
+    """Получить все кнопки на странице"""
     try:
-        switch_tab(tab_id)
-        return f"✅ Переключился на вкладку {tab_id}"
+        result = js('() => Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value)')
+        if isinstance(result, list):
+            buttons = [str(item).strip() for item in result if item and str(item).strip()]
+            return f"Кнопки: {buttons}" if buttons else "❌ Кнопок не найдено"
+        return f"❌ Ошибка: {result}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_close_tab() -> str:
-    """Закрыть текущую вкладку"""
+def tool_get_headings() -> str:
+    """Получить все заголовки на странице"""
     try:
-        close_tab()
-        return "✅ Вкладка закрыта"
+        result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => el.innerText)')
+        if isinstance(result, list):
+            headings = [str(item).strip() for item in result if item and str(item).strip()]
+            return f"Заголовки: {headings}" if headings else "❌ Заголовков не найдено"
+        return f"❌ Ошибка: {result}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
@@ -285,133 +257,101 @@ def tool_get_accessibility_text() -> str:
     try:
         result = js('''
             () => {
-                const elements = document.querySelectorAll('[role], [aria-label], [aria-labelledby], h1, h2, h3, h4, h5, h6, p, a, button, input, label, [data-testid]');
+                const elements = document.querySelectorAll('[role], [aria-label], [aria-labelledby], h1, h2, h3, h4, h5, h6, p, a, button, input, label');
                 const texts = [];
                 elements.forEach(el => {
-                    let accessibleName = '';
+                    let text = '';
                     if (el.hasAttribute('aria-label')) {
-                        accessibleName = el.getAttribute('aria-label');
+                        text = el.getAttribute('aria-label');
                     } else if (el.hasAttribute('aria-labelledby')) {
-                        const labelId = el.getAttribute('aria-labelledby');
-                        const labelEl = document.getElementById(labelId);
-                        if (labelEl) accessibleName = labelEl.innerText || labelEl.textContent;
-                    } else if (['A', 'BUTTON', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LABEL'].includes(el.tagName)) {
-                        accessibleName = el.innerText || el.textContent;
+                        const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
+                        if (labelEl) text = labelEl.innerText || labelEl.textContent;
+                    } else if (['A','BUTTON','H1','H2','H3','H4','H5','H6','P','LABEL'].includes(el.tagName)) {
+                        text = el.innerText || el.textContent;
                     } else if (el.tagName === 'INPUT' && el.hasAttribute('placeholder')) {
-                        accessibleName = el.getAttribute('placeholder');
-                    } else if (el.hasAttribute('data-testid')) {
-                        accessibleName = `[data-testid="${el.getAttribute('data-testid')}"]`;
-                    } else if (el.hasAttribute('title')) {
-                        accessibleName = el.getAttribute('title');
+                        text = el.getAttribute('placeholder');
                     }
-                    if (accessibleName && accessibleName.trim()) {
+                    if (text && text.trim()) {
                         texts.push({
-                            tag: el.tagName.toLowerCase(),
+                            tag: el.tagName,
                             role: el.getAttribute('role') || 'none',
-                            text: accessibleName.trim(),
-                            id: el.id || '',
-                            classes: el.className || ''
+                            text: text.trim()
                         });
                     }
                 });
-                return JSON.stringify(texts.slice(0, 50));
+                return JSON.stringify(texts.slice(0, 30));
             }
         ''')
         if isinstance(result, dict):
             return result.get('result', str(result))
         return str(result)
     except Exception as e:
-        return f"❌ Ошибка Accessibility Tree: {e}"
-
-def tool_find_element(selector: str) -> str:
-    """Найти элемент по CSS селектору и вернуть его текст"""
-    try:
-        result = js(f'''
-            () => {{
-                const el = document.querySelector('{selector}');
-                if (!el) return null;
-                return {{
-                    tag: el.tagName.toLowerCase(),
-                    text: el.innerText || el.textContent || '',
-                    html: el.outerHTML || '',
-                    id: el.id || '',
-                    classes: el.className || '',
-                    href: el.href || '',
-                    src: el.src || '',
-                    value: el.value || '',
-                }};
-            }}
-        ''')
-        if isinstance(result, dict):
-            return str(result)
-        return str(result) if result else "❌ Элемент не найден"
-    except Exception as e:
         return f"❌ Ошибка: {e}"
 
-def tool_click_element(selector: str) -> str:
-    """Кликнуть по элементу по CSS селектору"""
+def tool_find_by_text(text: str) -> str:
+    """Найти элемент по тексту и вернуть его информацию"""
     try:
         result = js(f'''
             () => {{
-                const el = document.querySelector('{selector}');
-                if (!el) return false;
-                el.click();
-                return true;
+                const elements = document.querySelectorAll('*');
+                for (const el of elements) {{
+                    const elText = el.innerText || el.textContent || '';
+                    if (elText.trim() === '{text}') {{
+                        return {{
+                            tag: el.tagName,
+                            id: el.id || '',
+                            classes: el.className || '',
+                            text: elText.trim()
+                        }};
+                    }}
+                }}
+                return null;
             }}
         ''')
-        if result:
-            return f"✅ Кликнул по {selector}"
-        return "❌ Элемент не найден"
+        if result and result != 'null':
+            return f"Найден: {result}"
+        return f"❌ Элемент с текстом '{text}' не найден"
     except Exception as e:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
-# SIGNATURE ДЛЯ REACT
+# СОЗДАЕМ СПИСОК ИНСТРУМЕНТОВ
 # ============================================================
 
-class BrowserTask(Signature):
-    """Ты агент с доступом к браузеру.
-    
-    Используй доступные инструменты для выполнения задач пользователя.
-    Всегда проверяй результат выполнения действий.
-    """
-    question = InputField(desc="Задача пользователя")
-    answer = OutputField(desc="Ответ на задачу")
+tools = [
+    tool_goto_url,
+    tool_js,
+    tool_http_get,
+    tool_capture_screenshot,
+    tool_page_info,
+    tool_get_text,
+    tool_get_links,
+    tool_get_buttons,
+    tool_get_headings,
+    tool_get_accessibility_text,
+    tool_find_by_text,
+]
 
 # ============================================================
-# СОЗДАЕМ REACT АГЕНТА С ИНСТРУМЕНТАМИ
+# СОЗДАЕМ REACTV2 АГЕНТА (БЕЗ JSON)
 # ============================================================
 
 def create_browser_agent():
-    """Создать ReAct агента с инструментами браузера"""
-    
-    tools = [
-        tool_new_tab,
-        tool_goto_url,
-        tool_wait_for_load,
-        tool_js,
-        tool_http_get,
-        tool_capture_screenshot,
-        tool_fill_input,
-        tool_click_at_xy,
-        tool_type_text,
-        tool_press_key,
-        tool_scroll,
-        tool_page_info,
-        tool_list_tabs,
-        tool_current_tab,
-        tool_switch_tab,
-        tool_close_tab,
-        tool_get_accessibility_text,
-        tool_find_element,
-        tool_click_element,
-    ]
-    
-    return ReAct(
-        signature=BrowserTask,
-        tools=tools,
-        max_iters=10,
-    )
+    """Создать ReActV2 агента с отключенным JSON"""
+    try:
+        # Отключаем нативный JSON через ChatAdapter
+        adapter = dspy.ChatAdapter(use_native_function_calling=False)
+        
+        agent = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=10,
+            adapter=adapter  # Передаем адаптер
+        )
+        return agent
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания агента: {e}")
+        return None
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ DSPy
@@ -435,7 +375,10 @@ if AGNES_API_KEY:
         logger.info("✅ DSPy настроен с AgnesLM")
         
         browser_agent = create_browser_agent()
-        logger.info("✅ ReAct агент с инструментами инициализирован")
+        if browser_agent:
+            logger.info("✅ ReActV2 агент с инструментами инициализирован (JSON отключен)")
+        else:
+            logger.warning("⚠️ Не удалось создать ReActV2 агента")
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
@@ -769,9 +712,9 @@ async def ask_agnes_dspy(messages):
         if not user_question:
             return "❌ Нет вопроса для обработки"
         
-        logger.info(f"🧠 DSPy ReAct обрабатывает: {user_question}")
+        logger.info(f"🧠 DSPy ReActV2 обрабатывает: {user_question}")
         
-        # Вызываем ReAct агента
+        # Вызываем ReActV2 агента
         result = browser_agent(question=user_question)
         
         # Извлекаем ответ
@@ -783,7 +726,7 @@ async def ask_agnes_dspy(messages):
         return answer
             
     except Exception as e:
-        logger.error(f"❌ DSPy ReAct ошибка: {e}")
+        logger.error(f"❌ DSPy ReActV2 ошибка: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return await ask_agnes_fallback(messages)
@@ -830,7 +773,7 @@ async def start(update, context):
         "/bg <описание> — заменить фон\n"
         "/clear — очистить кэш\n\n"
         "🧠 DSPy:\n"
-        "/dspy <запрос> — использовать DSPy"
+        "/dspy <запрос> — использовать DSPy ReActV2"
     )
 
 async def log(update, context):
@@ -919,14 +862,13 @@ async def ask(update, context):
 
     try:
         if browser_agent:
-            # Используем ReAct агента
+            # Используем ReActV2 агента
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_query}
             ]
             response = await ask_agnes_dspy(messages)
             
-            # Если ответ содержит код - показываем как есть
             if response and response.strip():
                 response_escaped = escape_markdown(response[:4000], version=2)
                 await status_msg.edit_text(f"✅ Результат:\n{response_escaped}", parse_mode='MarkdownV2')
@@ -948,7 +890,7 @@ async def ask(update, context):
 
 async def dspy_command(update, context):
     if not browser_agent:
-        await update.message.reply_text("❌ DSPy ReAct не инициализирован. Проверьте AGNES_API_KEY")
+        await update.message.reply_text("❌ DSPy ReActV2 не инициализирован. Проверьте AGNES_API_KEY")
         return
     
     if not context.args:
@@ -957,12 +899,12 @@ async def dspy_command(update, context):
     
     query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
-    logger.info(f"🧠 {username} DSPy ReAct запрос: {query}")
+    logger.info(f"🧠 {username} DSPy ReActV2 запрос: {query}")
     
     status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
-        # Используем ReAct агента
+        # Используем ReActV2 агента
         result = browser_agent(question=query)
         answer = getattr(result, 'answer', str(result))
         
@@ -973,7 +915,7 @@ async def dspy_command(update, context):
             await status_msg.edit_text("❌ Агент вернул пустой ответ")
                 
     except Exception as e:
-        logger.error(f"❌ DSPy ReAct ошибка: {e}")
+        logger.error(f"❌ DSPy ReActV2 ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def clear_command(update, context):
@@ -1079,7 +1021,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReAct)' if browser_agent else '❌ Отключен'}")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
