@@ -1,6 +1,6 @@
 import os
 import sys
-import stat 
+import stat
 import time
 import logging
 import base64
@@ -640,7 +640,43 @@ except Exception as e:
     logger.error(f"❌ Ошибка запуска браузера: {e}")
     sys.exit(1)
 
-set_cookies_global()
+# ============================================================
+# ⭐ МГНОВЕННАЯ УСТАНОВКА КУК (СИНХРОННО) ⭐
+# ============================================================
+
+try:
+    from cookies import COOKIES
+    import httpx, websockets, json
+    
+    logger.info("🔄 Устанавливаю куки...")
+    
+    resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+    if resp.json():
+        ws_url = resp.json()[0]["webSocketDebuggerUrl"]
+        
+        # Синхронная установка без asyncio
+        import asyncio
+        async def set_cookies():
+            async with websockets.connect(ws_url) as ws:
+                await ws.send(json.dumps({
+                    "id": 1,
+                    "method": "Network.setCookies",
+                    "params": {"cookies": COOKIES}
+                }))
+                return await ws.recv()
+        
+        asyncio.run(set_cookies())
+        logger.info(f"✅ Установлено {len(COOKIES)} кук!")
+    else:
+        logger.warning("⚠️ Нет активных вкладок для установки кук")
+        
+except Exception as e:
+    logger.warning(f"⚠️ Куки не установлены: {e}")
+
+# ============================================================
+# НАСТРОЙКА РАЗМЕРА ОКНА
+# ============================================================
+
 set_viewport_global()
 
 # ============================================================
