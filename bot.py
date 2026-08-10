@@ -17,7 +17,7 @@ from PIL import Image
 
 # DSPy импорты
 import dspy
-from dspy import ChainOfThought, Module, InputField, OutputField, Signature
+from dspy import ChainOfThought, Module, InputField, OutputField, Signature, settings
 
 warnings.filterwarnings("ignore")
 
@@ -81,14 +81,12 @@ class AgnesLM(dspy.LM):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
         self.kwargs = kwargs
-        # Важно: НЕ вызываем super() с model, чтобы избежать litellm
-        # Вместо этого просто сохраняем параметры
         self.provider = "agnes-ai"
         self.model_type = "chat"
         self.forward_contract = "legacy"
-        self._model = model  # Для совместимости
+        self._model = model
         
-        # Вызываем super().__init__() без model параметра
+        # Вызываем super() без model параметра, чтобы избежать litellm
         super().__init__(model=model, model_type="chat", cache=False)
     
     def _call_agnes(self, messages, **kwargs):
@@ -191,25 +189,26 @@ class AnalysisTask(Signature):
 
 # Модули
 class BrowserAgent(Module):
-    def __init__(self):
+    def __init__(self, lm=None):
         super().__init__()
-        self.generate_code = ChainOfThought(BrowserTask)
+        # Передаем LM в ChainOfThought
+        self.generate_code = ChainOfThought(BrowserTask, lm=lm)
     
     def forward(self, task, context=""):
         return self.generate_code(task=task, context=context)
 
 class ImageEnhancer(Module):
-    def __init__(self):
+    def __init__(self, lm=None):
         super().__init__()
-        self.enhance = ChainOfThought(ImageEnhanceTask)
+        self.enhance = ChainOfThought(ImageEnhanceTask, lm=lm)
     
     def forward(self, prompt, image_info=""):
         return self.enhance(prompt=prompt, image_info=image_info)
 
 class PageAnalyzer(Module):
-    def __init__(self):
+    def __init__(self, lm=None):
         super().__init__()
-        self.analyze = ChainOfThought(AnalysisTask)
+        self.analyze = ChainOfThought(AnalysisTask, lm=lm)
     
     def forward(self, query, content):
         return self.analyze(query=query, content=content)
@@ -225,15 +224,18 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 # Настройка DSPy - ИСПОЛЬЗУЕМ КАСТОМНЫЙ LM
 if AGNES_API_KEY:
     try:
-        # Используем кастомный LM вместо litellm
+        # Создаем кастомный LM
         lm = AgnesLM(api_key=AGNES_API_KEY)
-        dspy.configure(lm=lm)
-        logger.info("✅ DSPy настроен с кастомным AgnesLM")
         
-        browser_agent = BrowserAgent()
-        image_enhancer = ImageEnhancer()
-        page_analyzer = PageAnalyzer()
-        logger.info("✅ DSPy модули инициализированы")
+        # Настраиваем глобальный LM через settings
+        settings.configure(lm=lm)
+        logger.info("✅ DSPy настроен с кастомным AgnesLM через settings")
+        
+        # Создаем модули с явной передачей LM
+        browser_agent = BrowserAgent(lm=lm)
+        image_enhancer = ImageEnhancer(lm=lm)
+        page_analyzer = PageAnalyzer(lm=lm)
+        logger.info("✅ DSPy модули инициализированы с кастомным LM")
         
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
