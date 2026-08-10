@@ -154,7 +154,7 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Ответ на задачу")
 
 # ============================================================
-# ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА (С ИСПОЛЬЗОВАНИЕМ Tool)
+# ИНСТРУМЕНТЫ ДЛЯ БРАУЗЕРА
 # ============================================================
 
 def safe_js(expression: str) -> str:
@@ -315,57 +315,83 @@ def tool_find_by_text(text: str) -> str:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
-# СОЗДАЕМ ИНСТРУМЕНТЫ ЧЕРЕЗ dspy.Tool
+# СОЗДАЕМ ИНСТРУМЕНТЫ (БЕЗ description)
 # ============================================================
 
 tools = [
-    Tool(name="goto_url", description="Перейти на URL и дождаться загрузки", fn=tool_goto_url),
-    Tool(name="js", description="Выполнить JavaScript на странице", fn=tool_js),
-    Tool(name="http_get", description="Выполнить HTTP GET запрос", fn=tool_http_get),
-    Tool(name="capture_screenshot", description="Сделать скриншот страницы", fn=tool_capture_screenshot),
-    Tool(name="page_info", description="Получить информацию о странице (URL, Title)", fn=tool_page_info),
-    Tool(name="get_text", description="Получить весь текст на странице", fn=tool_get_text),
-    Tool(name="get_links", description="Получить все ссылки на странице", fn=tool_get_links),
-    Tool(name="get_buttons", description="Получить все кнопки на странице", fn=tool_get_buttons),
-    Tool(name="get_headings", description="Получить все заголовки на странице (h1-h6)", fn=tool_get_headings),
-    Tool(name="get_accessibility_text", description="Получить доступный текст страницы через Accessibility Tree", fn=tool_get_accessibility_text),
-    Tool(name="find_by_text", description="Найти элемент по тексту", fn=tool_find_by_text),
+    Tool(tool_goto_url),
+    Tool(tool_js),
+    Tool(tool_http_get),
+    Tool(tool_capture_screenshot),
+    Tool(tool_page_info),
+    Tool(tool_get_text),
+    Tool(tool_get_links),
+    Tool(tool_get_buttons),
+    Tool(tool_get_headings),
+    Tool(tool_get_accessibility_text),
+    Tool(tool_find_by_text),
 ]
 
 # ============================================================
-# СОЗДАЕМ REACTV2 АГЕНТА (БЕЗ JSON)
+# СОЗДАЕМ REACTV2 АГЕНТА
 # ============================================================
 
 def create_browser_agent():
-    """Создать ReActV2 агента с отключенным JSON"""
+    """Создать ReActV2 агента"""
     try:
-        # Для DSPy 3.3.0b1
         agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
             max_iters=10,
         )
+        logger.info("✅ ReActV2 агент создан")
         return agent
     except Exception as e:
         logger.error(f"❌ Ошибка создания ReActV2 агента: {e}")
         
-        # Fallback: пробуем без ReActV2
+        # Fallback: пробуем без Tool
         try:
-            from dspy import ChainOfThought, Module
+            tools_fallback = [
+                tool_goto_url,
+                tool_js,
+                tool_http_get,
+                tool_capture_screenshot,
+                tool_page_info,
+                tool_get_text,
+                tool_get_links,
+                tool_get_buttons,
+                tool_get_headings,
+                tool_get_accessibility_text,
+                tool_find_by_text,
+            ]
             
-            class SimpleAgent(Module):
-                def __init__(self):
-                    super().__init__()
-                    self.generate = ChainOfThought(BrowserTask)
-                
-                def forward(self, question):
-                    return self.generate(question=question)
-            
-            logger.info("⚠️ Использую ChainOfThought как fallback")
-            return SimpleAgent()
+            agent = ReActV2(
+                signature=BrowserTask,
+                tools=tools_fallback,
+                max_iters=10,
+            )
+            logger.info("✅ ReActV2 агент создан (без Tool)")
+            return agent
         except Exception as e2:
             logger.error(f"❌ Fallback тоже не работает: {e2}")
-            return None
+            
+            # Второй fallback: ChainOfThought
+            try:
+                from dspy import ChainOfThought
+                
+                class SimpleAgent(Module):
+                    def __init__(self):
+                        super().__init__()
+                        self.generate = ChainOfThought(BrowserTask)
+                    
+                    def forward(self, question):
+                        return self.generate(question=question)
+                
+                logger.info("⚠️ Использую ChainOfThought как fallback")
+                return SimpleAgent()
+            except Exception as e3:
+                logger.error(f"❌ ChainOfThought fallback не работает: {e3}")
+                return None
 
 # ============================================================
 # ИНИЦИАЛИЗАЦИЯ DSPy
@@ -732,7 +758,6 @@ async def ask_agnes_dspy(messages):
         if hasattr(browser_agent, 'forward'):
             result = browser_agent(question=user_question)
         else:
-            # Если это SimpleAgent (fallback)
             result = browser_agent(question=user_question)
         
         # Извлекаем ответ
@@ -1043,7 +1068,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
