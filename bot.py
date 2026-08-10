@@ -109,28 +109,30 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА С ИНСТРУКЦИЕЙ ПО РАБОТЕ С ОДНОЙ ВКЛАДКОЙ
+# СИГНАТУРА С ПРИОРИТЕТАМИ
 # ============================================================
 
 class BrowserTask(Signature):
     """Ты агент с доступом к браузеру.
     
-    ВАЖНО:
-    - РАБОТАЙ В ОДНОЙ ВКЛАДКЕ! Не открывай новые вкладки без крайней необходимости.
-    - Используй tool_goto_url для перехода по ссылкам в ТЕКУЩЕЙ вкладке.
-    - Открывай новую вкладку ТОЛЬКО если нужно сохранить текущую страницу.
-    - Если открыл новую вкладку - закрой её после использования.
-    - tool_new_tab используй ТОЛЬКО если tool_goto_url не подходит.
+    ПРИОРИТЕТ ИНСТРУМЕНТОВ:
+    1. Сначала используй tool_get_accessibility_tree() - чтобы понять структуру страницы
+    2. Для кликов - используй tool_click_by_ref() с ref из дерева
+    3. Для поиска - используй tool_find_in_accessibility()
+    4. Для ввода/скролла - используй tool_type_text(), tool_scroll()
+    5. Только если AX Tree не дает данных - используй tool_js()
+    
+    НЕ ПИШИ СЛОЖНЫЕ СЕЛЕКТОРЫ В tool_js()!
+    Используй AX Tree для навигации, JS только для действий.
     """
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
 # ============================================================
-# ИНСТРУМЕНТЫ
+# ОСНОВНЫЕ ИНСТРУМЕНТЫ
 # ============================================================
 
 def tool_new_tab() -> str:
-    """Открыть новую вкладку (ТОЛЬКО если нужно сохранить текущую страницу)"""
     try:
         new_tab()
         return "✅ Новая вкладка открыта"
@@ -138,7 +140,6 @@ def tool_new_tab() -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_goto_url(url: str) -> str:
-    """Перейти на URL в текущей вкладке (ОСНОВНОЙ СПОСОБ)"""
     try:
         goto_url(url)
         wait_for_load()
@@ -147,7 +148,6 @@ def tool_goto_url(url: str) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_cleanup_tabs() -> str:
-    """Закрыть все лишние вкладки, оставить только одну"""
     try:
         tabs = list_tabs()
         if len(tabs) > 1:
@@ -257,13 +257,237 @@ def tool_close_tab() -> str:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
+# НОВЫЕ ИНСТРУМЕНТЫ - ACCESSIBILITY TREE
+# ============================================================
+
+def tool_get_accessibility_tree() -> str:
+    """Получить доступное дерево страницы (все интерактивные элементы)"""
+    try:
+        script = '''
+            () => {
+                function getAXNode(el) {
+                    const ax = {
+                        tag: el.tagName.toLowerCase(),
+                        role: el.getAttribute('role') || 'none',
+                        name: '',
+                        ref: '',
+                        interactive: false,
+                        state: 'active'
+                    };
+                    
+                    // Получаем доступное имя
+                    if (el.hasAttribute('aria-label')) {
+                        ax.name = el.getAttribute('aria-label');
+                    } else if (el.hasAttribute('aria-labelledby')) {
+                        const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
+                        if (labelEl) ax.name = labelEl.innerText || labelEl.textContent || '';
+                    } else if (el.getAttribute('role') === 'textbox' || el.tagName === 'INPUT') {
+                        ax.name = el.getAttribute('placeholder') || el.getAttribute('value') || '';
+                    } else {
+                        ax.name = el.innerText || el.textContent || '';
+                        ax.name = ax.name.trim().slice(0, 100);
+                    }
+                    
+                    // Определяем интерактивность
+                    const interactiveRoles = ['button', 'link', 'textbox', 'checkbox', 'radio', 'menuitem', 'tab', 'option', 'searchbox', 'slider', 'spinbutton', 'switch'];
+                    const interactiveTags = ['button', 'a', 'input', 'select', 'textarea', 'details', 'summary'];
+                    
+                    if (interactiveRoles.includes(ax.role) || interactiveTags.includes(el.tagName.toLowerCase())) {
+                        ax.interactive = true;
+                    }
+                    
+                    // Состояния
+                    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') {
+                        ax.state = 'disabled';
+                    } else if (el.getAttribute('aria-expanded') === 'true') {
+                        ax.state = 'expanded';
+                    } else if (el.getAttribute('aria-expanded') === 'false') {
+                        ax.state = 'collapsed';
+                    } else if (el.getAttribute('aria-checked') === 'true') {
+                        ax.state = 'checked';
+                    }
+                    
+                    return ax;
+                }
+                
+                const elements = document.querySelectorAll('[role], button, a, input, select, textarea, details, summary, [aria-label], [aria-labelledby]');
+                const result = [];
+                let index = 0;
+                
+                elements.forEach((el) => {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) return;
+                    if (el.style.display === 'none' || el.style.visibility === 'hidden') return;
+                    
+                    const ax = getAXNode(el);
+                    ax.ref = `el_${index}`;
+                    ax.position = {
+                        x: Math.round(rect.left + rect.width/2),
+                        y: Math.round(rect.top + rect.height/2)
+                    };
+                    
+                    result.push(ax);
+                    index++;
+                });
+                
+                return JSON.stringify(result.slice(0, 30));
+            }
+        '''
+        
+        result = js(script)
+        if isinstance(result, dict):
+            result = result.get('result', str(result))
+        
+        # Форматируем вывод
+        if result and result != '[]':
+            try:
+                data = json.loads(result)
+                if isinstance(data, list) and data:
+                    output = "🌳 **Accessibility Tree:**\n\n"
+                    for i, item in enumerate(data[:15]):
+                        ref = item.get('ref', '')
+                        role = item.get('role', 'none')
+                        name = item.get('name', '').strip()[:50]
+                        state = item.get('state', 'active')
+                        interactive = '🔘' if item.get('interactive') else '  '
+                        output += f"{interactive} `{ref}` {role}"
+                        if name:
+                            output += f" \"{name}\""
+                        if state != 'active':
+                            output += f" [{state}]"
+                        output += "\n"
+                    
+                    if len(data) > 15:
+                        output += f"\n... и ещё {len(data) - 15} элементов"
+                    
+                    return output
+            except:
+                return f"🌳 Accessibility Tree:\n{result[:2000]}"
+        
+        return "🌳 На странице нет интерактивных элементов"
+        
+    except Exception as e:
+        return f"❌ Ошибка получения AX Tree: {e}"
+
+def tool_click_by_ref(ref: str) -> str:
+    """Кликнуть по элементу по его ref ID из Accessibility Tree"""
+    try:
+        script = f'''
+            () => {{
+                const elements = document.querySelectorAll('[role], button, a, input, select, textarea');
+                let target = null;
+                let index = parseInt('{ref}'.replace('el_', ''));
+                
+                if (!isNaN(index)) {{
+                    let count = 0;
+                    for (const el of elements) {{
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width === 0 || rect.height === 0) continue;
+                        if (el.style.display === 'none' || el.style.visibility === 'hidden') continue;
+                        
+                        if (count === index) {{
+                            target = el;
+                            break;
+                        }}
+                        count++;
+                    }}
+                }}
+                
+                if (target) {{
+                    target.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                    target.click();
+                    return '✅ Клик по {ref}';
+                }}
+                return '❌ Элемент {ref} не найден';
+            }}
+        '''
+        result = js(script)
+        if isinstance(result, dict):
+            return result.get('result', str(result))
+        return str(result) if result else f"✅ Клик по {ref}"
+    except Exception as e:
+        return f"❌ Ошибка клика: {e}"
+
+def tool_find_in_accessibility(query: str) -> str:
+    """Найти элементы в AX Tree по тексту или роли"""
+    try:
+        script = f'''
+            () => {{
+                const query = "{query}".toLowerCase();
+                const elements = document.querySelectorAll('[role], button, a, input, select, textarea');
+                const results = [];
+                let index = 0;
+                
+                elements.forEach((el) => {{
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) return;
+                    if (el.style.display === 'none' || el.style.visibility === 'hidden') return;
+                    
+                    let text = '';
+                    if (el.hasAttribute('aria-label')) {{
+                        text = el.getAttribute('aria-label');
+                    }} else if (el.hasAttribute('aria-labelledby')) {{
+                        const labelEl = document.getElementById(el.getAttribute('aria-labelledby'));
+                        if (labelEl) text = labelEl.innerText || labelEl.textContent || '';
+                    }} else {{
+                        text = el.innerText || el.textContent || el.getAttribute('placeholder') || '';
+                    }}
+                    
+                    const role = el.getAttribute('role') || el.tagName.toLowerCase();
+                    const fullText = text + ' ' + role;
+                    
+                    if (fullText.toLowerCase().includes(query)) {{
+                        results.push({{
+                            ref: `el_${{index}}`,
+                            role: role,
+                            name: text.trim().slice(0, 50),
+                            state: el.hasAttribute('disabled') ? 'disabled' : 'active'
+                        }});
+                    }}
+                    index++;
+                }});
+                
+                return JSON.stringify(results.slice(0, 20));
+            }}
+        '''
+        result = js(script)
+        if isinstance(result, dict):
+            result = result.get('result', str(result))
+        
+        if result and result != '[]':
+            try:
+                data = json.loads(result)
+                if isinstance(data, list) and data:
+                    output = f"🔍 **Найдено {len(data)} элементов:**\n\n"
+                    for item in data:
+                        ref = item.get('ref', '')
+                        role = item.get('role', 'none')
+                        name = item.get('name', '').strip()
+                        state = item.get('state', '')
+                        output += f"• `{ref}` {role}"
+                        if name:
+                            output += f" \"{name}\""
+                        if state and state != 'active':
+                            output += f" [{state}]"
+                        output += "\n"
+                    return output
+            except:
+                return f"🔍 Найдено:\n{result[:1000]}"
+        
+        return f"❌ Ничего не найдено по запросу '{query}'"
+        
+    except Exception as e:
+        return f"❌ Ошибка поиска: {e}"
+
+# ============================================================
 # ВСЕ ИНСТРУМЕНТЫ
 # ============================================================
 
 tools = [
+    # Основные
     Tool(tool_new_tab),
     Tool(tool_goto_url),
-    Tool(tool_cleanup_tabs),  # НОВЫЙ ИНСТРУМЕНТ!
+    Tool(tool_cleanup_tabs),
     Tool(tool_wait_for_load),
     Tool(tool_js),
     Tool(tool_capture_screenshot),
@@ -277,6 +501,10 @@ tools = [
     Tool(tool_current_tab),
     Tool(tool_switch_tab),
     Tool(tool_close_tab),
+    # Accessibility Tree
+    Tool(tool_get_accessibility_tree),
+    Tool(tool_click_by_ref),
+    Tool(tool_find_in_accessibility),
 ]
 
 # ============================================================
@@ -286,11 +514,11 @@ tools = [
 def create_browser_agent():
     try:
         agent = ReActV2(
-            signature=BrowserTask,  # ← ОБНОВЛЕННАЯ СИГНАТУРА
+            signature=BrowserTask,
             tools=tools,
             max_iters=10,
         )
-        logger.info("✅ ReActV2 агент создан")
+        logger.info("✅ ReActV2 агент создан с AX Tree инструментами")
         return agent
     except Exception as e:
         logger.error(f"❌ Ошибка создания агента: {e}")
@@ -441,13 +669,14 @@ set_viewport_global()
 
 async def start(update, context):
     await update.message.reply_text(
-        "🧠 **DSPy Браузерный агент**\n\n"
+        "🧠 **DSPy Браузерный агент с Accessibility Tree**\n\n"
         "/dspy <запрос> — выполнить задачу\n"
         "/log — скачать логи\n"
         "/clean — закрыть лишние вкладки\n\n"
         "📌 **Примеры:**\n"
-        "/dspy открой google.com и сделай скриншот\n"
-        "/dspy найди новости о Трампе на BBC"
+        "/dspy открой x.com и покажи структуру страницы\n"
+        "/dspy найди на x.com твиты про Трампа\n"
+        "/dspy покажи все кнопки на странице"
     )
 
 async def log(update, context):
@@ -462,7 +691,6 @@ async def log(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def clean_command(update, context):
-    """Закрыть все лишние вкладки"""
     try:
         tabs = list_tabs()
         if len(tabs) > 1:
@@ -481,18 +709,17 @@ async def dspy_command(update, context):
         return
     
     if not context.args:
-        await update.message.reply_text("Пример: /dspy открой google.com")
+        await update.message.reply_text("Пример: /dspy открой x.com и покажи структуру")
         return
     
     query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
     logger.info(f"🧠 {username}: {query}")
     
-    # 🔥 АВТОМАТИЧЕСКАЯ ОЧИСТКА ПЕРЕД ЗАПРОСОМ
+    # Автоматическая очистка
     try:
         tabs = list_tabs()
-        if len(tabs) > 3:  # Если больше 3 вкладок
-            logger.info(f"🧹 Очистка: {len(tabs)} вкладок")
+        if len(tabs) > 3:
             for tab in tabs[1:]:
                 switch_tab(tab)
                 close_tab()
@@ -504,7 +731,6 @@ async def dspy_command(update, context):
     try:
         result = browser_agent(question=query)
         
-        # Обработка ответа
         if isinstance(result, list):
             answer = result[0] if result else "Пустой ответ"
         elif hasattr(result, 'answer'):
@@ -537,8 +763,9 @@ def main():
     app.add_handler(CommandHandler("clean", clean_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 Бот запущен с Accessibility Tree!")
     logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
+    logger.info(f"📦 Инструментов: {len(tools)} (включая AX Tree)")
     app.run_polling()
 
 if __name__ == "__main__":
