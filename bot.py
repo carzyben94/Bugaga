@@ -71,16 +71,16 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# DSPy ИНТЕГРАЦИЯ - ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ LM
+# DSPy ИНТЕГРАЦИЯ - ИСПРАВЛЕННЫЙ LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI - с полной обработкой ошибок"""
+    """Адаптер для Agnes AI - с полной обработкой ошибок и параметров"""
     
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
-        self.kwargs = kwargs
+        self.kwargs = kwargs or {}
         self.provider = "agnes-ai"
         self.model_type = "chat"
         self.forward_contract = "legacy"
@@ -98,15 +98,27 @@ class AgnesLM(dspy.LM):
                 "Content-Type": "application/json"
             }
             
+            # Объединяем параметры с приоритетом у kwargs
             params = {**self.kwargs, **kwargs}
+            
+            # Безопасное извлечение параметров с значениями по умолчанию
+            temperature = params.get("temperature", 0.3)
+            max_tokens = params.get("max_tokens", 2000)
+            
+            # Проверяем, что temperature - число
+            if not isinstance(temperature, (int, float)):
+                temperature = 0.3
+            if not isinstance(max_tokens, (int, float)):
+                max_tokens = 2000
+            
             payload = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": params.get("temperature", 0.3),
-                "max_tokens": params.get("max_tokens", 2000)
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens)
             }
             
-            logger.debug(f"📤 Запрос к Agnes: {payload['model']}, messages: {len(messages)}")
+            logger.debug(f"📤 Запрос к Agnes: {payload['model']}, temp={temperature}, messages={len(messages)}")
             
             with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
                 response = client.post(
@@ -155,11 +167,13 @@ class AgnesLM(dspy.LM):
     def __call__(self, prompt=None, messages=None, **kwargs):
         """Основной метод для вызова LM. Возвращает list[str]"""
         try:
+            # Обрабатываем оба варианта - prompt и messages
             if messages:
                 api_messages = messages
             else:
                 api_messages = [{"role": "user", "content": prompt or ""}]
             
+            # Передаем все kwargs дальше
             return self._call_agnes(api_messages, **kwargs)
         except Exception as e:
             logger.error(f"❌ Ошибка в __call__: {e}")
@@ -192,7 +206,7 @@ class AnalysisTask(Signature):
     answer = OutputField(desc="Ответ")
     confidence = OutputField(desc="Уверенность (0-1)")
 
-# Модули
+# Модули с обработкой ошибок
 class BrowserAgent(Module):
     def __init__(self):
         super().__init__()
