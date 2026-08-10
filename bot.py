@@ -1,4 +1,3 @@
-
 import os
 import sys
 import time
@@ -488,6 +487,10 @@ async def start(update, context):
     await update.message.reply_text(
         "🧠 **DSPy Браузерный агент**\n\n"
         "/dspy <запрос> — выполнить задачу через агента\n"
+        "/tab — показать все открытые вкладки\n"
+        "/switch <id> — переключиться на вкладку по ID\n"
+        "/close — закрыть текущую вкладку\n"
+        "/newtab — открыть новую вкладку\n"
         "/log — скачать логи\n\n"
         "📌 **Примеры:**\n"
         "/dspy открыть google.com и сделать скриншот\n"
@@ -509,6 +512,105 @@ async def log(update, context):
                 caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)"
             )
     except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def tab_command(update, context):
+    """Показать все открытые вкладки"""
+    try:
+        tabs = list_tabs()
+        current = current_tab()
+        
+        if not tabs:
+            await update.message.reply_text("📭 Нет открытых вкладок")
+            return
+        
+        # Форматируем вывод
+        result = "📑 **Открытые вкладки:**\n\n"
+        for i, tab in enumerate(tabs):
+            # Получаем информацию о вкладке
+            try:
+                # Переключаемся на вкладку чтобы получить информацию
+                switch_tab(tab)
+                info = page_info()
+                title = info.get('title', 'Без названия')[:50]
+                url = info.get('url', 'unknown')[:60]
+                marker = "👉 **ТЕКУЩАЯ**" if tab == current else f"ID: {tab}"
+                result += f"`{tab}` {marker}\n   📄 {title}\n   🔗 {url}\n\n"
+            except:
+                result += f"`{tab}` ID: {tab}\n   ❌ Недоступно\n\n"
+        
+        # Возвращаемся на текущую вкладку
+        switch_tab(current)
+        
+        # Отправляем результат
+        if len(result) > 4000:
+            result = result[:4000] + "\n\n... (обрезано)"
+        
+        await update.message.reply_text(
+            result,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /tab: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def switch_command(update, context):
+    """Переключиться на вкладку по ID"""
+    if not context.args:
+        await update.message.reply_text(
+            "📝 **Использование:**\n"
+            "/switch <id_вкладки>\n\n"
+            "Сначала используйте /tab чтобы увидеть ID вкладок"
+        )
+        return
+    
+    try:
+        tab_id = int(context.args[0])
+        switch_tab(tab_id)
+        
+        # Получаем информацию о новой вкладке
+        info = page_info()
+        title = info.get('title', 'Без названия')
+        url = info.get('url', 'unknown')
+        
+        await update.message.reply_text(
+            f"✅ Переключился на вкладку `{tab_id}`\n"
+            f"📄 {title}\n"
+            f"🔗 {url[:100]}",
+            parse_mode='Markdown'
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ ID вкладки должен быть числом")
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /switch: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def close_command(update, context):
+    """Закрыть текущую вкладку"""
+    try:
+        current = current_tab()
+        close_tab()
+        await update.message.reply_text(f"✅ Вкладка `{current}` закрыта", parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /close: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+async def newtab_command(update, context):
+    """Открыть новую вкладку"""
+    try:
+        new_tab()
+        # Ждем загрузки
+        wait_for_load()
+        current = current_tab()
+        await update.message.reply_text(
+            f"✅ Новая вкладка открыта\n"
+            f"ID: `{current}`",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /newtab: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update, context):
@@ -538,7 +640,7 @@ async def dspy_command(update, context):
         # Вызываем агента
         result = browser_agent(question=query)
         
-        # 🔥 ПРАВИЛЬНАЯ ОБРАБОТКА ОТВЕТА
+        # Обработка ответа
         if isinstance(result, list):
             answer = result[0] if result else "Пустой ответ"
         elif hasattr(result, 'answer'):
@@ -568,15 +670,21 @@ async def dspy_command(update, context):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # Регистрируем команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("log", log))
     app.add_handler(CommandHandler("dspy", dspy_command))
+    app.add_handler(CommandHandler("tab", tab_command))
+    app.add_handler(CommandHandler("switch", switch_command))
+    app.add_handler(CommandHandler("close", close_command))
+    app.add_handler(CommandHandler("newtab", newtab_command))
     
     logger.info("🚀 Бот запущен!")
     logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
     logger.info(f"🍪 Куки: {'✅ Установлены' if COOKIES else '❌ Не установлены'}")
     logger.info(f"📁 Логи: {LOGS_DIR}")
     logger.info(f"📸 Скриншоты: {SCREENSHOTS_DIR}")
+    logger.info("📋 Доступные команды: /start, /log, /dspy, /tab, /switch, /close, /newtab")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
