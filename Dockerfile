@@ -9,10 +9,15 @@ RUN apt-get update && apt-get install -y \
 
 ENV PYTHONUNBUFFERED=1
 ENV CHROMIUM_PATH=/usr/bin/chromium
+ENV BH_DOMAIN_SKILLS=1
+ENV BH_AGENT_WORKSPACE=/app/browser-harness/agent-workspace
 
 WORKDIR /app
 
-RUN mkdir -p /app/logs /app/screenshots
+RUN mkdir -p /app/logs /app/screenshots /app/browser-harness/agent-workspace
+
+# Устанавливаем browser-harness как Python пакет
+RUN pip install --no-cache-dir browser-harness
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -30,18 +35,11 @@ CMD sh -c "echo '🚀 Запуск Chromium...' && \
     echo '⏳ Ожидание Chromium...' && \
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do \
         if curl -s http://localhost:9222/json/version > /dev/null 2>&1; then \
-            echo '✅ Chromium готов!' && \
+            echo '✅ Chromium готов!'; \
             break; \
         fi; \
         echo -n '.'; \
         sleep 1; \
-        if [ $i -eq 30 ]; then \
-            echo '❌ Chromium не запустился!'; \
-            cat /app/logs/chromium.log; \
-            exit 1; \
-        fi; \
     done && \
     echo '🚀 Запуск бота...' && \
-    python -u bot.py 2>&1 | tee /app/logs/bot.log && \
-    echo '⚠️ Бот завершился, смотрю логи...' && \
-    tail -f /app/logs/bot.log"
+    python -u bot.py 2>&1 | tee /app/logs/bot.log"
