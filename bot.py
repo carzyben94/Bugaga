@@ -810,11 +810,9 @@ async def ask_agnes_fallback(messages):
 async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
-        "/ask <запрос> — задать задачу агенту\n"
-        "/dspy <запрос> — использовать DSPy\n"
+        "/dspy <запрос> — задать задачу агенту\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
-        "/skills — список навыков\n"
         "/log — скачать логи"
     )
 
@@ -826,33 +824,6 @@ async def log(update, context):
             return
         with open(log_file, 'rb') as f:
             await update.message.reply_document(document=f, filename='bot.log', caption=f"📋 Логи бота ({os.path.getsize(log_file)} байт)")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def skills(update, context):
-    try:
-        skills_dir = os.path.join(agent_workspace, "domain-skills")
-        if not os.path.exists(skills_dir):
-            await update.message.reply_text("📭 Папка с навыками не найдена")
-            return
-        
-        skills_list = []
-        for domain in os.listdir(skills_dir):
-            domain_path = os.path.join(skills_dir, domain)
-            if os.path.isdir(domain_path):
-                for f in os.listdir(domain_path):
-                    if f.endswith(".md") or f.endswith(".txt"):
-                        skills_list.append(f"{domain}/{f}")
-        
-        if skills_list:
-            msg = "🧠 **Доступные навыки:**\n\n"
-            for skill in skills_list[:20]:
-                msg += f"• `{skill}`\n"
-            if len(skills_list) > 20:
-                msg += f"\n... и ещё {len(skills_list) - 20}"
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("🧠 Навыков пока нет. Агент создаст их по мере работы.")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -890,45 +861,6 @@ async def images(update, context):
             await update.message.reply_text(f"✅ Отправлено {sent_count} скриншотов")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-async def ask(update, context):
-    if not context.args:
-        await update.message.reply_text("Пример: /ask сделай скриншот google.com")
-        return
-
-    user_query = " ".join(context.args)
-    username = update.effective_user.username or "unknown"
-    logger.info(f"👤 {username} запросил: {user_query}")
-    
-    status_msg = await update.message.reply_text("🤔 Думаю...")
-
-    try:
-        if browser_agent:
-            # Используем агента
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_query}
-            ]
-            response = await ask_agnes_dspy(messages)
-            
-            if response and response.strip():
-                response_escaped = escape_markdown(response[:4000], version=2)
-                await status_msg.edit_text(f"✅ Результат:\n{response_escaped}", parse_mode='MarkdownV2')
-            else:
-                await status_msg.edit_text("❌ Агент вернул пустой ответ")
-        else:
-            # Fallback
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_query}
-            ]
-            response = await ask_agnes_fallback(messages)
-            response_escaped = escape_markdown(response[:4000], version=2)
-            await status_msg.edit_text(f"💬 Ответ:\n{response_escaped}", parse_mode='MarkdownV2')
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в /ask для {username}: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update, context):
     if not browser_agent:
@@ -968,13 +900,10 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ask", ask))
-    app.add_handler(CommandHandler("log", log))
-    app.add_handler(CommandHandler("skills", skills))
+    app.add_handler(CommandHandler("dspy", dspy_command))
     app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("images", images))
-    
-    app.add_handler(CommandHandler("dspy", dspy_command))
+    app.add_handler(CommandHandler("log", log))
 
     logger.info("🚀 Бот запущен!")
     logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
