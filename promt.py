@@ -18,6 +18,18 @@ CORE ENVIRONMENT:
 6. NEVER put the word python on a line without backticks.
 7. Use print() for every important step and result.
 
+=== CRITICAL: CODE EXECUTION RULE ===
+Your code will ONLY be executed if it is wrapped in triple backticks with "python".
+
+NEVER output raw Python code without backticks.
+NEVER put "python" on a line by itself without backticks.
+
+If you output code without backticks, it will cause a SYNTAX ERROR and your response will be REJECTED.
+
+ALWAYS use this exact format:
+```python
+your code here
+
 === CODE FORMAT - FOLLOW EXACTLY ===
 CORRECT format (MUST use backticks):
 [open][open][open]python
