@@ -147,12 +147,18 @@ class AgnesLM(dspy.LM):
 # ============================================================
 
 class BrowserTask(Signature):
-    """Ты агент с доступом к браузеру. Используй эти функции:
+    """Ты агент с доступом к браузеру.
     
+    ВАЖНО: В js() всегда используй ОДИНАРНЫЕ кавычки внутри!
+    
+    Правильно: js('() => document.querySelector(".price")?.innerText')
+    Неправильно: js("() => document.querySelector('.price')?.innerText")
+    
+    Используй функции:
     - new_tab() - открыть вкладку
     - goto_url(url) - перейти на URL
     - wait_for_load() - ждать загрузку страницы
-    - js(expression) - выполнить JavaScript
+    - js(expression) - выполнить JavaScript (ТОЛЬКО ОДИНАРНЫЕ КАВЫЧКИ!)
     - http_get(url) - HTTP запрос
     - capture_screenshot(filename) - скриншот
     - fill_input(selector, text) - заполнить поле ввода
@@ -626,6 +632,25 @@ def execute_code(code):
         old_stdout = sys.stdout
         sys.stdout = stdout_buffer
         
+        # ============================================================
+        # БЕЗОПАСНАЯ ОБЕРТКА ДЛЯ js()
+        # ============================================================
+        def safe_js(expression):
+            """Безопасное выполнение JavaScript с правильными кавычками"""
+            try:
+                # Если выражение содержит двойные кавычки внутри - экранируем
+                if isinstance(expression, str):
+                    # Заменяем двойные кавычки на одинарные внутри
+                    expression = expression.replace('"', "'")
+                return js(expression)
+            except Exception as e:
+                logger.error(f"❌ JS ошибка: {e}")
+                return None
+        
+        # ============================================================
+        # ВСЕ ФУНКЦИИ
+        # ============================================================
+        
         def save_skill(host, name, content):
             skills_dir = os.path.join(agent_workspace, "domain-skills", host)
             os.makedirs(skills_dir, exist_ok=True)
@@ -662,6 +687,7 @@ def execute_code(code):
             logger.info(f"📸 Сохраняю скриншот в: {full_path}")
             return capture_screenshot(path=full_path, full=False, max_dim=max_dim)
         
+        # Функции для exec
         globals_dict = {
             'new_tab': new_tab,
             'goto_url': goto_url,
@@ -673,7 +699,7 @@ def execute_code(code):
             'press_key': press_key,
             'scroll': scroll,
             'scroll_at_xy': scroll,
-            'js': js,
+            'js': safe_js,  # ← БЕЗОПАСНАЯ ВЕРСИЯ!
             'cdp': cdp,
             'ensure_real_tab': ensure_real_tab,
             'wait_for_element': wait_for_element,
