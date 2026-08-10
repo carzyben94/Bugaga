@@ -707,11 +707,33 @@ async def ask_agnes_fallback(messages):
         return f"Ошибка LLM: {str(e)[:200]}"
 
 # ============================================================
-# ВЫПОЛНИТЕЛЬ
+# ВЫПОЛНИТЕЛЬ (ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 def execute_code(code):
     logger.info(f"⚙️ ВЫПОЛНЕНИЕ КОДА:\n{code}")
+    
+    # ===== ОЧИСТКА КОДА ОТ MARKDOWN-РАЗМЕТКИ =====
+    code = code.strip()
+    
+    # Удаляем ```python в начале
+    if code.startswith('```python'):
+        code = code[10:]  # длина ```python = 10
+    elif code.startswith('```'):
+        code = code[3:]   # длина ``` = 3
+    
+    # Удаляем ``` в конце
+    if code.endswith('```'):
+        code = code[:-3]
+    
+    # Удаляем ``` с пробелами/переносами в конце
+    code = re.sub(r'```\s*$', '', code)
+    
+    # Финальная очистка
+    code = code.strip()
+    logger.info(f"⚙️ КОД ПОСЛЕ ОЧИСТКИ:\n{code[:200]}...")
+    # =============================================
+    
     try:
         stdout_buffer = io.StringIO()
         old_stdout = sys.stdout
