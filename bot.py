@@ -1,7 +1,7 @@
 import os
 import sys
 import stat
-import time 
+import time
 import logging
 import base64
 import re
@@ -14,7 +14,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram.helpers import escape_markdown
 from promt import SYSTEM_PROMPT
-from PIL import Image
 
 # DSPy импорты для версии 3.3.0b1
 import dspy
@@ -742,106 +741,6 @@ def push_helpers_to_github():
         return False
 
 # ============================================================
-# ФОТОШОП
-# ============================================================
-
-AGNES_IMAGE_API_URL = "https://apihub.agnes-ai.com/v1/images/generations"
-
-def get_image_size(image_data):
-    try:
-        img = Image.open(io.BytesIO(image_data))
-        width, height = img.size
-        return width, height
-    except Exception as e:
-        logger.error(f"Ошибка при определении размера: {e}")
-        return None, None
-
-def replace_background(image_data, new_background_prompt: str):
-    if not AGNES_API_KEY:
-        return None, "AGNES_API_KEY не установлен!"
-    
-    if not image_data:
-        return None, "Нет данных изображения"
-    
-    if not new_background_prompt or len(new_background_prompt.strip()) < 2:
-        return None, "Слишком короткое описание фона"
-    
-    try:
-        width, height = get_image_size(image_data)
-        MAX_SIZE = 1024
-        MIN_SIZE = 256
-        
-        if width and height:
-            if width > MAX_SIZE or height > MAX_SIZE:
-                ratio = min(MAX_SIZE / width, MAX_SIZE / height)
-                width = int(width * ratio)
-                height = int(height * ratio)
-            if width < MIN_SIZE or height < MIN_SIZE:
-                ratio = max(MIN_SIZE / width, MIN_SIZE / height)
-                width = int(width * ratio)
-                height = int(height * ratio)
-            size = f"{width}x{height}"
-        else:
-            size = "1024x1024"
-        
-        try:
-            img = Image.open(io.BytesIO(image_data))
-            if img.mode in ('RGBA', 'LA', 'P'):
-                img = img.convert('RGB')
-            buffer = io.BytesIO()
-            img.save(buffer, format='JPEG', quality=85, optimize=True)
-            image_data = buffer.getvalue()
-        except Exception as e:
-            logger.warning(f"Не удалось оптимизировать изображение: {e}")
-        
-        img_b64 = base64.b64encode(image_data).decode('utf-8')
-        data_uri = f"data:image/jpeg;base64,{img_b64}"
-        
-        enhanced_prompt = f"""
-        Replace the background with: {new_background_prompt}.
-        Keep the main subject exactly as is.
-        Maintain the original lighting and shadows.
-        Make the background look natural and realistic.
-        Do not alter the main subject.
-        """
-        
-        headers = {
-            "Authorization": f"Bearer {AGNES_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": "agnes-image-2.0-flash",
-            "prompt": enhanced_prompt.strip(),
-            "size": size,
-            "extra_body": {
-                "image": [data_uri],
-                "response_format": "url"
-            }
-        }
-        
-        with httpx.Client(timeout=90.0) as client:
-            response = client.post(
-                AGNES_IMAGE_API_URL,
-                json=payload,
-                headers=headers
-            )
-            response.raise_for_status()
-            result = response.json()
-        
-        if 'data' in result and len(result['data']) > 0:
-            if 'url' in result['data'][0]:
-                return result['data'][0]['url'], None
-            elif 'b64_json' in result['data'][0]:
-                return result['data'][0]['b64_json'], None
-        
-        return None, "Неожиданный формат ответа от API"
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        return None, f"Внутренняя ошибка: {str(e)[:100]}"
-
-# ============================================================
 # LLM
 # ============================================================
 
@@ -912,15 +811,11 @@ async def start(update, context):
     await update.message.reply_text(
         "🌐 Браузер:\n"
         "/ask <запрос> — задать задачу агенту\n"
+        "/dspy <запрос> — использовать DSPy\n"
         "/image — последний скриншот\n"
         "/images — все скриншоты\n"
         "/skills — список навыков\n"
-        "/log — скачать логи\n\n"
-        "🎨 Фотошоп:\n"
-        "/bg <описание> — заменить фон\n"
-        "/clear — очистить кэш\n\n"
-        "🧠 DSPy:\n"
-        "/dspy <запрос> — использовать DSPy"
+        "/log — скачать логи"
     )
 
 async def log(update, context):
@@ -1065,88 +960,6 @@ async def dspy_command(update, context):
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def clear_command(update, context):
-    if 'last_image' in context.user_data:
-        del context.user_data['last_image']
-        await update.message.reply_text("🧹 Кэш очищен!")
-    else:
-        await update.message.reply_text("📭 Кэш пуст")
-
-async def handle_photo(update, context):
-    try:
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        context.user_data['last_image'] = bytes(photo_bytes)
-        
-        width, height = get_image_size(photo_bytes)
-        size_info = f" ({width}x{height})" if width and height else ""
-        
-        await update.message.reply_text(
-            f"📸 Фото сохранено{size_info}!\n"
-            f"✏️ Используй /bg <описание> для замены фона"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-async def bg_command(update, context):
-    if not AGNES_API_KEY:
-        await update.message.reply_text("❌ Agnes AI не настроен. Нет AGNES_API_KEY")
-        return
-
-    if 'last_image' not in context.user_data:
-        await update.message.reply_text("📸 Сначала загрузите картинку!")
-        return
-
-    if not context.args:
-        await update.message.reply_text("✏️ Напишите описание нового фона. Пример: /bg beach")
-        return
-
-    prompt = ' '.join(context.args)
-    waiting_msg = await update.message.reply_text(f"🎨 Заменяю фон: {prompt}\n⏳ Ожидайте...")
-
-    try:
-        image_data = context.user_data['last_image']
-        loop = asyncio.get_event_loop()
-        result_url, error = await loop.run_in_executor(
-            None, replace_background, image_data, prompt
-        )
-
-        try:
-            await waiting_msg.delete()
-        except:
-            pass
-
-        if error:
-            await update.message.reply_text(f"❌ Ошибка: {error}")
-            return
-
-        if result_url:
-            try:
-                if result_url.startswith('data:image'):
-                    img_data = base64.b64decode(result_url.split(',')[1])
-                    await update.message.reply_photo(
-                        img_data,
-                        caption=f"🖼️ Готово! Фон заменён на: {prompt}"
-                    )
-                else:
-                    response = httpx.get(result_url, timeout=30)
-                    if response.status_code == 200:
-                        await update.message.reply_photo(
-                            response.content,
-                            caption=f"🖼️ Готово! Фон заменён на: {prompt}"
-                        )
-                    else:
-                        await update.message.reply_text(f"❌ Ошибка загрузки: {response.status_code}")
-            except Exception as e:
-                logger.error(f"Ошибка скачивания: {e}")
-                await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-        else:
-            await update.message.reply_text("❌ Не удалось заменить фон")
-
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 # ============================================================
 # ЗАПУСК
 # ============================================================
@@ -1162,10 +975,6 @@ def main():
     app.add_handler(CommandHandler("images", images))
     
     app.add_handler(CommandHandler("dspy", dspy_command))
-    
-    app.add_handler(CommandHandler("bg", bg_command))
-    app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("🚀 Бот запущен!")
     logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
