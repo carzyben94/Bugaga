@@ -46,35 +46,23 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ВЛОЖЕННЫЙ СЛОВАРЬ) =====
-    # ВАЖНО: browser_preferences должен быть словарём, а не строкой!
-    options.browser_preferences = {
-        'profile': {
-            'default_content_setting_values': {
-                'geolocation': 2,
-                'notifications': 2,
-                'media_stream_mic': 2,
-                'media_stream_camera': 2,
-                'midi_sysex': 2,
-                'push_messaging': 2,
-                'ppapi_broker': 2,
-                'automatic_downloads': 1,
-                'cookies': 1,
-                'popups': 1,
-            },
-            'password_manager_enabled': False,
-        },
-        'credentials_enable_service': False,
-        'intl': {
-            'accept_languages': 'en-US,en;q=0.9',
-        },
-        'download': {
-            'prompt_for_download': False,
-        },
-        'safebrowsing': {
-            'enabled': True,
-        },
-    }
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
+    # Используем _set_pref_path для безопасной установки настроек
+    options._set_pref_path(['profile', 'default_content_setting_values', 'geolocation'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'notifications'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_mic'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_camera'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'midi_sysex'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'push_messaging'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'ppapi_broker'], 2)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'automatic_downloads'], 1)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'cookies'], 1)
+    options._set_pref_path(['profile', 'default_content_setting_values', 'popups'], 1)
+    options._set_pref_path(['profile', 'password_manager_enabled'], False)
+    options._set_pref_path(['credentials_enable_service'], False)
+    options._set_pref_path(['intl', 'accept_languages'], 'en-US,en;q=0.9')
+    options._set_pref_path(['download', 'prompt_for_download'], False)
+    options._set_pref_path(['safebrowsing', 'enabled'], True)
     
     return options
 
@@ -98,6 +86,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': """
+                    // ===== NAVIGATOR =====
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
                     });
@@ -119,6 +108,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
                     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 16 });
                     
+                    // ===== WebGL =====
                     (() => {
                         const patchWebGL = (proto) => {
                             const oldGetParameter = proto.getParameter;
@@ -137,6 +127,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     })();
                     
+                    // ===== Canvas =====
                     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                     HTMLCanvasElement.prototype.toDataURL = function(type) {
                         if (type === 'image/png' || !type) {
@@ -152,6 +143,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return originalToDataURL.call(this, type);
                     };
                     
+                    // ===== Audio =====
                     if (window.OfflineAudioContext) {
                         const originalCreateBuffer = OfflineAudioContext.prototype.createBuffer;
                         OfflineAudioContext.prototype.createBuffer = function() {
@@ -168,6 +160,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         };
                     }
                     
+                    // ===== Plugins =====
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => {
                             const plugins = [
@@ -183,6 +176,22 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     });
                     
+                    // ===== MIME Types =====
+                    Object.defineProperty(navigator, 'mimeTypes', {
+                        get: () => {
+                            const mimeTypes = [
+                                { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                                { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+                            ];
+                            mimeTypes.__proto__ = MimeTypeArray.prototype;
+                            mimeTypes.length = mimeTypes.length;
+                            mimeTypes.item = (i) => mimeTypes[i] || null;
+                            mimeTypes.namedItem = (type) => mimeTypes.find(m => m.type === type) || null;
+                            return mimeTypes;
+                        }
+                    });
+                    
+                    // ===== Screen =====
                     Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
                     Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
                     Object.defineProperty(screen, 'width', { get: () => 1920 });
@@ -190,6 +199,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
                     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     
+                    // ===== Window =====
                     Object.defineProperty(window, 'outerWidth', { get: () => 1920 });
                     Object.defineProperty(window, 'outerHeight', { get: () => 1080 });
                     Object.defineProperty(window, 'innerWidth', { get: () => 1920 });
@@ -197,6 +207,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(window, 'screenX', { get: () => 0 });
                     Object.defineProperty(window, 'screenY', { get: () => 0 });
                     
+                    // ===== Performance =====
                     Object.defineProperty(performance, 'memory', {
                         get: () => ({
                             jsHeapSizeLimit: 2172649472,
@@ -205,6 +216,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         })
                     });
                     
+                    // ===== Chrome object =====
                     window.chrome = {
                         runtime: {},
                         loadTimes: function() {},
@@ -215,15 +227,17 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         )
         
-        # ===== 4. ОСНОВНАЯ ЛОГИКА =====
+        # ===== 4. ОСНОВНАЯ ЛОГИКА С ПОЛНОЙ ЭМУЛЯЦИЕЙ =====
         await tab.go_to(url)
         await human_delay(2.0, 4.0)
         
+        # Скролл с эмуляцией человека
         await tab.scroll.to_bottom(humanize=True)
         await human_delay(1.0, 2.0)
         await tab.scroll.to_top(humanize=True)
         await human_delay(0.5, 1.5)
         
+        # Получаем информацию
         title = await tab.title
         current_url = await tab.current_url
         
@@ -237,10 +251,12 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {'expression': 'navigator.userAgent'}
         )
         
+        # Делаем скриншот
         screenshot = await tab.screenshot()
         
         await browser.close()
         
+        # Отправляем результат
         await update.message.reply_text(
             f"✅ Страница загружена!\n"
             f"📌 Заголовок: {title}\n"
@@ -250,6 +266,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎭 Маскировка: 100%"
         )
         
+        # Отправляем скриншот
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"📸 Скриншот {url}"
@@ -266,7 +283,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Полная маскировка navigator\n"
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
-        "• Эмуляция человека\n\n"
+        "• Эмуляция человека:\n"
+        "  - Движение мыши по кривым Безье\n"
+        "  - Тремор и overshoot\n"
+        "  - Переменная скорость набора\n"
+        "  - Естественные паузы\n"
+        "  - Скролл с физикой\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
         "/parse <url> - Запустить браузер с маскировкой\n"
