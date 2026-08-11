@@ -401,7 +401,7 @@ if AGNES_API_KEY:
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=5,
+            max_iters=10,
         )
         logger.info("✅ DSPy агент создан")
     except Exception as e:
