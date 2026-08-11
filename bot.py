@@ -11,6 +11,20 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 
+# ==================== ИМПОРТЫ ИЗ DSPY-PLASMATE ====================
+try:
+    from dspy_plasmate import (
+        PlasmateFetchTool, 
+        PlasmateRetriever, 
+        WebSearchModule, 
+        WebSummarizeModule
+    )
+    PLASMATE_AVAILABLE = True
+    logger.info("✅ dspy-plasmate импортирован")
+except ImportError as e:
+    PLASMATE_AVAILABLE = False
+    logger.warning(f"⚠️ dspy-plasmate не доступен: {e}")
+
 # ==================== НАСТРОЙКА ====================
 logging.basicConfig(
     level=logging.INFO,
@@ -28,54 +42,92 @@ if not TOKEN:
 logger.info(f"🔑 AGNES_API_KEY: {'✅ есть' if AGNES_API_KEY else '❌ нет'}")
 logger.info(f"🤖 TELEGRAM_BOT_TOKEN: {'✅ есть' if TOKEN else '❌ нет'}")
 
-# ==================== ИНСТРУМЕНТЫ (через subprocess) ====================
+# ==================== ИНИЦИАЛИЗАЦИЯ DSPY-PLASMATE ====================
+plasmate_tool = None
+retriever = None
+web_search = None
+web_summarize = None
 
-def run_plasmate(url: str, format_type: str = "text") -> str:
-    """Выполняет plasmate fetch с нужным форматом"""
+if PLASMATE_AVAILABLE and AGNES_API_KEY:
+    try:
+        # 1. Базовый инструмент
+        plasmate_tool = PlasmateFetchTool(text_only=True, timeout=30)
+        logger.info("✅ PlasmateFetchTool создан")
+        
+        # 2. Ретривер для RAG
+        retriever = PlasmateRetriever(k=5, tool=plasmate_tool)
+        logger.info("✅ PlasmateRetriever создан")
+        
+        # 3. Модуль поиска
+        web_search = WebSearchModule()
+        logger.info("✅ WebSearchModule создан")
+        
+        # 4. Модуль суммаризации
+        web_summarize = WebSummarizeModule()
+        logger.info("✅ WebSummarizeModule создан")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации: {e}")
+        PLASMATE_AVAILABLE = False
+
+# ==================== ИНСТРУМЕНТЫ ДЛЯ DSPy ====================
+
+# Функция для прямого вызова Plasmate (на случай, если dspy-plasmate не работает)
+def run_plasmate(url: str) -> str:
+    """Выполняет plasmate fetch через subprocess"""
     try:
         result = subprocess.run(
-            ["plasmate", "fetch", url, "--format", format_type],
+            ["plasmate", "fetch", url, "--format", "text"],
             capture_output=True,
             text=True,
             timeout=30
         )
-        
         if result.returncode == 0:
             return result.stdout
         else:
             return f"❌ Ошибка: {result.stderr[:200]}"
-    except subprocess.TimeoutExpired:
-        return "❌ Таймаут (30 сек)"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def fetch_page(url: str) -> str:
     """Открыть страницу и получить её текст"""
-    try:
-        content = run_plasmate(url, "text")
-        
+    if plasmate_tool:
+        try:
+            result = plasmate_tool(url)
+            content = str(result)
+            if len(content) > 3000:
+                content = content[:3000] + "..."
+            return f"✅ Страница загружена:\n{content}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)[:200]}"
+    else:
+        # Fallback на subprocess
+        content = run_plasmate(url)
         if content.startswith("❌"):
             return content
-        
         if len(content) > 3000:
             content = content[:3000] + "..."
-        
         return f"✅ Страница загружена:\n{content}"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)[:200]}"
 
 def ask_webpage(url: str, question: str) -> str:
     """Задать вопрос по содержимому страницы"""
+    if not plasmate_tool:
+        return "❌ Plasmate не доступен"
+    
     try:
-        content = run_plasmate(url, "text")
-        
-        if content.startswith("❌"):
-            return content
-        
-        if len(content) > 8000:
-            content = content[:8000] + "..."
-        
-        if AGNES_API_KEY:
+        # Используем WebSummarizeModule для получения ответа
+        if web_summarize:
+            result = web_summarize(url=url)
+            summary = result.summary if hasattr(result, 'summary') else str(result)
+            return f"📝 Краткое содержание:\n{summary[:2000]}"
+        else:
+            # Старый метод через LM
+            content = run_plasmate(url)
+            if content.startswith("❌"):
+                return content
+            if len(content) > 8000:
+                content = content[:8000] + "..."
+            
             lm = AgnesLM(api_key=AGNES_API_KEY)
             response = lm(f"""
                 Ответь на вопрос на основе текста страницы.
@@ -88,86 +140,67 @@ def ask_webpage(url: str, question: str) -> str:
                 Ответ должен быть кратким и по существу.
             """)
             return f"📝 Ответ: {response[0] if isinstance(response, list) else response}"
-        else:
-            return f"📄 Контент страницы:\n{content[:2000]}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def search_web(query: str) -> str:
     """Поискать информацию в интернете"""
     try:
-        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        content = run_plasmate(search_url, "text")
-        
-        if content.startswith("❌"):
-            return content
-        
-        # Парсим заголовки (упрощённо)
-        lines = content.split('\n')
-        results = []
-        for line in lines:
-            if len(line.strip()) > 10:
-                results.append(line.strip())
-        
-        if results:
-            output = f"🔍 Результаты поиска по '{query}':\n"
-            for i, line in enumerate(results[:5], 1):
-                output += f"{i}. {line[:150]}\n"
-            return output
-        
-        return f"📄 Страница поиска:\n{content[:2000]}"
+        # Используем WebSearchModule
+        if web_search:
+            result = web_search(question=query)
+            answer = result.answer if hasattr(result, 'answer') else str(result)
+            return f"🔍 Результаты поиска по '{query}':\n{answer[:2000]}"
+        else:
+            # Fallback на subprocess
+            search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+            content = run_plasmate(search_url)
+            if content.startswith("❌"):
+                return content
+            return f"📄 Страница поиска:\n{content[:2000]}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+def summarize_page(url: str) -> str:
+    """Суммаризировать страницу"""
+    if not web_summarize:
+        return "❌ WebSummarizeModule не доступен"
+    
+    try:
+        result = web_summarize(url=url)
+        summary = result.summary if hasattr(result, 'summary') else str(result)
+        return f"📝 Содержание страницы:\n{summary[:3000]}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def get_page_title(url: str) -> str:
     """Получить заголовок страницы"""
     try:
-        content = run_plasmate(url, "text")
-        
+        content = run_plasmate(url)
         if content.startswith("❌"):
             return content
-        
-        # Ищем первую строку как заголовок
         lines = content.split('\n')
         for line in lines:
             if line.strip():
                 return f"📌 Заголовок: {line.strip()[:200]}"
-        
         return "📌 Заголовок не найден"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def extract_links(url: str) -> str:
-    """Извлечь ссылки со страницы (через SOM)"""
+    """Извлечь ссылки со страницы"""
     try:
-        # Используем JSON формат для структурированных данных
-        content = run_plasmate(url, "json")
-        
+        content = run_plasmate(url)
         if content.startswith("❌"):
             return content
-        
-        # Парсим JSON
-        import json
-        try:
-            data = json.loads(content)
-            links = []
-            
-            # Ищем ссылки в JSON
-            if isinstance(data, dict):
-                # Рекурсивный поиск URL
-                import re
-                text = json.dumps(data)
-                found = re.findall(r'https?://[^\s"\'<>]+', text)
-                unique = list(dict.fromkeys(found))[:10]
-                
-                if unique:
-                    output = "🔗 Ссылки на странице:\n"
-                    for i, link in enumerate(unique, 1):
-                        output += f"{i}. {link}\n"
-                    return output
-        except:
-            pass
-        
+        # Ищем ссылки
+        links = re.findall(r'https?://[^\s"\'<>]+', content)
+        unique = list(dict.fromkeys(links))[:10]
+        if unique:
+            output = "🔗 Ссылки на странице:\n"
+            for i, link in enumerate(unique, 1):
+                output += f"{i}. {link}\n"
+            return output
         return "🔗 Ссылок не найдено"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
@@ -177,6 +210,7 @@ tools = [
     Tool(fetch_page, name="fetch_page", desc="Открыть веб-страницу и получить её текст"),
     Tool(ask_webpage, name="ask_webpage", desc="Задать вопрос по содержимому страницы. Нужны url и вопрос"),
     Tool(search_web, name="search_web", desc="Поискать информацию в интернете по запросу"),
+    Tool(summarize_page, name="summarize_page", desc="Сделать краткое содержание страницы по URL"),
     Tool(get_page_title, name="get_page_title", desc="Получить заголовок страницы по URL"),
     Tool(extract_links, name="extract_links", desc="Извлечь все ссылки со страницы"),
 ]
@@ -255,7 +289,6 @@ else:
 
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем Plasmate
     try:
         test = subprocess.run(["plasmate", "--version"], capture_output=True, text=True, timeout=5)
         plasm_status = f"✅ Plasmate {test.stdout.strip()}" if test.returncode == 0 else "❌ Plasmate не найден"
@@ -269,11 +302,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🌐 {plasm_status}\n"
         f"🧠 {dspy_status}\n"
         f"📊 Инструментов: {len(tools)}\n\n"
-        f"Используй:\n"
-        f"/dspy <запрос> — выполнить задачу\n"
+        f"Доступные команды:\n"
+        f"/dspy <запрос> — выполнить задачу через агента\n"
         f"/fetch <url> — открыть страницу\n"
         f"/ask <url> | <вопрос> — спросить по странице\n"
-        f"/search <запрос> — поискать в интернете"
+        f"/search <запрос> — поискать в интернете\n"
+        f"/summarize <url> — краткое содержание страницы"
     )
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -349,6 +383,16 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = search_web(query)
     await update.message.reply_text(result[:4000])
 
+async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Новая команда для суммаризации страницы"""
+    if not context.args:
+        await update.message.reply_text("📝 Укажи URL после /summarize")
+        return
+    
+    url = context.args[0]
+    result = summarize_page(url)
+    await update.message.reply_text(result[:4000])
+
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     logger.info("🚀 Запуск бота с Plasmate...")
@@ -359,6 +403,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("fetch", fetch_command))
     app.add_handler(CommandHandler("ask", ask_command))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("summarize", summarize_command))  # Новая команда
     
     logger.info("✅ Бот запущен!")
     app.run_polling(drop_pending_updates=True)
