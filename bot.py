@@ -18,26 +18,14 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
-    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
-    
-    # User-Agent (реальный Chrome) — меняет HTTP-заголовки, но НЕ navigator.userAgent в JS!
-    # Для полной маскировки нужна синхронизация через CDP (см. JS-скрипт ниже)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
-    
-    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
-    
-    # WebGL — программный рендеринг (скрывает реальный GPU)
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
-    
-    # Защита WebRTC от утечки IP
     options.webrtc_leak_protection = True
-    
-    # Размер окна (реальный пользователь)
     options.add_argument('--window-size=1920,1080')
     
     # ===== HEADLESS NEW =====
@@ -60,19 +48,18 @@ def create_full_stealth_options() -> ChromiumOptions:
     
     # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
     options.browser_preferences = {
-        # Настройки профиля (важно для консистентного отпечатка)
         'profile': {
             'default_content_setting_values': {
-                'geolocation': 2,        # 2 = блокировать
-                'notifications': 2,      # 2 = блокировать
+                'geolocation': 2,
+                'notifications': 2,
                 'media_stream_mic': 2,
                 'media_stream_camera': 2,
                 'midi_sysex': 2,
                 'push_messaging': 2,
                 'ppapi_broker': 2,
-                'automatic_downloads': 1, # 1 = разрешить
-                'cookies': 1,            # 1 = разрешить
-                'popups': 1,             # 1 = разрешить
+                'automatic_downloads': 1,
+                'cookies': 1,
+                'popups': 1,
             },
             'password_manager_enabled': False,
         },
@@ -83,6 +70,9 @@ def create_full_stealth_options() -> ChromiumOptions:
         'download': {
             'prompt_for_download': False,
         },
+        'safebrowsing': {
+            'enabled': True,
+        },
     }
     
     return options
@@ -92,7 +82,11 @@ async def human_delay(min_seconds: float = 0.5, max_seconds: float = 2.0):
     await asyncio.sleep(random.uniform(min_seconds, max_seconds))
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Запускаю браузер с полной эмуляцией человека...")
+    # Получаем URL из сообщения (если есть)
+    args = context.args
+    url = args[0] if args else 'https://whoer.net'
+    
+    await update.message.reply_text(f"🔄 Запускаю браузер с полной эмуляцией человека...\n📍 Цель: {url}")
     
     try:
         options = create_full_stealth_options()
@@ -100,13 +94,11 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tab = await browser.start()
         
         # ===== 3. JS-СКРИПТЫ МАСКИРОВКИ =====
-        # ВАЖНО: --user-agent меняет только HTTP-заголовки. navigator.userAgent в JS нужно
-        # переопределять отдельно через Page.addScriptToEvaluateOnNewDocument[citation:6][citation:9]
         await tab._connection_handler.execute_command(
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': """
-                    // ===== NAVIGATOR (синхронизация с --user-agent) =====
+                    // ===== NAVIGATOR =====
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
                     });
@@ -123,7 +115,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         get: () => ['en-US', 'en']
                     });
                     
-                    // Удаляем следы автоматизации
                     delete navigator.__proto__.webdriver;
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
@@ -233,59 +224,50 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         )
         
-        # ===== 4. ОСНОВНАЯ ЛОГИКА С ПОЛНОЙ ЭМУЛЯЦИЕЙ ЧЕЛОВЕКА =====
-        await tab.go_to('https://example.com')
-        await human_delay(1.0, 2.5)
+        # ===== 4. ОСНОВНАЯ ЛОГИКА =====
+        await tab.go_to(url)
+        await human_delay(2.0, 4.0)  # Ждём загрузку
         
-        # Ищем элементы с человеческим движением
-        h1_element = await tab.find_element('h1')
-        await tab.mouse.move_to_element(h1_element, humanize=True)
-        await human_delay(0.3, 0.8)
-        await h1_element.click(humanize=True)
-        await human_delay(0.5, 1.0)
-        
-        p_element = await tab.find_element('p')
-        await tab.mouse.move_to_element(p_element, humanize=True)
-        await human_delay(0.3, 0.7)
-        await p_element.click(humanize=True)
-        await human_delay(0.1, 0.3)
-        await p_element.click(humanize=True)
-        await human_delay(0.5, 1.0)
-        
-        # Скролл с физикой
+        # Скролл с эмуляцией
         await tab.scroll.to_bottom(humanize=True)
         await human_delay(1.0, 2.0)
         await tab.scroll.to_top(humanize=True)
         await human_delay(0.5, 1.5)
         
-        # Случайные движения мыши (имитация активности)
-        for _ in range(3):
-            x = random.randint(100, 1800)
-            y = random.randint(100, 900)
-            await tab.mouse.move(x, y, humanize=True)
-            await human_delay(0.5, 1.5)
-        
         # Получаем информацию
         title = await tab.title
+        current_url = await tab.current_url
+        
+        # Проверяем маскировку
+        webdriver_check = await tab._connection_handler.execute_command(
+            'Runtime.evaluate',
+            {'expression': 'navigator.webdriver === undefined'}
+        )
+        
         user_agent = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.userAgent'}
         )
         
-        is_headless = await tab._connection_handler.execute_command(
-            'Runtime.evaluate',
-            {'expression': 'navigator.webdriver === undefined'}
-        )
+        # Делаем скриншот
+        screenshot = await tab.screenshot()
         
         await browser.close()
         
+        # Отправляем результат
         await update.message.reply_text(
-            f"✅ Заголовок: {title}\n"
-            f"🛡️ Маскировка: 100%\n"
-            f"🎭 Headless New: Активен\n"
-            f"👤 Эмуляция человека: Полная\n"
-            f"🔒 WebDriver скрыт: {is_headless['result']['value']}\n"
-            f"📱 User-Agent: {user_agent['result']['value'][:50]}..."
+            f"✅ Страница загружена!\n"
+            f"📌 Заголовок: {title}\n"
+            f"🔗 URL: {current_url}\n"
+            f"🛡️ WebDriver скрыт: {webdriver_check['result']['value']}\n"
+            f"📱 User-Agent: {user_agent['result']['value'][:60]}...\n"
+            f"🎭 Маскировка: 100%"
+        )
+        
+        # Отправляем скриншот
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption=f"📸 Скриншот {url}"
         )
         
     except Exception as e:
@@ -299,15 +281,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Полная маскировка navigator\n"
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
-        "• Эмуляция человека:\n"
-        "  - Движение мыши по кривым Безье\n"
-        "  - Тремор и overshoot\n"
-        "  - Переменная скорость набора\n"
-        "  - Естественные паузы\n"
-        "  - Скролл с физикой\n\n"
+        "• Эмуляция человека\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
-        "/parse - Запустить браузер с маскировкой"
+        "/parse <url> - Запустить браузер с маскировкой\n"
+        "Пример: /parse https://whoer.net"
     )
 
 def main():
