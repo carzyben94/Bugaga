@@ -18,20 +18,26 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
+    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+    
+    # User-Agent (реальный Chrome)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+    
+    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
+    
+    # WebGL — программный рендеринг
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
+    
+    # Защита WebRTC
     options.webrtc_leak_protection = True
+    
+    # Размер окна
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('--no-first-run')
-    options.add_argument('--no-default-browser-check')
-    options.add_argument('--disable-notifications')
-    options.add_argument('--disable-popup-blocking')
-    options.add_argument('--disable-save-password-bubble')
     
     # ===== HEADLESS NEW =====
     options.add_argument('--headless=new')
@@ -39,7 +45,7 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     
-    # Дополнительная маскировка
+    # Дополнительная маскировка (без дублей)
     options.add_argument('--disable-client-side-phishing-detection')
     options.add_argument('--disable-component-extensions-with-background-pages')
     options.add_argument('--disable-default-apps')
@@ -50,6 +56,10 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-xss-auditor')
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
+    
+    # УБРАЛИ ДУБЛИ: --no-first-run, --no-default-browser-check, 
+    # --disable-notifications, --disable-popup-blocking, --disable-save-password-bubble
+    # Pydoll уже добавляет их по умолчанию
     
     # ===== 2. НАСТРОЙКИ БРАУЗЕРА =====
     options.browser_preferences = {
@@ -216,10 +226,9 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # 4.1 Переход на страницу с паузой
         await tab.go_to('https://example.com')
-        await human_delay(1.0, 2.5)  # Пауза как у человека после загрузки
+        await human_delay(1.0, 2.5)
         
         # 4.2 Поиск элементов с человеческим движением мыши
-        # Ищем заголовок H1
         h1_element = await tab.find_element('h1')
         
         # 4.3 Наводим мышку на элемент с эмуляцией человека
@@ -238,17 +247,17 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await human_delay(0.3, 0.7)
         
         # 4.7 Выделяем текст (двойной клик) с эмуляцией человека
-        await p_element.click(humanize=True)  # Первый клик
+        await p_element.click(humanize=True)
         await human_delay(0.1, 0.3)
-        await p_element.click(humanize=True)  # Второй клик (выделение)
+        await p_element.click(humanize=True)
         await human_delay(0.5, 1.0)
         
-        # 4.8 Скролл с эмуляцией человека (как реальный пользователь)
+        # 4.8 Скролл с эмуляцией человека
         await tab.scroll.to_bottom(humanize=True)
-        await human_delay(1.0, 2.0)  # Пауза на "чтение"
+        await human_delay(1.0, 2.0)
         
         await tab.scroll.to_top(humanize=True)
-        await human_delay(0.5, 1.5)  # Пауза после скролла
+        await human_delay(0.5, 1.5)
         
         # 4.9 Движение мышкой по случайным координатам (имитация активности)
         for _ in range(3):
