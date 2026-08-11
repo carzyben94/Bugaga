@@ -2,6 +2,8 @@ import os
 import logging
 import httpx
 import re
+import asyncio
+import concurrent.futures
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -18,20 +20,18 @@ logger = logging.getLogger(__name__)
 # ==================== ПЕРЕМЕННЫЕ ====================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-PLASMATE_URL = os.environ.get("PLASMATE_URL", "http://localhost:9222")
-
-logger.info(f"🌐 PLASMATE_URL: {PLASMATE_URL}")
-logger.info(f"🔑 AGNES_API_KEY: {'✅ есть' if AGNES_API_KEY else '❌ нет'}")
-logger.info(f"🤖 TELEGRAM_BOT_TOKEN: {'✅ есть' if TOKEN else '❌ нет'}")
 
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
+
+logger.info(f"🔑 AGNES_API_KEY: {'✅ есть' if AGNES_API_KEY else '❌ нет'}")
+logger.info(f"🤖 TELEGRAM_BOT_TOKEN: {'✅ есть' if TOKEN else '❌ нет'}")
 
 # ==================== ПРОВЕРКА PLASMATE ====================
 try:
     from dspy_plasmate import PlasmateFetchTool
     PLASMATE_AVAILABLE = True
-    logger.info("✅ dspy-plasmate импортирован (PlasmateFetchTool доступен)")
+    logger.info("✅ dspy-plasmate импортирован")
 except ImportError as e:
     PLASMATE_AVAILABLE = False
     logger.error(f"❌ Ошибка импорта dspy-plasmate: {e}")
@@ -41,10 +41,11 @@ plasmate_tool = None
 
 if PLASMATE_AVAILABLE:
     try:
-        plasmate_tool = PlasmateFetchTool(base_url=PLASMATE_URL)
-        logger.info(f"✅ Plasmate подключен: {PLASMATE_URL}")
+        # Правильная инициализация — БЕЗ аргументов
+        plasmate_tool = PlasmateFetchTool()
+        logger.info("✅ Plasmate подключен")
         
-        # Тест получения страницы
+        # Тест
         test_result = plasmate_tool("https://example.com")
         logger.info(f"🔍 Тест Plasmate: {type(test_result)}")
         
@@ -61,14 +62,7 @@ def fetch_page(url: str) -> str:
     
     try:
         result = plasmate_tool(url)
-        # Получаем содержимое разными способами
-        content = None
-        if hasattr(result, 'content'):
-            content = result.content
-        elif hasattr(result, 'text'):
-            content = result.text
-        else:
-            content = str(result)
+        content = str(result)
         
         if len(content) > 3000:
             content = content[:3000] + "..."
@@ -85,7 +79,7 @@ def ask_webpage(url: str, question: str) -> str:
     try:
         # Получаем содержимое
         result = plasmate_tool(url)
-        content = getattr(result, 'content', getattr(result, 'text', str(result)))
+        content = str(result)
         
         # Ограничиваем для LLM
         if len(content) > 8000:
@@ -118,7 +112,7 @@ def search_web(query: str) -> str:
     try:
         search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
         result = plasmate_tool(search_url)
-        content = getattr(result, 'content', getattr(result, 'text', str(result)))
+        content = str(result)
         
         # Парсим заголовки
         snippets = re.findall(r'<h3[^>]*>(.*?)</h3>', content, re.IGNORECASE)
@@ -141,8 +135,12 @@ def get_page_title(url: str) -> str:
     
     try:
         result = plasmate_tool(url)
-        title = getattr(result, 'title', str(result)[:200])
-        return f"📌 Заголовок: {title}"
+        # Пытаемся найти заголовок
+        import re
+        title_match = re.search(r'<title>(.*?)</title>', str(result), re.IGNORECASE)
+        if title_match:
+            return f"📌 Заголовок: {title_match.group(1)}"
+        return f"📌 Заголовок: {str(result)[:200]}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
@@ -153,10 +151,15 @@ def extract_links(url: str) -> str:
     
     try:
         result = plasmate_tool(url)
-        links = getattr(result, 'links', [])
-        if links:
+        content = str(result)
+        
+        # Парсим ссылки
+        links = re.findall(r'href=[\'"]?([^\'" >]+)', content, re.IGNORECASE)
+        unique_links = list(dict.fromkeys(links))[:10]
+        
+        if unique_links:
             output = "🔗 Ссылки на странице:\n"
-            for i, link in enumerate(links[:10], 1):
+            for i, link in enumerate(unique_links, 1):
                 output += f"{i}. {link}\n"
             return output
         return "🔗 Ссылок не найдено"
@@ -276,8 +279,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Думаю...")
     
     try:
-        import concurrent.futures
-        import asyncio
         with concurrent.futures.ThreadPoolExecutor() as executor:
             def run_agent():
                 return browser_agent(question=query)
@@ -338,8 +339,6 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    import asyncio
-    
     logger.info("🚀 Запуск бота с Plasmate...")
     
     app = Application.builder().token(TOKEN).build()
@@ -350,4 +349,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("search", search_command))
     
     logger.info("✅ Бот запущен!")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)  # Фикс конфликта
