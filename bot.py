@@ -18,14 +18,26 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
+    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+    
+    # User-Agent (реальный Chrome) — меняет HTTP-заголовки, но НЕ navigator.userAgent в JS!
+    # Для полной маскировки нужна синхронизация через CDP (см. JS-скрипт ниже)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+    
+    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
+    
+    # WebGL — программный рендеринг (скрывает реальный GPU)
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
+    
+    # Защита WebRTC от утечки IP
     options.webrtc_leak_protection = True
+    
+    # Размер окна (реальный пользователь)
     options.add_argument('--window-size=1920,1080')
     
     # ===== HEADLESS NEW =====
@@ -46,25 +58,30 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ИСПРАВЛЕННАЯ СТРУКТУРА) =====
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
     options.browser_preferences = {
+        # Настройки профиля (важно для консистентного отпечатка)
         'profile': {
             'default_content_setting_values': {
-                'geolocation': 2,
-                'notifications': 2,
+                'geolocation': 2,        # 2 = блокировать
+                'notifications': 2,      # 2 = блокировать
                 'media_stream_mic': 2,
                 'media_stream_camera': 2,
                 'midi_sysex': 2,
                 'push_messaging': 2,
                 'ppapi_broker': 2,
-                'automatic_downloads': 1,
-                'cookies': 1,
+                'automatic_downloads': 1, # 1 = разрешить
+                'cookies': 1,            # 1 = разрешить
+                'popups': 1,             # 1 = разрешить
             },
             'password_manager_enabled': False,
         },
         'credentials_enable_service': False,
         'intl': {
             'accept_languages': 'en-US,en;q=0.9',
+        },
+        'download': {
+            'prompt_for_download': False,
         },
     }
     
@@ -83,11 +100,13 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tab = await browser.start()
         
         # ===== 3. JS-СКРИПТЫ МАСКИРОВКИ =====
+        # ВАЖНО: --user-agent меняет только HTTP-заголовки. navigator.userAgent в JS нужно
+        # переопределять отдельно через Page.addScriptToEvaluateOnNewDocument[citation:6][citation:9]
         await tab._connection_handler.execute_command(
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': """
-                    // ===== NAVIGATOR =====
+                    // ===== NAVIGATOR (синхронизация с --user-agent) =====
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
                     });
@@ -104,6 +123,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         get: () => ['en-US', 'en']
                     });
                     
+                    // Удаляем следы автоматизации
                     delete navigator.__proto__.webdriver;
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
@@ -214,11 +234,10 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # ===== 4. ОСНОВНАЯ ЛОГИКА С ПОЛНОЙ ЭМУЛЯЦИЕЙ ЧЕЛОВЕКА =====
-        
         await tab.go_to('https://example.com')
         await human_delay(1.0, 2.5)
         
-        # Ищем элементы
+        # Ищем элементы с человеческим движением
         h1_element = await tab.find_element('h1')
         await tab.mouse.move_to_element(h1_element, humanize=True)
         await human_delay(0.3, 0.8)
@@ -233,13 +252,13 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await p_element.click(humanize=True)
         await human_delay(0.5, 1.0)
         
-        # Скролл
+        # Скролл с физикой
         await tab.scroll.to_bottom(humanize=True)
         await human_delay(1.0, 2.0)
         await tab.scroll.to_top(humanize=True)
         await human_delay(0.5, 1.5)
         
-        # Случайные движения
+        # Случайные движения мыши (имитация активности)
         for _ in range(3):
             x = random.randint(100, 1800)
             y = random.randint(100, 900)
