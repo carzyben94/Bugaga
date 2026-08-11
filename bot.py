@@ -9,6 +9,7 @@ import base64
 import time
 import socket
 import threading
+import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
-# ==================== ЗАПУСК CHROME ====================
+# ==================== ЗАПУСК CHROME С МАСКИРОВКОЙ ====================
 CHROME_PATHS = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
@@ -38,6 +39,14 @@ def find_chrome():
             return path
     return None
 
+# Список User-Agent для ротации
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+]
+
 def start_chrome():
     chrome_path = find_chrome()
     if not chrome_path:
@@ -45,22 +54,78 @@ def start_chrome():
         return False
     
     try:
+        # Убиваем старые процессы
         subprocess.run(["pkill", "-f", "chromium"], capture_output=True)
         subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
         time.sleep(2)
         
+        # Случайный User-Agent
+        user_agent = random.choice(USER_AGENTS)
+        
+        # Полная маскировка как в Pydoll
         subprocess.Popen([
             chrome_path,
-            "--headless",
+            "--headless=new",  # Новый headless режим
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--remote-debugging-port=9222",
             "--window-size=1280,720",
+            
+            # Маскировка User-Agent
+            f"--user-agent={user_agent}",
+            
+            # Отключаем признаки автоматизации
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-site-isolation-trials",
+            
+            # Дополнительная маскировка
+            "--disable-web-security",
+            "--disable-features=BlockInsecurePrivateNetworkRequests",
+            "--disable-features=OutOfBlinkCors",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-field-trial-config",
+            "--disable-ipc-flooding-protection",
+            "--disable-application-cache",
+            "--disable-extensions",
+            "--disable-plugins",
+            "--disable-notifications",
+            "--disable-popup-blocking",
+            "--disable-sync",
+            "--disable-translate",
+            "--disable-default-apps",
+            "--disable-session-crashed-bubble",
+            "--disable-infobars",
+            "--disable-component-extensions-with-background-pages",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-hang-monitor",
+            "--disable-prompt-on-repost",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-update",
+            "--disable-datasaver-prompt",
+            "--disable-desktop-notifications",
+            "--disable-logging",
+            "--disable-print-preview",
+            "--disable-reading-from-canvas",
+            "--disable-shared-workers",
+            "--disable-software-rasterizer",
+            "--disable-threaded-animation",
+            "--disable-threaded-scrolling",
+            "--disable-voice-input",
+            "--disable-wake-on-wifi",
+            "--disk-cache-size=0",
+            "--media-cache-size=0",
+            "--force-color-profile=srgb",
+            "--mute-audio",
+            "--use-gl=swiftshader",
             "about:blank"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        logger.info(f"✅ Chrome запущен")
+        logger.info(f"✅ Chrome запущен с маскировкой")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
@@ -93,7 +158,7 @@ def wait_for_chrome(max_attempts=20, delay=1):
     logger.error("❌ Chrome не запустился")
     return False
 
-# ==================== CDP КЛИЕНТ (УЛУЧШЕННЫЙ) ====================
+# ==================== CDP КЛИЕНТ ====================
 class SimpleCDPClient:
     def __init__(self):
         self.ws = None
@@ -160,7 +225,6 @@ class SimpleCDPClient:
             if "errorText" in result:
                 return {"success": False, "error": result["errorText"]}
             
-            # Ждем загрузки с улучшенной проверкой
             await self.wait_for_load()
             
             return {"success": True, "url": url}
@@ -169,7 +233,7 @@ class SimpleCDPClient:
             return {"success": False, "error": str(e)}
     
     async def wait_for_load(self, timeout=15.0):
-        """Улучшенное ожидание загрузки (как в Pydoll)"""
+        """Улучшенное ожидание загрузки"""
         start = time.time()
         
         # 1. Ждем complete
@@ -212,7 +276,7 @@ class SimpleCDPClient:
         return True
     
     async def find_element(self, selector, timeout=10.0):
-        """Найти элемент на странице (как в Pydoll)"""
+        """Найти элемент на странице"""
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -401,7 +465,7 @@ tools = [
     Tool(capture_screenshot),
     Tool(execute_js),
     Tool(page_info),
-    Tool(find_element),  # Новый инструмент
+    Tool(find_element),
 ]
 
 # ==================== DSPy ====================
@@ -472,7 +536,7 @@ if AGNES_API_KEY:
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=15,  # Увеличил до 15
+            max_iters=15,
         )
         logger.info("✅ DSPy агент создан")
     except Exception as e:
