@@ -177,7 +177,6 @@ class SimpleCDPClient:
                 self.ws_url = pages[0]["webSocketDebuggerUrl"]
                 logger.info(f"✅ WebSocket URL: {self.ws_url}")
             
-            # Увеличенные таймауты для WebSocket
             self.ws = await websockets.connect(
                 self.ws_url,
                 ping_interval=30,
@@ -263,7 +262,6 @@ class SimpleCDPClient:
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             
-            # Проверяем соединение перед навигацией
             if not self.is_connected:
                 logger.warning("⚠️ Соединение потеряно, переподключаемся...")
                 await self.reconnect()
@@ -319,6 +317,124 @@ class SimpleCDPClient:
         await asyncio.sleep(0.5)
         
         return True
+    
+    # ==================== УМНОЕ ОЖИДАНИЕ ДЛЯ SPA (КАК В PYDOLL) ====================
+    
+    async def wait_for_selector(self, selector, timeout=10.0):
+        """Ожидание появления элемента"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": f"document.querySelector('{selector}') !== null",
+                    "returnByValue": True
+                }, timeout=2.0)
+                
+                if result.get("result", {}).get("value", False):
+                    logger.info(f"✅ Элемент '{selector}' появился")
+                    return True
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {e}")
+            
+            await asyncio.sleep(0.5)
+        
+        logger.warning(f"⚠️ Элемент '{selector}' не появился за {timeout}с")
+        return False
+    
+    async def wait_for_network_idle(self, timeout=5.0):
+        """Ожидание завершения сетевых запросов"""
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": """
+                        (function() {
+                            if (window.performance && window.performance.getEntriesByType) {
+                                const resources = performance.getEntriesByType('resource');
+                                const pending = resources.filter(r => 
+                                    !r.responseEnd || r.responseEnd === 0
+                                );
+                                return pending.length;
+                            }
+                            return 0;
+                        })()
+                    """,
+                    "returnByValue": True
+                }, timeout=2.0)
+                
+                pending = result.get("result", {}).get("value", 0)
+                
+                if pending == 0:
+                    logger.info("✅ Сеть простаивает")
+                    return True
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {e}")
+            
+            await asyncio.sleep(0.5)
+        
+        return False
+    
+    async def wait_for_spa(self, timeout=15.0):
+        """Умное ожидание для SPA (как в Pydoll)"""
+        start = time.time()
+        
+        # 1. Ждем пока DOM станет стабильным
+        last_length = 0
+        stable_count = 0
+        
+        while time.time() - start < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": "document.querySelectorAll('*').length",
+                    "returnByValue": True
+                }, timeout=2.0)
+                
+                current_length = result.get("result", {}).get("value", 0)
+                
+                if current_length == last_length:
+                    stable_count += 1
+                    if stable_count >= 3:
+                        logger.info("✅ DOM стабилен")
+                        break
+                else:
+                    stable_count = 0
+                    last_length = current_length
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {e}")
+            
+            await asyncio.sleep(0.5)
+        
+        # 2. Ждем завершения сетевых запросов
+        await self.wait_for_network_idle(timeout=5)
+        
+        # 3. Доп. задержка для рендеринга
+        await asyncio.sleep(1)
+        
+        return True
+    
+    async def wait_for_content(self, timeout=15.0):
+        """Полное умное ожидание контента (как в Pydoll)"""
+        # 1. Ждем SPA стабильность
+        await self.wait_for_spa(timeout)
+        
+        # 2. Ждем конкретный контент (для X/Twitter)
+        selectors = ['article', '[data-testid="tweet"]', '[data-testid="cellInnerDiv"]']
+        for selector in selectors:
+            if await self.wait_for_selector(selector, 5):
+                logger.info(f"✅ Контент найден: {selector}")
+                return True
+        
+        return False
+    
+    async def scroll_down(self, times=3):
+        """Прокрутка вниз (как в Pydoll)"""
+        for i in range(times):
+            await self.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
+            await asyncio.sleep(1.5)
     
     async def find_element(self, selector, timeout=10.0):
         start = time.time()
@@ -415,7 +531,7 @@ def set_cookies_in_browser():
         return False
     
     try:
-        result = run_async_in_main_loop(
+        run_async_in_main_loop(
             browser.send_command("Network.setCookies", {
                 "cookies": COOKIES
             })
@@ -628,6 +744,78 @@ def smart_find(what: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:100]}"
 
+# ==================== НОВЫЕ ИНСТРУМЕНТЫ (SPA + PYDOLL) ====================
+
+def wait_for_spa() -> str:
+    """Умное ожидание для SPA (как в Pydoll)"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        run_async_in_main_loop(browser.wait_for_spa(timeout=15))
+        return "✅ SPA контент загружен (DOM стабилен, сеть простаивает)"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:100]}"
+
+def wait_for_content() -> str:
+    """Ожидание контента (как в Pydoll)"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        result = run_async_in_main_loop(browser.wait_for_content(timeout=15))
+        if result:
+            return "✅ Контент загружен (посты найдены)"
+        return "⚠️ Контент не загрузился полностью"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:100]}"
+
+def scroll_page(times: int = 3) -> str:
+    """Прокрутить страницу вниз"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        run_async_in_main_loop(browser.scroll_down(times))
+        return f"✅ Прокрутил {times} раз"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:100]}"
+
+def smart_find_with_scroll(what: str, scrolls: int = 5) -> str:
+    """Прокрутить и найти текст"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        # Сначала ждем контент
+        run_async_in_main_loop(browser.wait_for_content(timeout=10))
+        
+        # Прокручиваем и ищем
+        for i in range(scrolls):
+            # Проверяем наличие
+            result = run_async_in_main_loop(browser.evaluate(f"""
+                const text = document.body.innerText;
+                const found = text.toLowerCase().includes('{what.lower()}');
+                if (found) {{
+                    const matches = text.match(new RegExp('.{{0,100}}' + '{what}' + '.{{0,100}}', 'gi'));
+                    return matches ? matches.slice(0, 5) : [];
+                }}
+                return [];
+            """))
+            
+            if result.get("success"):
+                matches = result.get("result", [])
+                if matches:
+                    return f"🔍 Найдено '{what}':\n" + "\n".join([f"• {m[:150]}..." for m in matches])
+            
+            # Прокручиваем
+            run_async_in_main_loop(browser.scroll_down(1))
+        
+        return f"❌ '{what}' не найден после {scrolls} прокруток"
+        
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:100]}"
+
 # ==================== СПИСОК ИНСТРУМЕНТОВ ====================
 tools = [
     Tool(goto_url),
@@ -636,6 +824,10 @@ tools = [
     Tool(page_info),
     Tool(find_element),
     Tool(smart_find),
+    Tool(wait_for_spa),
+    Tool(wait_for_content),
+    Tool(scroll_page),
+    Tool(smart_find_with_scroll),
 ]
 
 # ==================== DSPy ====================
