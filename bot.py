@@ -1,4 +1,4 @@
-# bot.py - Правильное подключение через CDP
+# bot.py - bsw запускает браузер с маскировкой, Harness подключается
 import os
 import sys
 import asyncio
@@ -8,13 +8,14 @@ import time
 # Добавляем путь к Browser Harness
 sys.path.insert(0, "browser-harness/src")
 
-# Импорты Browser Harness
+# Импорты Browser Harness (только то, что есть)
 from browser_harness.helpers import (
     new_tab, goto_url, wait_for_load, capture_screenshot,
     click_at_xy, wait_for_element, close_tab, js,
     page_info, current_tab
 )
-from browser_harness.cdp import connect
+from browser_harness.admin import ensure_daemon
+from browser_harness.daemon import Daemon
 
 # Импортируем маскировку
 from bsw import StealthBrowser
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 class HarnessBot:
     def __init__(self):
         self.browser = None
+        self.daemon = None
         self.page = None
         self.is_ready = False
     
@@ -36,7 +38,7 @@ class HarnessBot:
         """Запуск браузера через bsw + подключение Harness"""
         logger.info("🚀 Шаг 1: Запуск браузера через bsw...")
         
-        # 1. Запускаем браузер через bsw
+        # 1. Запускаем браузер через bsw (с маскировкой)
         self.browser = await StealthBrowser.launch(
             headless=True,
             port=9222,
@@ -44,33 +46,43 @@ class HarnessBot:
         )
         logger.info("✅ Браузер запущен через bsw")
         
-        # 2. Получаем CDP URL
-        cdp_url = self.browser["cdp_url"]
-        logger.info(f"🔗 CDP URL: {cdp_url}")
+        # 2. Устанавливаем переменные для Harness
+        os.environ["BU_CDP_URL"] = "http://localhost:9222"
+        os.environ["BU_BROWSER"] = "chrome"
         
         await asyncio.sleep(2)
         
-        logger.info("🔗 Шаг 2: Подключение Browser Harness через CDP...")
+        logger.info("🔗 Шаг 2: Запуск Browser Harness...")
         
-        # 3. Подключаемся через CDP напрямую
+        # 3. Запускаем daemon Harness'а
         try:
-            # Устанавливаем соединение с браузером
-            connect(cdp_url)  # синхронное подключение
-            logger.info("✅ CDP соединение установлено")
-            
-            # Создаём вкладку
+            self.daemon = ensure_daemon()
+            logger.info("✅ Daemon запущен")
+        except Exception as e:
+            logger.warning(f"⚠️ ensure_daemon: {e}")
+            # Пробуем альтернативный способ
+            self.daemon = Daemon()
+            logger.info("✅ Daemon создан через Daemon()")
+        
+        # 4. Создаём вкладку (синхронно)
+        try:
             self.page = new_tab("https://example.com")
-            logger.info("✅ Вкладка создана")
-            
-            # Ждём загрузки
+            logger.info(f"✅ Вкладка создана: {self.page}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка new_tab: {e}")
+            # Пробуем без URL
+            self.page = new_tab()
+            logger.info(f"✅ Вкладка создана (без URL): {self.page}")
+        
+        # 5. Ждём загрузки
+        try:
             wait_for_load()
             logger.info("✅ Страница загружена")
-            
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения: {e}")
-            raise
+            logger.warning(f"⚠️ wait_for_load: {e}")
         
         self.is_ready = True
+        logger.info(f"✅ Текущая вкладка: {current_tab()}")
         logger.info("✅ HarnessBot готов!")
         return self
     
@@ -142,8 +154,9 @@ async def main():
         
         # === РАБОТА ===
         
-        # 1. Переход на сайт
-        await bot.go_to("https://example.com")
+        # 1. Информация о странице
+        info = page_info()
+        logger.info(f"📄 Информация: {info}")
         
         # 2. Получение текста
         text = await bot.get_text("h1")
@@ -163,13 +176,10 @@ async def main():
             
             # Проверка браузера
             try:
-                await bot.get_text("html")
+                current = current_tab()
+                logger.info(f"📌 Текущая вкладка: {current}")
             except Exception as e:
-                logger.warning(f"⚠️ Браузер упал: {e}")
-                logger.info("🔄 Перезапуск...")
-                await bot.close()
-                await bot.start()
-                await bot.go_to("https://example.com")
+                logger.warning(f"⚠️ Ошибка проверки: {e}")
                 
     except KeyboardInterrupt:
         logger.info("🛑 Остановка по Ctrl+C...")
