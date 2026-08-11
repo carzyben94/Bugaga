@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
@@ -42,7 +41,7 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     
-    # Дополнительная маскировка
+    # Дополнительная маскировка (без дубликатов)
     options.add_argument('--disable-client-side-phishing-detection')
     options.add_argument('--disable-component-extensions-with-background-pages')
     options.add_argument('--disable-default-apps')
@@ -53,12 +52,12 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-xss-auditor')
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
+    options.add_argument('--disable-sync')
     
     # ===== 2. НАСТРОЙКИ WEBRTC =====
     options.webrtc_leak_protection = True
     
-    # ===== 3. НАСТРОЙКИ БРАУЗЕРА (исправленный формат) =====
-    # Используем JSON строку для preferences
+    # ===== 3. НАСТРОЙКИ БРАУЗЕРА =====
     preferences = {
         'intl.accept_languages': 'en-US,en;q=0.9',
         'profile.default_content_setting_values.geolocation': 2,
@@ -74,12 +73,7 @@ def create_full_stealth_options() -> ChromiumOptions:
         'profile.default_content_setting_values.cookies': 1,
     }
     
-    # Добавляем preferences как аргумент командной строки
-    options.add_argument(f'--disable-default-apps')  # Уже есть выше
-    options.add_argument(f'--disable-sync')
-    options.add_argument(f'--disable-default-apps')
-    
-    # Устанавливаем preferences через capability
+    # Устанавливаем preferences
     options.set_capability('prefs', preferences)
     
     return options
