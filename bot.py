@@ -20,6 +20,7 @@ from browser_harness.helpers import (
     js,
     page_info,
     current_tab,
+    cdp,
 )
 from browser_harness.admin import ensure_daemon
 
@@ -37,6 +38,7 @@ class HarnessBot:
     def __init__(self):
         self.browser = None
         self.page = None  # target_id
+        self.session_id = None  # session_id для CDP
         self.is_ready = False
     
     async def start(self):
@@ -66,7 +68,20 @@ class HarnessBot:
         self.page = new_tab("https://example.com")
         logger.info(f"✅ Вкладка создана: {self.page}")
         
-        # 5. Ждём загрузки
+        # 5. Получаем session_id через CDP
+        try:
+            result = cdp("Target.attachToTarget", {
+                "targetId": self.page,
+                "flatten": True
+            })
+            if result and "sessionId" in result:
+                self.session_id = result["sessionId"]
+                logger.info(f"✅ Session ID: {self.session_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось получить session_id: {e}")
+            self.session_id = self.page
+        
+        # 6. Ждём загрузки
         wait_for_load()
         logger.info("✅ Страница загружена")
         
@@ -75,24 +90,9 @@ class HarnessBot:
         logger.info("✅ HarnessBot готов!")
         return self
     
-    def _get_target_id(self):
-        """Получить актуальный target_id"""
-        # Если self.page уже строка - используем её
-        if self.page and isinstance(self.page, str):
-            return self.page
-        
-        # Иначе получаем из current_tab()
-        try:
-            info = current_tab()
-            if info and isinstance(info, dict):
-                target_id = info.get('target_id') or info.get('targetId')
-                if target_id:
-                    self.page = target_id
-                    return target_id
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка получения target_id: {e}")
-        
-        return self.page
+    def _get_target(self):
+        """Получить target_id или session_id"""
+        return self.session_id or self.page
     
     async def go_to(self, url: str):
         """Переход на страницу"""
@@ -102,65 +102,52 @@ class HarnessBot:
         logger.info(f"✅ Страница {url} загружена")
     
     async def get_text(self, selector: str) -> str:
-        """Получение текста"""
+        """Получение текста через CDP напрямую"""
         try:
-            target_id = self._get_target_id()
-            if not target_id:
-                logger.warning("⚠️ Нет target_id для get_text")
+            target = self._get_target()
+            if not target:
                 return ""
             
-            # js(target_id, expression) - первый аргумент target_id
-            result = js(target_id, f"""
-                (function() {{
-                    const el = document.querySelector('{selector}');
-                    return el ? el.textContent : '';
-                }})()
-            """)
+            # Используем CDP напрямую
+            result = cdp("Runtime.evaluate", {
+                "expression": f"document.querySelector('{selector}')?.textContent || ''",
+                "returnByValue": True,
+                "sessionId": target if target != self.page else None
+            })
             
-            # Извлекаем значение
-            if result and isinstance(result, dict):
-                if 'result' in result:
-                    return result['result'].get('value', '')
-                if 'value' in result:
-                    return result.get('value', '')
-            return ''
+            if result and "result" in result:
+                return result["result"].get("value", "")
+            return ""
         except Exception as e:
             logger.error(f"❌ Ошибка получения текста: {e}")
             return ""
     
     async def click(self, selector: str):
         """Клик по элементу"""
-        target_id = self._get_target_id()
-        if not target_id:
+        target = self._get_target()
+        if not target:
             return
-        wait_for_element(target_id, selector)
-        click_at_xy(target_id, selector)
+        wait_for_element(self.page, selector)
+        click_at_xy(self.page, selector)
         logger.info(f"🖱️ Клик на {selector}")
     
     async def screenshot(self, path: str = None) -> bytes:
-        """Скриншот"""
+        """Скриншот через CDP напрямую"""
         try:
-            target_id = self._get_target_id()
-            if not target_id:
-                logger.warning("⚠️ Нет target_id для скриншота")
+            target = self._get_target()
+            if not target:
                 return None
             
-            if path:
-                # Сохраняем в файл
-                result = capture_screenshot(target_id, path)
-                logger.info(f"📸 Скриншот сохранён в {path}")
-                return result
-            else:
-                # Получаем скриншот
-                result = capture_screenshot(target_id)
-                
-                # Если результат это строка - пробуем декодировать base64
-                if isinstance(result, str):
-                    try:
-                        return base64.b64decode(result)
-                    except:
-                        return result.encode()
-                return result
+            # Используем CDP напрямую для скриншота
+            result = cdp("Page.captureScreenshot", {
+                "format": "png",
+                "captureBeyondViewport": True,
+                "sessionId": target if target != self.page else None
+            })
+            
+            if result and "data" in result:
+                return base64.b64decode(result["data"])
+            return None
         except Exception as e:
             logger.error(f"❌ Ошибка скриншота: {e}")
             return None
@@ -213,7 +200,7 @@ async def main():
                 f.write(img)
             logger.info(f"📸 Скриншот сохранён (размер: {len(img)} байт)")
         else:
-            logger.warning(f"⚠️ Скриншот не получен или повреждён (размер: {len(img) if img else 0})")
+            logger.warning(f"⚠️ Скриншот не получен (размер: {len(img) if img else 0})")
         
         # === БЕСКОНЕЧНОЕ ОЖИДАНИЕ ===
         while True:
@@ -222,11 +209,8 @@ async def main():
             
             # Проверка браузера
             try:
-                target_id = bot._get_target_id()
-                if target_id:
-                    # Простая проверка через page_info
-                    info = page_info()
-                    logger.info(f"📌 Страница: {info.get('title', 'unknown')}")
+                info = page_info()
+                logger.info(f"📌 Страница: {info.get('title', 'unknown')}")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка проверки: {e}")
                 
@@ -241,6 +225,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Создаём папку для скриншотов
     os.makedirs("/app/screenshots", exist_ok=True)
     asyncio.run(main())
