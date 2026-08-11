@@ -20,6 +20,13 @@ from browser_harness.helpers import (
     current_tab,
     capture_screenshot,
     js,
+    list_tabs,
+    switch_tab,
+    fill_input,
+    click_at_xy,
+    type_text,
+    press_key,
+    scroll,
 )
 from browser_harness.admin import ensure_daemon
 
@@ -132,13 +139,58 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 
-class BrowserTask(Signature):
-    """Ты агент с доступом к браузеру.
-    Используй инструменты для выполнения задач пользователя.
-    """
-    question = InputField(desc="Задача пользователя")
-    answer = OutputField(desc="Ответ на задачу")
+# ============================================================
+# СИГНАТУРА ТОЛЬКО С BROWSER HARNESS
+# ============================================================
 
+class BrowserTask(Signature):
+    """
+    Ты агент с доступом к браузеру через Browser Harness.
+    
+    ДОСТУПНЫЕ ИНСТРУМЕНТЫ BROWSER HARNESS:
+    
+    1. Навигация:
+       - tool_goto_url(url) - перейти на сайт
+       - tool_wait_for_load() - дождаться загрузки
+       - tool_new_tab() - открыть новую вкладку
+       - tool_close_tab() - закрыть вкладку
+       - tool_switch_tab(tab_id) - переключить вкладку
+       - tool_list_tabs() - список всех вкладок
+       - tool_current_tab() - текущая вкладка
+    
+    2. Информация о странице:
+       - tool_page_info() - URL и заголовок
+       - tool_get_text() - весь текст на странице
+       - tool_get_links() - все ссылки
+       - tool_get_buttons() - все кнопки
+       - tool_get_headings() - все заголовки (h1-h6)
+    
+    3. Взаимодействие со страницей:
+       - tool_js(expression) - выполнить JavaScript
+       - tool_fill_input(selector, text) - заполнить поле ввода
+       - tool_click_at_xy(x, y) - кликнуть по координатам
+       - tool_type_text(text) - ввести текст
+       - tool_press_key(key) - нажать клавишу
+       - tool_scroll(x, y) - прокрутить страницу
+    
+    4. Скриншоты:
+       - tool_capture_screenshot(filename) - сделать скриншот
+    
+    ПРАВИЛА:
+    - Всегда используй инструменты Browser Harness
+    - Для получения текста со страницы используй tool_get_text
+    - Для кликов используй tool_click_at_xy
+    - Для заполнения форм используй tool_fill_input
+    - Если нужно выполнить сложные действия - используй tool_js
+    """
+    
+    question = InputField(desc="Задача пользователя")
+    answer = OutputField(desc="Ответ на задачу с использованием Browser Harness")
+
+
+# ============================================================
+# СОЗДАНИЕ АГЕНТА
+# ============================================================
 
 def create_browser_agent(tools, max_iters=10):
     """Создать ReActV2 агента с инструментами"""
@@ -301,6 +353,14 @@ class HarnessBot:
             # ВСЕ ИНСТРУМЕНТЫ BROWSER HARNESS ДЛЯ DSPy
             # ============================================================
             
+            def tool_new_tab() -> str:
+                """Открыть новую вкладку"""
+                try:
+                    new_tab()
+                    return "✅ Новая вкладка открыта"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
             def tool_goto_url(url: str) -> str:
                 """Перейти на URL и дождаться загрузки"""
                 try:
@@ -427,11 +487,52 @@ class HarnessBot:
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
+            def tool_fill_input(selector: str, text: str) -> str:
+                """Заполнить поле ввода по CSS селектору"""
+                try:
+                    fill_input(selector, text)
+                    return f"✅ Заполнено: {selector} -> {text}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_click_at_xy(x: int, y: int) -> str:
+                """Кликнуть по координатам"""
+                try:
+                    click_at_xy(x, y)
+                    return f"✅ Клик по ({x}, {y})"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_type_text(text: str) -> str:
+                """Ввести текст"""
+                try:
+                    type_text(text)
+                    return f"✅ Введено: {text}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_press_key(key: str) -> str:
+                """Нажать клавишу"""
+                try:
+                    press_key(key)
+                    return f"✅ Нажата клавиша: {key}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_scroll(dx: int, dy: int) -> str:
+                """Прокрутить страницу"""
+                try:
+                    scroll(dx, dy)
+                    return f"✅ Прокрутка на ({dx}, {dy})"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
             # ============================================================
             # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ В СПИСОК
             # ============================================================
             
             tools = [
+                Tool(tool_new_tab),
                 Tool(tool_goto_url),
                 Tool(tool_wait_for_load),
                 Tool(tool_js),
@@ -445,6 +546,11 @@ class HarnessBot:
                 Tool(tool_current_tab),
                 Tool(tool_switch_tab),
                 Tool(tool_close_tab),
+                Tool(tool_fill_input),
+                Tool(tool_click_at_xy),
+                Tool(tool_type_text),
+                Tool(tool_press_key),
+                Tool(tool_scroll),
             ]
             
             # Инициализируем DSPy с инструментами
