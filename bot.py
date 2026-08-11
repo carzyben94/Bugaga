@@ -46,8 +46,8 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
-    # Используем _set_pref_path для безопасной установки настроек
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ЧЕРЕЗ _set_pref_path) =====
+    # Это ЕДИНСТВЕННЫЙ правильный способ без ошибок!
     options._set_pref_path(['profile', 'default_content_setting_values', 'geolocation'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'notifications'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_mic'], 2)
@@ -227,7 +227,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         )
         
-        # ===== 4. ОСНОВНАЯ ЛОГИКА С ПОЛНОЙ ЭМУЛЯЦИЕЙ =====
+        # ===== 4. ОСНОВНАЯ ЛОГИКА =====
         await tab.go_to(url)
         await human_delay(2.0, 4.0)
         
@@ -283,12 +283,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Полная маскировка navigator\n"
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
-        "• Эмуляция человека:\n"
-        "  - Движение мыши по кривым Безье\n"
-        "  - Тремор и overshoot\n"
-        "  - Переменная скорость набора\n"
-        "  - Естественные паузы\n"
-        "  - Скролл с физикой\n\n"
+        "• Эмуляция человека\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
         "/parse <url> - Запустить браузер с маскировкой\n"
