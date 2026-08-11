@@ -6,8 +6,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
-from pydoll.models import ExtractionModel
-from pydoll.fields import Field
 
 # Настройка логирования
 logging.basicConfig(
@@ -83,208 +81,6 @@ def create_full_stealth_options() -> ChromiumOptions:
     
     return options
 
-# ===== МОДЕЛИ ДЛЯ ИЗВЛЕЧЕНИЯ ДАННЫХ =====
-class PageInfo(ExtractionModel):
-    """Модель для извлечения информации со страницы"""
-    title: str = Field(selector='title')
-    h1_text: str = Field(selector='h1', default='Не найдено')
-    paragraph: str = Field(selector='p', default='Не найдено')
-    links_count: int = Field(
-        selector='a',
-        transform=lambda elements: len(elements) if elements else 0
-    )
-    body_text_length: int = Field(
-        selector='body',
-        transform=lambda elem: len(elem.text) if elem else 0
-    )
-
-class ProductInfo(ExtractionModel):
-    """Модель для извлечения информации о товаре (пример)"""
-    name: str = Field(selector='.product-name, .product-title, h1')
-    price: float = Field(
-        selector='.price, .product-price',
-        transform=lambda x: float(x.replace('$', '').replace('€', '').replace(',', '').strip()) if x else 0.0
-    )
-    description: str = Field(selector='.description, .product-description, p', default='Нет описания')
-    rating: float = Field(
-        selector='.rating, .product-rating',
-        transform=lambda x: float(x.split('/')[0]) if x else 0.0,
-        default=0.0
-    )
-    availability: str = Field(
-        selector='.availability, .stock-status',
-        default='Неизвестно'
-    )
-
-async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Получена команда /parse от пользователя {update.effective_user.id}")
-    
-    # Получаем URL из аргументов команды (если есть)
-    url = 'https://example.com'
-    if context.args:
-        url = context.args[0]
-        await update.message.reply_text(f"🔄 Запускаю браузер для парсинга: {url}")
-    else:
-        await update.message.reply_text("🔄 Запускаю браузер с Headless New + 100% маскировкой...")
-    
-    try:
-        options = create_full_stealth_options()
-        browser = Chrome(options=options)
-        tab = await browser.start()
-        logger.debug("Браузер запущен")
-        
-        # Внедряем JS-скрипты маскировки
-        await inject_stealth_scripts(tab)
-        
-        # Переходим на страницу
-        logger.debug(f"Переход на {url}")
-        await tab.go_to(url)
-        await asyncio.sleep(2)
-        
-        # ===== ПРОДВИНУТОЕ ЧЕЛОВЕЧЕСКОЕ ПОВЕДЕНИЕ =====
-        logger.debug("Выполняем человеческие действия...")
-        
-        # 1. Скролл с человеческим поведением
-        await tab.scroll.to_bottom(humanize=True)
-        await asyncio.sleep(1)
-        await tab.scroll.to_top(humanize=True)
-        await asyncio.sleep(1)
-        
-        # 2. Поиск и клик по элементам (с humanize=True)
-        # Находим все ссылки
-        links = await tab.find(tag_name='a')
-        logger.debug(f"Найдено ссылок: {len(links)}")
-        
-        # Кликаем по первой ссылке с человеческим поведением
-        if links:
-            try:
-                await links[0].click(humanize=True)
-                logger.debug("Клик по первой ссылке выполнен")
-                await asyncio.sleep(2)
-                # Возвращаемся назад
-                await tab.go_back()
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.debug(f"Не удалось кликнуть по ссылке: {e}")
-        
-        # 3. Поиск элементов разными способами
-        # Поиск по CSS-селектору
-        h1_elements = await tab.find(css_selector='h1')
-        if h1_elements:
-            h1_text = await h1_elements[0].text
-            logger.debug(f"H1 текст: {h1_text}")
-        
-        # Поиск по тексту (частичное совпадение)
-        elements_with_text = await tab.find(text='Example')
-        if elements_with_text:
-            logger.debug(f"Найдено элементов с текстом 'Example': {len(elements_with_text)}")
-        
-        # Поиск по классу
-        elements_by_class = await tab.find(class_name='container')
-        logger.debug(f"Найдено элементов с классом 'container': {len(elements_by_class)}")
-        
-        # 4. Ввод текста с человеческим поведением
-        # Находим поле ввода (если есть)
-        input_fields = await tab.find(tag_name='input')
-        if input_fields:
-            try:
-                # Вводим текст с человеческим поведением (печатаем как человек)
-                await input_fields[0].type_text("Пример текста от бота", humanize=True)
-                logger.debug("Текст введён с человеческим поведением")
-            except Exception as e:
-                logger.debug(f"Не удалось ввести текст: {e}")
-        
-        # 5. Наведение мыши с человеческим поведением
-        if len(elements_by_class) > 0:
-            try:
-                await elements_by_class[0].hover(humanize=True)
-                logger.debug("Наведение мыши выполнено")
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.debug(f"Не удалось выполнить наведение: {e}")
-        
-        # ===== ИЗВЛЕЧЕНИЕ ДАННЫХ ЧЕРЕЗ МОДЕЛИ =====
-        logger.debug("Извлекаем данные через модели...")
-        
-        # Извлекаем основную информацию
-        page_info = await tab.extract(PageInfo)
-        logger.debug(f"Информация о странице: {page_info}")
-        
-        # Пытаемся извлечь информацию о товаре (если есть)
-        try:
-            product_info = await tab.extract(ProductInfo)
-            logger.debug(f"Информация о товаре: {product_info}")
-        except Exception as e:
-            logger.debug(f"Не удалось извлечь информацию о товаре: {e}")
-            product_info = None
-        
-        # ===== ПОЛУЧАЕМ ДОПОЛНИТЕЛЬНУЮ ИНФОРМАЦИЮ =====
-        # Получаем User-Agent
-        user_agent_result = await tab._connection_handler.execute_command({
-            'method': 'Runtime.evaluate',
-            'params': {'expression': 'navigator.userAgent'}
-        })
-        user_agent = user_agent_result.get('result', {}).get('result', {}).get('value', 'N/A')
-        
-        # Проверяем маскировку WebDriver
-        webdriver_result = await tab._connection_handler.execute_command({
-            'method': 'Runtime.evaluate',
-            'params': {'expression': 'navigator.webdriver === undefined'}
-        })
-        webdriver_hidden = webdriver_result.get('result', {}).get('result', {}).get('value', False)
-        
-        # Получаем язык
-        language_result = await tab._connection_handler.execute_command({
-            'method': 'Runtime.evaluate',
-            'params': {'expression': 'navigator.language'}
-        })
-        language = language_result.get('result', {}).get('result', {}).get('value', 'N/A')
-        
-        # ===== ФОРМИРУЕМ ОТВЕТ =====
-        response = f"✅ Парсинг завершён!\n"
-        response += f"📍 URL: {url}\n"
-        response += f"📄 Заголовок: {page_info.title}\n"
-        response += f"🛡️ WebDriver скрыт: {webdriver_hidden}\n"
-        response += f"🌐 Язык: {language}\n"
-        response += f"📱 User-Agent: {user_agent[:50]}...\n"
-        response += f"🎭 Headless New: Активен\n\n"
-        
-        response += f"📊 Детали страницы:\n"
-        response += f"• H1: {page_info.h1_text}\n"
-        response += f"• Параграф: {page_info.paragraph[:100]}...\n"
-        response += f"• Количество ссылок: {page_info.links_count}\n"
-        response += f"• Длина текста: {page_info.body_text_length} символов\n"
-        
-        if product_info and product_info.name:
-            response += f"\n🛒 Информация о товаре:\n"
-            response += f"• Название: {product_info.name}\n"
-            response += f"• Цена: ${product_info.price:.2f}\n" if product_info.price else "• Цена: Не указана\n"
-            response += f"• Описание: {product_info.description[:50]}...\n"
-            response += f"• Рейтинг: {product_info.rating:.1f}/5\n" if product_info.rating else "• Рейтинг: Не указан\n"
-            response += f"• Наличие: {product_info.availability}\n"
-        
-        await browser.close()
-        
-        # Если ответ слишком длинный, отправляем файлом
-        if len(response) > 4000:
-            with open('result.txt', 'w', encoding='utf-8') as f:
-                f.write(response)
-            with open('result.txt', 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename='result.txt',
-                    caption="📋 Результат парсинга (полный)"
-                )
-            os.remove('result.txt')
-        else:
-            await update.message.reply_text(response)
-        
-        logger.info("Команда /parse выполнена успешно")
-        
-    except Exception as e:
-        logger.error(f"Ошибка в /parse: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
 async def inject_stealth_scripts(tab):
     """Внедрение JS-скриптов для маскировки"""
     js_script = """
@@ -345,6 +141,23 @@ async def inject_stealth_scripts(tab):
             return originalToDataURL.call(this, type);
         };
         
+        // ===== Audio =====
+        if (window.OfflineAudioContext) {
+            const originalCreateBuffer = OfflineAudioContext.prototype.createBuffer;
+            OfflineAudioContext.prototype.createBuffer = function() {
+                const buffer = originalCreateBuffer.apply(this, arguments);
+                const originalGetChannelData = buffer.getChannelData;
+                buffer.getChannelData = function(channel) {
+                    const data = originalGetChannelData.call(this, channel);
+                    for (let i = 0; i < data.length; i += 100) {
+                        data[i] += 0.001;
+                    }
+                    return data;
+                };
+                return buffer;
+            };
+        }
+        
         // ===== Plugins =====
         Object.defineProperty(navigator, 'plugins', {
             get: () => {
@@ -377,6 +190,15 @@ async def inject_stealth_scripts(tab):
         Object.defineProperty(window, 'screenX', { get: () => 0 });
         Object.defineProperty(window, 'screenY', { get: () => 0 });
         
+        // ===== Performance =====
+        Object.defineProperty(performance, 'memory', {
+            get: () => ({
+                jsHeapSizeLimit: 2172649472,
+                totalJSHeapSize: 103783181,
+                usedJSHeapSize: 94915910
+            })
+        });
+        
         // ===== Chrome object =====
         window.chrome = {
             runtime: {},
@@ -392,6 +214,219 @@ async def inject_stealth_scripts(tab):
     })
     logger.debug("JS-скрипты маскировки внедрены")
 
+async def get_element_text(tab, selector):
+    """Утилита для получения текста элемента по CSS-селектору"""
+    try:
+        result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {
+                'expression': f'''
+                    (() => {{
+                        const el = document.querySelector('{selector}');
+                        return el ? el.textContent.trim() : '';
+                    }})()
+                '''
+            }
+        })
+        return result.get('result', {}).get('result', {}).get('value', '')
+    except Exception as e:
+        logger.debug(f"Ошибка получения текста для {selector}: {e}")
+        return ''
+
+async def get_elements_count(tab, selector):
+    """Утилита для подсчёта элементов по CSS-селектору"""
+    try:
+        result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {
+                'expression': f'''
+                    (() => {{
+                        return document.querySelectorAll('{selector}').length;
+                    }})()
+                '''
+            }
+        })
+        return result.get('result', {}).get('result', {}).get('value', 0)
+    except Exception as e:
+        logger.debug(f"Ошибка подсчёта элементов для {selector}: {e}")
+        return 0
+
+async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Получена команда /parse от пользователя {update.effective_user.id}")
+    
+    # Получаем URL из аргументов команды (если есть)
+    url = 'https://example.com'
+    if context.args:
+        url = context.args[0]
+        await update.message.reply_text(f"🔄 Запускаю браузер для парсинга: {url}")
+    else:
+        await update.message.reply_text("🔄 Запускаю браузер с Headless New + 100% маскировкой...")
+    
+    try:
+        options = create_full_stealth_options()
+        browser = Chrome(options=options)
+        tab = await browser.start()
+        logger.debug("Браузер запущен")
+        
+        # Внедряем JS-скрипты маскировки
+        await inject_stealth_scripts(tab)
+        
+        # Переходим на страницу
+        logger.debug(f"Переход на {url}")
+        await tab.go_to(url)
+        await asyncio.sleep(2)
+        
+        # ===== ПРОДВИНУТОЕ ЧЕЛОВЕЧЕСКОЕ ПОВЕДЕНИЕ =====
+        logger.debug("Выполняем человеческие действия...")
+        
+        # 1. Скролл с человеческим поведением
+        await tab.scroll.to_bottom(humanize=True)
+        await asyncio.sleep(1)
+        await tab.scroll.to_top(humanize=True)
+        await asyncio.sleep(1)
+        
+        # 2. Поиск и клик по ссылкам (если есть)
+        links = await tab.find(tag_name='a')
+        logger.debug(f"Найдено ссылок: {len(links)}")
+        
+        if links and len(links) > 1:
+            try:
+                # Кликаем по второй ссылке (пропускаем первую, чтобы не уйти далеко)
+                await links[1].click(humanize=True)
+                logger.debug("Клик по ссылке выполнен")
+                await asyncio.sleep(2)
+                # Возвращаемся назад
+                await tab.go_back()
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.debug(f"Не удалось кликнуть по ссылке: {e}")
+        
+        # 3. Поиск элементов разными способами
+        # Поиск по CSS-селектору
+        h1_elements = await tab.find(css_selector='h1')
+        h1_text = await h1_elements[0].text if h1_elements else 'Не найдено'
+        logger.debug(f"H1 текст: {h1_text}")
+        
+        # Поиск по классу
+        elements_by_class = await tab.find(class_name='container')
+        logger.debug(f"Найдено элементов с классом 'container': {len(elements_by_class)}")
+        
+        # 4. Ввод текста с человеческим поведением (если есть поля ввода)
+        input_fields = await tab.find(tag_name='input')
+        if input_fields and len(input_fields) > 0:
+            try:
+                await input_fields[0].type_text("Пример текста от бота", humanize=True)
+                logger.debug("Текст введён с человеческим поведением")
+            except Exception as e:
+                logger.debug(f"Не удалось ввести текст: {e}")
+        
+        # 5. Наведение мыши с человеческим поведением (если есть элементы)
+        if len(elements_by_class) > 0:
+            try:
+                await elements_by_class[0].hover(humanize=True)
+                logger.debug("Наведение мыши выполнено")
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.debug(f"Не удалось выполнить наведение: {e}")
+        
+        # ===== ИЗВЛЕЧЕНИЕ ДАННЫХ (без моделей) =====
+        logger.debug("Извлекаем данные со страницы...")
+        
+        # Получаем заголовок страницы
+        title = await tab.title
+        
+        # Извлекаем данные через JS
+        h1_text = await get_element_text(tab, 'h1')
+        paragraph = await get_element_text(tab, 'p')
+        links_count = await get_elements_count(tab, 'a')
+        body_text = await get_element_text(tab, 'body')
+        body_text_length = len(body_text)
+        
+        # Пытаемся извлечь информацию о товаре (если есть)
+        product_name = await get_element_text(tab, '.product-name, .product-title, h1')
+        product_price_raw = await get_element_text(tab, '.price, .product-price')
+        product_description = await get_element_text(tab, '.description, .product-description, p')
+        
+        # Парсим цену
+        try:
+            product_price = float(product_price_raw.replace('$', '').replace('€', '').replace(',', '').strip()) if product_price_raw else 0.0
+        except:
+            product_price = 0.0
+        
+        # Получаем User-Agent
+        user_agent_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.userAgent'}
+        })
+        user_agent = user_agent_result.get('result', {}).get('result', {}).get('value', 'N/A')
+        
+        # Проверяем маскировку WebDriver
+        webdriver_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.webdriver === undefined'}
+        })
+        webdriver_hidden = webdriver_result.get('result', {}).get('result', {}).get('value', False)
+        
+        # Получаем язык
+        language_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.language'}
+        })
+        language = language_result.get('result', {}).get('result', {}).get('value', 'N/A')
+        
+        # Получаем количество плагинов
+        plugins_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.plugins.length'}
+        })
+        plugins_count = plugins_result.get('result', {}).get('result', {}).get('value', 0)
+        
+        await browser.close()
+        
+        # ===== ФОРМИРУЕМ ОТВЕТ =====
+        response = f"✅ Парсинг завершён!\n"
+        response += f"📍 URL: {url}\n"
+        response += f"📄 Заголовок: {title}\n"
+        response += f"🛡️ WebDriver скрыт: {webdriver_hidden}\n"
+        response += f"🌐 Язык: {language}\n"
+        response += f"🔌 Плагинов: {plugins_count}\n"
+        response += f"📱 User-Agent: {user_agent[:50]}...\n"
+        response += f"🎭 Headless New: Активен\n\n"
+        
+        response += f"📊 Детали страницы:\n"
+        response += f"• H1: {h1_text[:50] if h1_text else 'Не найдено'}\n"
+        response += f"• Параграф: {paragraph[:100] if paragraph else 'Не найдено'}...\n"
+        response += f"• Количество ссылок: {links_count}\n"
+        response += f"• Длина текста: {body_text_length} символов\n"
+        
+        # Если есть информация о товаре
+        if product_name and product_name != h1_text:
+            response += f"\n🛒 Информация о товаре:\n"
+            response += f"• Название: {product_name[:50]}\n"
+            response += f"• Цена: ${product_price:.2f}\n" if product_price > 0 else "• Цена: Не указана\n"
+            if product_description:
+                response += f"• Описание: {product_description[:50]}...\n"
+        
+        # Отправляем результат
+        if len(response) > 4000:
+            with open('result.txt', 'w', encoding='utf-8') as f:
+                f.write(response)
+            with open('result.txt', 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename='result.txt',
+                    caption="📋 Результат парсинга (полный)"
+                )
+            os.remove('result.txt')
+        else:
+            await update.message.reply_text(response)
+        
+        logger.info("Команда /parse выполнена успешно")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в /parse: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот с 100% маскировкой Pydoll\n\n"
@@ -402,11 +437,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Защита WebRTC\n"
         "• Человеческое поведение (скроллы, клики, ввод)\n"
         "• Гибкий поиск элементов\n"
-        "• Извлечение данных через модели\n\n"
+        "• Извлечение данных (заголовки, цены, описания)\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
         "/parse [URL] - Парсинг сайта\n"
-        "/log - Получить файл логов"
+        "/log - Получить файл логов\n\n"
+        "💡 Примеры:\n"
+        "/parse\n"
+        "/parse https://example.com\n"
+        "/parse https://books.toscrape.com"
     )
 
 async def send_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -419,12 +458,34 @@ async def send_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Файл логов не найден.")
             return
         
-        with open(log_file_path, 'rb') as f:
-            await update.message.reply_document(
-                document=f,
-                filename='bot.log',
-                caption="📋 Файл логов бота"
-            )
+        # Проверяем размер файла
+        file_size = os.path.getsize(log_file_path)
+        
+        if file_size > 50 * 1024 * 1024:  # 50 MB
+            # Читаем последние 1000 строк
+            with open(log_file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                last_lines = lines[-1000:] if len(lines) > 1000 else lines
+            
+            temp_file = 'bot_last.log'
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                f.writelines(last_lines)
+            
+            with open(temp_file, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename='bot_last.log',
+                    caption=f"📋 Последние {len(last_lines)} строк логов"
+                )
+            os.remove(temp_file)
+        else:
+            with open(log_file_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename='bot.log',
+                    caption="📋 Полный файл логов бота"
+                )
+        
         logger.info("Файл логов отправлен")
         
     except Exception as e:
@@ -437,6 +498,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("parse", parse))
     app.add_handler(CommandHandler("log", send_log))
+    logger.info("Бот запущен, начинаем polling")
     app.run_polling()
 
 if __name__ == "__main__":
