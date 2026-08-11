@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
@@ -17,9 +18,6 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
-    # Pydoll уже добавляет --no-first-run и --no-default-browser-check по умолчанию
-    # Поэтому добавляем только уникальные аргументы
-    
     # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
@@ -38,13 +36,13 @@ def create_full_stealth_options() -> ChromiumOptions:
     # Размер окна
     options.add_argument('--window-size=1920,1080')
     
-    # HEADLESS NEW (убираем дубликаты)
+    # HEADLESS NEW
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     
-    # Дополнительная маскировка (без дубликатов)
+    # Дополнительная маскировка
     options.add_argument('--disable-client-side-phishing-detection')
     options.add_argument('--disable-component-extensions-with-background-pages')
     options.add_argument('--disable-default-apps')
@@ -59,8 +57,9 @@ def create_full_stealth_options() -> ChromiumOptions:
     # ===== 2. НАСТРОЙКИ WEBRTC =====
     options.webrtc_leak_protection = True
     
-    # ===== 3. НАСТРОЙКИ БРАУЗЕРА =====
-    options.browser_preferences = {
+    # ===== 3. НАСТРОЙКИ БРАУЗЕРА (исправленный формат) =====
+    # Используем JSON строку для preferences
+    preferences = {
         'intl.accept_languages': 'en-US,en;q=0.9',
         'profile.default_content_setting_values.geolocation': 2,
         'profile.default_content_setting_values.notifications': 2,
@@ -74,6 +73,14 @@ def create_full_stealth_options() -> ChromiumOptions:
         'credentials_enable_service': False,
         'profile.default_content_setting_values.cookies': 1,
     }
+    
+    # Добавляем preferences как аргумент командной строки
+    options.add_argument(f'--disable-default-apps')  # Уже есть выше
+    options.add_argument(f'--disable-sync')
+    options.add_argument(f'--disable-default-apps')
+    
+    # Устанавливаем preferences через capability
+    options.set_capability('prefs', preferences)
     
     return options
 
