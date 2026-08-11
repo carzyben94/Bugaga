@@ -4,4 +4,5 @@ websockets>=15.0.1
 httpx>=0.28.1
 dspy-ai==3.3.0b1
 pydoll-python==2.23.1
-dspy-plasmate
+# dspy-plasmate пока не в PyPI — ставим из GitHub
+git+https://github.com/plasmate-labs/dspy-plasmate.git
