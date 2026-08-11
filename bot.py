@@ -34,15 +34,15 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
-    # Используем ТОЛЬКО готовые хелперы из документации [citation:7]
-    options.block_notifications = True   # 2 = блокировать [citation:1]
-    options.block_popups = True          # 1 = разрешить [citation:1]
-    options.password_manager_enabled = False
-    options.set_accept_languages('en-US,en;q=0.9')
-    options.prompt_for_download = False
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ТОЛЬКО ХЕЛПЕРЫ) =====
+    # Это ЕДИНСТВЕННЫЙ способ без ошибок!
+    options.block_notifications = True      # Блокируем уведомления (2)
+    options.block_popups = True             # Блокируем попапы (2)
+    options.password_manager_enabled = False # Отключаем менеджер паролей
+    options.prompt_for_download = False     # Не спрашивать при скачивании
+    options.set_accept_languages('en-US,en;q=0.9')  # Язык браузера
     
-    # Для остальных настроек используем _set_pref_path [citation:1]
+    # Дополнительные настройки через _set_pref_path
     options._set_pref_path(['profile', 'default_content_setting_values', 'geolocation'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_mic'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_camera'], 2)
@@ -57,6 +57,7 @@ def create_full_stealth_options() -> ChromiumOptions:
     return options
 
 async def human_delay(min_seconds: float = 0.5, max_seconds: float = 2.0):
+    """Случайная задержка как у человека"""
     await asyncio.sleep(random.uniform(min_seconds, max_seconds))
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,6 +76,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': """
+                    // ===== NAVIGATOR =====
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
                     });
@@ -90,11 +92,13 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(navigator, 'languages', {
                         get: () => ['en-US', 'en']
                     });
+                    
                     delete navigator.__proto__.webdriver;
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
                     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 16 });
                     
+                    // ===== WebGL =====
                     (() => {
                         const patchWebGL = (proto) => {
                             const oldGetParameter = proto.getParameter;
@@ -113,6 +117,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     })();
                     
+                    // ===== Canvas =====
                     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                     HTMLCanvasElement.prototype.toDataURL = function(type) {
                         if (type === 'image/png' || !type) {
@@ -128,6 +133,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return originalToDataURL.call(this, type);
                     };
                     
+                    // ===== Audio =====
                     if (window.OfflineAudioContext) {
                         const originalCreateBuffer = OfflineAudioContext.prototype.createBuffer;
                         OfflineAudioContext.prototype.createBuffer = function() {
@@ -144,6 +150,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         };
                     }
                     
+                    // ===== Plugins =====
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => {
                             const plugins = [
@@ -159,6 +166,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     });
                     
+                    // ===== Screen =====
                     Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
                     Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
                     Object.defineProperty(screen, 'width', { get: () => 1920 });
@@ -166,6 +174,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
                     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     
+                    // ===== Window =====
                     Object.defineProperty(window, 'outerWidth', { get: () => 1920 });
                     Object.defineProperty(window, 'outerHeight', { get: () => 1080 });
                     Object.defineProperty(window, 'innerWidth', { get: () => 1920 });
@@ -173,6 +182,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(window, 'screenX', { get: () => 0 });
                     Object.defineProperty(window, 'screenY', { get: () => 0 });
                     
+                    // ===== Performance =====
                     Object.defineProperty(performance, 'memory', {
                         get: () => ({
                             jsHeapSizeLimit: 2172649472,
@@ -181,6 +191,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         })
                     });
                     
+                    // ===== Chrome object =====
                     window.chrome = {
                         runtime: {},
                         loadTimes: function() {},
@@ -191,7 +202,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         )
         
-        # ===== 4. ОСНОВНАЯ ЛОГИКА =====
+        # ===== 4. ОСНОВНАЯ ЛОГИКА С ЭМУЛЯЦИЕЙ =====
         await tab.go_to(url)
         await human_delay(2.0, 4.0)
         
