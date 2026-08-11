@@ -8,6 +8,7 @@ import json
 import base64
 import time
 import socket
+import concurrent.futures
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown
@@ -127,12 +128,10 @@ class CDPClient:
             self.is_connected = True
             logger.info("✅ Подключение к Chrome установлено")
             
-            # Включаем домены
             await self.send_command("Network.enable")
             await self.send_command("Page.enable")
             await self.send_command("Runtime.enable")
             
-            # Устанавливаем viewport
             await self.send_command("Emulation.setDeviceMetricsOverride", {
                 "width": 1280,
                 "height": 720,
@@ -140,7 +139,6 @@ class CDPClient:
                 "mobile": False
             })
             
-            # Запускаем обработчик сообщений
             asyncio.create_task(self._handle_messages())
             
             return True
@@ -150,7 +148,6 @@ class CDPClient:
             return False
     
     async def _handle_messages(self):
-        """Обработчик входящих сообщений"""
         try:
             async for message in self.ws:
                 try:
@@ -171,29 +168,21 @@ class CDPClient:
             logger.error(f"❌ Ошибка обработки: {e}")
     
     async def send_command(self, method: str, params: dict = None, timeout: float = 10.0):
-        """Отправить CDP команду с таймаутом"""
         if not self.is_connected or not self.ws:
             raise Exception("Не подключено к браузеру")
         
         self.message_id += 1
         cmd_id = self.message_id
         
-        command = {
-            "id": cmd_id,
-            "method": method
-        }
+        command = {"id": cmd_id, "method": method}
         if params:
             command["params"] = params
         
-        # Создаем future для ответа
         future = asyncio.Future()
         self._response_futures[cmd_id] = future
         
         try:
-            # Отправляем
             await self.ws.send(json.dumps(command))
-            
-            # Ждем ответ с таймаутом
             response = await asyncio.wait_for(future, timeout=timeout)
             
             if "error" in response:
@@ -209,14 +198,12 @@ class CDPClient:
             raise Exception(f"Ошибка: {e}")
     
     async def load_page(self, url: str, timeout: float = 15.0):
-        """Загрузить страницу с таймаутом"""
         try:
             logger.info(f"🚀 Загрузка: {url}")
             
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             
-            # Навигация с таймаутом
             result = await asyncio.wait_for(
                 self.send_command("Page.navigate", {"url": url}),
                 timeout=timeout
@@ -225,7 +212,6 @@ class CDPClient:
             if "errorText" in result:
                 raise Exception(f"Ошибка: {result['errorText']}")
             
-            # Ждем загрузки с таймаутом
             await self._wait_for_load(timeout=10.0)
             
             return {"success": True, "url": url}
@@ -237,7 +223,6 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def _wait_for_load(self, timeout=10.0):
-        """Ожидание загрузки с таймаутом"""
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -381,9 +366,9 @@ class BrowserTask(Signature):
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
-# ==================== ИНСТРУМЕНТЫ С ТАЙМАУТАМИ ====================
+# ==================== ИНСТРУМЕНТЫ ====================
 def sync_run_async(coro, timeout=30):
-    """Запустить асинхронную функцию с таймаутом"""
+    """Запустить асинхронную функцию синхронно"""
     try:
         loop = asyncio.get_running_loop()
         if loop.is_running():
@@ -401,15 +386,13 @@ def sync_run_async(coro, timeout=30):
         return asyncio.run(coro)
 
 def goto_url(url: str) -> str:
-    """Перейти на URL (максимум 15 секунд)"""
     try:
-        # Ограничиваем время загрузки
         result = sync_run_async(browser.load_page(url, timeout=15.0), timeout=20)
         if result.get("success"):
             return f"✅ Открыл {url}"
         return f"❌ {result.get('error', 'Ошибка')}"
     except asyncio.TimeoutError:
-        return "❌ Таймаут загрузки страницы (слишком долго)"
+        return "❌ Таймаут загрузки страницы"
     except Exception as e:
         return f"❌ {str(e)[:100]}"
 
@@ -463,7 +446,7 @@ if AGNES_API_KEY:
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=5,  # Уменьшаем итерации
+            max_iters=5,
         )
         logger.info("✅ DSPy агент создан")
     except Exception as e:
@@ -498,11 +481,18 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Думаю...")
     
     try:
-        # Устанавливаем таймаут на выполнение агента
-        result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, browser_agent, question=query),
-            timeout=30.0
-        )
+        # Правильный способ вызвать агента в отдельном потоке
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Создаем функцию для выполнения в потоке
+            def run_agent():
+                return browser_agent(question=query)
+            
+            # Запускаем в потоке с таймаутом
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                executor, 
+                run_agent
+            )
         
         if isinstance(result, list):
             answer = result[0] if result else "Нет ответа"
@@ -520,13 +510,14 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Таймаут выполнения (слишком долго)")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
+        import traceback
+        traceback.print_exc()
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== ЗАПУСК ====================
 def main():
     logger.info("🚀 Запуск бота...")
     
-    # Запускаем Chrome
     if start_chrome():
         if wait_for_chrome():
             loop = asyncio.new_event_loop()
@@ -541,7 +532,6 @@ def main():
     else:
         logger.error("❌ Не удалось запустить Chrome")
     
-    # Создаем приложение
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dspy", dspy_command))
