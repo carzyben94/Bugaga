@@ -1,26 +1,27 @@
+Докер
+
 FROM python:3.12-slim
 
-# Устанавливаем git и curl
 RUN apt-get update && apt-get install -y \
+    chromium \
     curl \
-    git \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    libglib2.0-0 \
+    libnss3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Скачиваем Plasmate v0.5.1 напрямую из GitHub
-RUN curl -fsSL -o /usr/local/bin/plasmate \
-    https://github.com/plasmate-labs/plasmate/releases/download/v0.5.1/plasmate-x86_64-linux \
-    && chmod +x /usr/local/bin/plasmate
+ENV PYTHONUNBUFFERED=1
+ENV CHROMIUM_PATH=/usr/bin/chromium
+ENV BH_DOMAIN_SKILLS=1
+ENV BH_AGENT_WORKSPACE=/app/browser-harness/agent-workspace
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir --upgrade pip
+RUN mkdir -p /app/logs /app/screenshots /app/browser-harness/agent-workspace
+
+# Устанавливаем browser-harness как Python пакет
+RUN pip install --no-cache-dir browser-harness
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --no-cache-dir git+https://github.com/plasmate-labs/dspy-plasmate.git
-
 COPY . .
-
-CMD plasmate serve & sleep 2 && python bot.py
