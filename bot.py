@@ -2,8 +2,8 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from pydoll.browser.chromium import Chrome
-from pydoll.browser.options import ChromiumOptions  # Импортируем Options
+from pydoll.browser.chrome import Chrome  # ← импорт из chrome, не chromium!
+from pydoll.browser.options import Options  # ← импорт Options
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -17,16 +17,15 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Запускаю браузер...")
     
     try:
-        # Создаем объект настроек
-        options = ChromiumOptions()
+        options = Options()
         # Указываем путь к Chromium
         options.binary_location = '/usr/bin/chromium'
-        
-        # Для Docker/CI добавляем обязательные аргументы
+        # Ключевые аргументы для Docker/Railway
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--headless')  # Без GUI
         
-        # Передаем options в Chrome
         browser = Chrome(options=options)
         tab = await browser.start()
         await tab.go_to('https://example.com')
