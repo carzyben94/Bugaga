@@ -2,6 +2,7 @@ import os
 import logging
 import httpx
 import re
+import subprocess
 import asyncio
 import concurrent.futures
 from telegram import Update
@@ -27,42 +28,34 @@ if not TOKEN:
 logger.info(f"🔑 AGNES_API_KEY: {'✅ есть' if AGNES_API_KEY else '❌ нет'}")
 logger.info(f"🤖 TELEGRAM_BOT_TOKEN: {'✅ есть' if TOKEN else '❌ нет'}")
 
-# ==================== ПРОВЕРКА PLASMATE ====================
-try:
-    from dspy_plasmate import PlasmateFetchTool
-    PLASMATE_AVAILABLE = True
-    logger.info("✅ dspy-plasmate импортирован")
-except ImportError as e:
-    PLASMATE_AVAILABLE = False
-    logger.error(f"❌ Ошибка импорта dspy-plasmate: {e}")
+# ==================== ИНСТРУМЕНТЫ (через subprocess) ====================
 
-# ==================== ИНИЦИАЛИЗАЦИЯ PLASMATE ====================
-plasmate_tool = None
-
-if PLASMATE_AVAILABLE:
+def run_plasmate(url: str, format_type: str = "text") -> str:
+    """Выполняет plasmate fetch с нужным форматом"""
     try:
-        # Правильная инициализация — БЕЗ аргументов
-        plasmate_tool = PlasmateFetchTool()
-        logger.info("✅ Plasmate подключен")
+        result = subprocess.run(
+            ["plasmate", "fetch", url, "--format", format_type],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
         
-        # Тест
-        test_result = plasmate_tool("https://example.com")
-        logger.info(f"🔍 Тест Plasmate: {type(test_result)}")
-        
+        if result.returncode == 0:
+            return result.stdout
+        else:
+            return f"❌ Ошибка: {result.stderr[:200]}"
+    except subprocess.TimeoutExpired:
+        return "❌ Таймаут (30 сек)"
     except Exception as e:
-        logger.error(f"❌ Ошибка инициализации Plasmate: {e}")
-        PLASMATE_AVAILABLE = False
-
-# ==================== ИНСТРУМЕНТЫ ДЛЯ DSPy ====================
+        return f"❌ Ошибка: {str(e)[:200]}"
 
 def fetch_page(url: str) -> str:
-    """Открыть страницу и получить её содержимое"""
-    if not plasmate_tool:
-        return "❌ Plasmate не доступен"
-    
+    """Открыть страницу и получить её текст"""
     try:
-        result = plasmate_tool(url)
-        content = str(result)
+        content = run_plasmate(url, "text")
+        
+        if content.startswith("❌"):
+            return content
         
         if len(content) > 3000:
             content = content[:3000] + "..."
@@ -72,20 +65,16 @@ def fetch_page(url: str) -> str:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def ask_webpage(url: str, question: str) -> str:
-    """Задать вопрос по содержимому страницы (через DSPy)"""
-    if not plasmate_tool:
-        return "❌ Plasmate не доступен"
-    
+    """Задать вопрос по содержимому страницы"""
     try:
-        # Получаем содержимое
-        result = plasmate_tool(url)
-        content = str(result)
+        content = run_plasmate(url, "text")
         
-        # Ограничиваем для LLM
+        if content.startswith("❌"):
+            return content
+        
         if len(content) > 8000:
             content = content[:8000] + "..."
         
-        # Используем DSPy напрямую
         if AGNES_API_KEY:
             lm = AgnesLM(api_key=AGNES_API_KEY)
             response = lm(f"""
@@ -106,22 +95,24 @@ def ask_webpage(url: str, question: str) -> str:
 
 def search_web(query: str) -> str:
     """Поискать информацию в интернете"""
-    if not plasmate_tool:
-        return "❌ Plasmate не доступен"
-    
     try:
         search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        result = plasmate_tool(search_url)
-        content = str(result)
+        content = run_plasmate(search_url, "text")
         
-        # Парсим заголовки
-        snippets = re.findall(r'<h3[^>]*>(.*?)</h3>', content, re.IGNORECASE)
+        if content.startswith("❌"):
+            return content
         
-        if snippets:
+        # Парсим заголовки (упрощённо)
+        lines = content.split('\n')
+        results = []
+        for line in lines:
+            if len(line.strip()) > 10:
+                results.append(line.strip())
+        
+        if results:
             output = f"🔍 Результаты поиска по '{query}':\n"
-            for i, snippet in enumerate(snippets[:5], 1):
-                clean = re.sub(r'<[^>]+>', '', snippet).strip()
-                output += f"{i}. {clean}\n"
+            for i, line in enumerate(results[:5], 1):
+                output += f"{i}. {line[:150]}\n"
             return output
         
         return f"📄 Страница поиска:\n{content[:2000]}"
@@ -130,38 +121,53 @@ def search_web(query: str) -> str:
 
 def get_page_title(url: str) -> str:
     """Получить заголовок страницы"""
-    if not plasmate_tool:
-        return "❌ Plasmate не доступен"
-    
     try:
-        result = plasmate_tool(url)
-        # Пытаемся найти заголовок
-        import re
-        title_match = re.search(r'<title>(.*?)</title>', str(result), re.IGNORECASE)
-        if title_match:
-            return f"📌 Заголовок: {title_match.group(1)}"
-        return f"📌 Заголовок: {str(result)[:200]}"
+        content = run_plasmate(url, "text")
+        
+        if content.startswith("❌"):
+            return content
+        
+        # Ищем первую строку как заголовок
+        lines = content.split('\n')
+        for line in lines:
+            if line.strip():
+                return f"📌 Заголовок: {line.strip()[:200]}"
+        
+        return "📌 Заголовок не найден"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def extract_links(url: str) -> str:
-    """Извлечь ссылки со страницы"""
-    if not plasmate_tool:
-        return "❌ Plasmate не доступен"
-    
+    """Извлечь ссылки со страницы (через SOM)"""
     try:
-        result = plasmate_tool(url)
-        content = str(result)
+        # Используем JSON формат для структурированных данных
+        content = run_plasmate(url, "json")
         
-        # Парсим ссылки
-        links = re.findall(r'href=[\'"]?([^\'" >]+)', content, re.IGNORECASE)
-        unique_links = list(dict.fromkeys(links))[:10]
+        if content.startswith("❌"):
+            return content
         
-        if unique_links:
-            output = "🔗 Ссылки на странице:\n"
-            for i, link in enumerate(unique_links, 1):
-                output += f"{i}. {link}\n"
-            return output
+        # Парсим JSON
+        import json
+        try:
+            data = json.loads(content)
+            links = []
+            
+            # Ищем ссылки в JSON
+            if isinstance(data, dict):
+                # Рекурсивный поиск URL
+                import re
+                text = json.dumps(data)
+                found = re.findall(r'https?://[^\s"\'<>]+', text)
+                unique = list(dict.fromkeys(found))[:10]
+                
+                if unique:
+                    output = "🔗 Ссылки на странице:\n"
+                    for i, link in enumerate(unique, 1):
+                        output += f"{i}. {link}\n"
+                    return output
+        except:
+            pass
+        
         return "🔗 Ссылок не найдено"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
@@ -231,7 +237,7 @@ class BrowserTask(Signature):
 
 browser_agent = None
 
-if AGNES_API_KEY and PLASMATE_AVAILABLE:
+if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
         settings.configure(lm=lm)
@@ -245,16 +251,22 @@ if AGNES_API_KEY and PLASMATE_AVAILABLE:
     except Exception as e:
         logger.error(f"❌ Ошибка создания агента: {e}")
 else:
-    logger.warning("⚠️ DSPy агент не создан: проверьте API ключ и Plasmate")
+    logger.warning("⚠️ DSPy агент не создан: нет API ключа")
 
 # ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status = "✅ Plasmate готов" if plasmate_tool else "❌ Plasmate не доступен"
+    # Проверяем Plasmate
+    try:
+        test = subprocess.run(["plasmate", "--version"], capture_output=True, text=True, timeout=5)
+        plasm_status = f"✅ Plasmate {test.stdout.strip()}" if test.returncode == 0 else "❌ Plasmate не найден"
+    except:
+        plasm_status = "❌ Plasmate не доступен"
+    
     dspy_status = "✅ DSPy активен" if browser_agent else "❌ DSPy отключен"
     
     await update.message.reply_text(
         f"🤖 Бот готов!\n\n"
-        f"🌐 {status}\n"
+        f"🌐 {plasm_status}\n"
         f"🧠 {dspy_status}\n"
         f"📊 Инструментов: {len(tools)}\n\n"
         f"Используй:\n"
@@ -349,4 +361,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("search", search_command))
     
     logger.info("✅ Бот запущен!")
-    app.run_polling(drop_pending_updates=True)  # Фикс конфликта
+    app.run_polling(drop_pending_updates=True)
