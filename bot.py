@@ -64,25 +64,13 @@ class CDPClient:
             
             self.is_launching = True
             
-            # Путь к Chromium в /usr/bin/
-            chrome_cmd = '/usr/bin/chromium-browser'
+            # Путь к Chromium
+            chrome_cmd = '/usr/bin/chromium'
             
             # Проверяем наличие
             if not os.path.exists(chrome_cmd):
-                # Альтернативные пути
-                alternatives = [
-                    '/usr/bin/chromium',
-                    '/usr/bin/chrome',
-                    '/usr/bin/google-chrome',
-                    '/usr/bin/google-chrome-stable'
-                ]
-                for alt in alternatives:
-                    if os.path.exists(alt):
-                        chrome_cmd = alt
-                        break
-                else:
-                    self.is_launching = False
-                    return False, "❌ Chromium не найден в /usr/bin/"
+                self.is_launching = False
+                return False, f"❌ Chromium не найден: {chrome_cmd}"
             
             # Запускаем
             cmd = [
@@ -267,7 +255,7 @@ async def list_tabs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = "📊 Статус:\n"
     status_msg += f"Подключен: {'✅ Да' if cdp.ws else '❌ Нет'}\n"
-    status_msg += f"Chromium: /usr/bin/chromium-browser\n"
+    status_msg += f"Chromium: /usr/bin/chromium\n"
     
     try:
         ws_url = cdp.get_first_tab_ws()
@@ -292,7 +280,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     
     print("🤖 CDP Client Bot запущен")
-    print("📁 Chromium: /usr/bin/chromium-browser")
+    print("📁 Chromium: /usr/bin/chromium")
     app.run_polling()
 
 if __name__ == "__main__":
