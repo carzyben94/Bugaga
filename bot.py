@@ -2,7 +2,7 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from pydoll.browser.chromium import Chrome  # ✅ правильный импорт
+from pydoll.browser.chromium import Chrome
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -16,16 +16,16 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Запускаю браузер...")
     
     try:
-        # Создаем браузер через контекстный менеджер [citation:1]
-        async with Chrome() as browser:
-            tab = await browser.start()
-            await tab.go_to('https://example.com')
-            
-            # Получаем заголовок страницы
-            title = await tab.title  # или await tab.get_title()
-            
-            await update.message.reply_text(f"✅ Заголовок: {title}")
-            
+        # Указываем путь к Chromium явно
+        browser = Chrome(executable_path='/usr/bin/chromium')
+        tab = await browser.start()
+        await tab.go_to('https://example.com')
+        
+        title = await tab.title
+        
+        await browser.close()
+        await update.message.reply_text(f"✅ Заголовок: {title}")
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
