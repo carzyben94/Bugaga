@@ -7,14 +7,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 
-# Пытаемся импортировать Plasmate
-try:
-    from dspy_plasmate import PlasmateFetchTool, WebQAModule, PlasmateRetriever
-    PLASMATE_AVAILABLE = True
-except ImportError:
-    PLASMATE_AVAILABLE = False
-    print("❌ Установите: pip install dspy-plasmate")
-
 # ==================== НАСТРОЙКА ====================
 logging.basicConfig(
     level=logging.INFO,
@@ -25,10 +17,27 @@ logger = logging.getLogger(__name__)
 # ==================== ПЕРЕМЕННЫЕ ====================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-PLASMATE_URL = os.environ.get("PLASMATE_URL", "http://localhost:9222")
+
+# Plasmate — принудительно задаём значение
+PLASMATE_URL = "http://localhost:9222"  # ЖЁСТКОЕ ЗНАЧЕНИЕ
+os.environ["PLASMATE_URL"] = PLASMATE_URL
+
+logger.info(f"🌐 PLASMATE_URL: {PLASMATE_URL}")
+logger.info(f"🔑 AGNES_API_KEY: {'✅ есть' if AGNES_API_KEY else '❌ нет'}")
+logger.info(f"🤖 TELEGRAM_BOT_TOKEN: {'✅ есть' if TOKEN else '❌ нет'}")
 
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
+
+# ==================== ПРОВЕРКА PLASMATE ====================
+try:
+    from dspy_plasmate import PlasmateFetchTool, WebQAModule, PlasmateRetriever
+    PLASMATE_AVAILABLE = True
+    logger.info("✅ dspy-plasmate импортирован")
+except ImportError as e:
+    PLASMATE_AVAILABLE = False
+    logger.error(f"❌ Ошибка импорта dspy-plasmate: {e}")
+    logger.error("❌ Установите: pip install git+https://github.com/plasmate-labs/dspy-plasmate.git")
 
 # ==================== ИНИЦИАЛИЗАЦИЯ PLASMATE ====================
 plasmate_tool = None
@@ -88,7 +97,7 @@ def ask_webpage(url: str, question: str) -> str:
         return f"❌ Ошибка: {str(e)[:200]}"
 
 def search_web(query: str) -> str:
-    """Поискать информацию в интернете (через Google или другие источники)"""
+    """Поискать информацию в интернете (через Google)"""
     if not plasmate_tool:
         return "❌ Plasmate не доступен"
     
@@ -101,7 +110,7 @@ def search_web(query: str) -> str:
         else:
             content = str(result)
         
-        # Парсим результаты поиска (заглушка, можно улучшить)
+        # Парсим результаты поиска
         import re
         snippets = re.findall(r'<h3[^>]*>(.*?)</h3>', content, re.IGNORECASE)
         
@@ -112,7 +121,6 @@ def search_web(query: str) -> str:
                 output += f"{i}. {clean}\n"
             return output
         
-        # Если не нашли заголовков, возвращаем сырой контент
         return f"📄 Страница поиска:\n{content[:2000]}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
@@ -211,7 +219,7 @@ class BrowserTask(Signature):
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
-# Инициализация
+# Инициализация агента
 browser_agent = None
 
 if AGNES_API_KEY and PLASMATE_AVAILABLE:
