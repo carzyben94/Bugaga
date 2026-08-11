@@ -93,7 +93,7 @@ def wait_for_chrome(max_attempts=20, delay=1):
     logger.error("❌ Chrome не запустился")
     return False
 
-# ==================== CDP КЛИЕНТ ====================
+# ==================== CDP КЛИЕНТ (УЛУЧШЕННЫЙ) ====================
 class SimpleCDPClient:
     def __init__(self):
         self.ws = None
@@ -160,6 +160,7 @@ class SimpleCDPClient:
             if "errorText" in result:
                 return {"success": False, "error": result["errorText"]}
             
+            # Ждем загрузки с улучшенной проверкой
             await self.wait_for_load()
             
             return {"success": True, "url": url}
@@ -167,8 +168,11 @@ class SimpleCDPClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    async def wait_for_load(self, timeout=10.0):
+    async def wait_for_load(self, timeout=15.0):
+        """Улучшенное ожидание загрузки (как в Pydoll)"""
         start = time.time()
+        
+        # 1. Ждем complete
         while time.time() - start < timeout:
             try:
                 result = await self.send_command("Runtime.evaluate", {
@@ -177,20 +181,72 @@ class SimpleCDPClient:
                 
                 state = result.get("result", {}).get("value", "loading")
                 if state == "complete":
-                    logger.info("✅ Страница загружена")
-                    return True
+                    logger.info("✅ DOM загружен")
+                    break
                     
             except Exception as e:
                 logger.debug(f"⚠️ {e}")
             
             await asyncio.sleep(0.3)
         
-        return False
+        # 2. Ждем наличие body
+        start = time.time()
+        while time.time() - start < 5.0:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": "document.body !== null"
+                }, timeout=2.0)
+                
+                if result.get("result", {}).get("value", False):
+                    logger.info("✅ Body найден")
+                    break
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {e}")
+            
+            await asyncio.sleep(0.3)
+        
+        # 3. Доп. задержка для динамического контента
+        await asyncio.sleep(0.5)
+        
+        return True
+    
+    async def find_element(self, selector, timeout=10.0):
+        """Найти элемент на странице (как в Pydoll)"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": f"""
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            return {{
+                                exists: true,
+                                text: el.textContent?.trim() || null,
+                                innerHTML: el.innerHTML || null
+                            }};
+                        }}
+                        return {{exists: false}};
+                    """,
+                    "returnByValue": True
+                }, timeout=3.0)
+                
+                data = result.get("result", {}).get("value", {})
+                if data.get("exists"):
+                    return data
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {e}")
+            
+            await asyncio.sleep(0.3)
+        
+        return {"exists": False}
     
     async def screenshot(self, filename=None):
         try:
             result = await self.send_command("Page.captureScreenshot", {
-                "format": "png"
+                "format": "png",
+                "captureBeyondViewport": True
             }, timeout=10.0)
             
             if not filename:
@@ -252,7 +308,6 @@ def run_async_in_main_loop(coro):
     global main_loop
     
     if main_loop is None:
-        # Если нет главного loop, создаем временный
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -260,13 +315,10 @@ def run_async_in_main_loop(coro):
         finally:
             loop.close()
     
-    # Если главный loop запущен - используем его
     if main_loop.is_running():
-        # Запускаем в главном loop и ждем результат
         future = asyncio.run_coroutine_threadsafe(coro, main_loop)
         return future.result(timeout=30)
     else:
-        # Если loop не запущен - запускаем
         return main_loop.run_until_complete(coro)
 
 def goto_url(url: str) -> str:
@@ -326,11 +378,30 @@ def page_info() -> str:
     except Exception as e:
         return f"❌ {str(e)[:100]}"
 
+def find_element(selector: str) -> str:
+    """Найти элемент на странице по CSS селектору"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        result = run_async_in_main_loop(browser.find_element(selector))
+        
+        if result.get("exists"):
+            text = result.get("text", "")
+            if text:
+                return f"✅ Найден: {text[:200]}"
+            return f"✅ Элемент '{selector}' найден"
+        return f"❌ Элемент '{selector}' не найден"
+    except Exception as e:
+        return f"❌ {str(e)[:100]}"
+
+# ==================== СПИСОК ИНСТРУМЕНТОВ ====================
 tools = [
     Tool(goto_url),
     Tool(capture_screenshot),
     Tool(execute_js),
     Tool(page_info),
+    Tool(find_element),  # Новый инструмент
 ]
 
 # ==================== DSPy ====================
@@ -401,7 +472,7 @@ if AGNES_API_KEY:
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=10,
+            max_iters=15,  # Увеличил до 15
         )
         logger.info("✅ DSPy агент создан")
     except Exception as e:
@@ -434,7 +505,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Думаю...")
     
     try:
-        # Запускаем агента в отдельном потоке, чтобы не блокировать
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:
             def run_agent():
@@ -443,7 +513,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(executor, run_agent)
         
-        # Извлекаем ответ
         if hasattr(result, 'answer'):
             answer = result.answer
         elif isinstance(result, list):
@@ -451,9 +520,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             answer = str(result)
         
-        # Очищаем ответ от технической информации
         if answer and len(answer) > 10:
-            # Если ответ содержит ошибку asyncio - говорим что не получилось
             if "asyncio" in answer.lower() or "event loop" in answer.lower():
                 answer = "❌ Не удалось выполнить задачу из-за технической ошибки. Попробуйте позже."
             
@@ -471,14 +538,11 @@ def main():
     
     logger.info("🚀 Запуск бота...")
     
-    # Запускаем Chrome
     if start_chrome():
         if wait_for_chrome():
-            # Создаем главный event loop
             main_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(main_loop)
             
-            # Инициализируем браузер
             success = main_loop.run_until_complete(init_browser())
             if success:
                 logger.info("✅ Браузер готов")
@@ -489,7 +553,6 @@ def main():
     else:
         logger.error("❌ Не удалось запустить Chrome")
     
-    # Бот
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dspy", dspy_command))
