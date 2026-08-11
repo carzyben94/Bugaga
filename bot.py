@@ -285,13 +285,14 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.scroll.to_top(humanize=True)
         await asyncio.sleep(1)
         
-        # 2. Поиск и клик по ссылкам (если есть)
-        links = await tab.find(tag_name='a')
+        # 2. Поиск элементов с find_all=True (возвращает список)
+        # Поиск всех ссылок
+        links = await tab.find(tag_name='a', find_all=True)
         logger.debug(f"Найдено ссылок: {len(links)}")
         
         if links and len(links) > 1:
             try:
-                # Кликаем по второй ссылке (пропускаем первую, чтобы не уйти далеко)
+                # Кликаем по второй ссылке с человеческим поведением
                 await links[1].click(humanize=True)
                 logger.debug("Клик по ссылке выполнен")
                 await asyncio.sleep(2)
@@ -302,18 +303,22 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.debug(f"Не удалось кликнуть по ссылке: {e}")
         
         # 3. Поиск элементов разными способами
-        # Поиск по CSS-селектору
-        h1_elements = await tab.find(css_selector='h1')
+        # Поиск по CSS-селектору (один элемент)
+        h1_elements = await tab.find(css_selector='h1', find_all=True)
         h1_text = await h1_elements[0].text if h1_elements else 'Не найдено'
         logger.debug(f"H1 текст: {h1_text}")
         
-        # Поиск по классу
-        elements_by_class = await tab.find(class_name='container')
+        # Поиск по классу (все элементы)
+        elements_by_class = await tab.find(class_name='container', find_all=True)
         logger.debug(f"Найдено элементов с классом 'container': {len(elements_by_class)}")
         
+        # Поиск по тексту (все элементы, содержащие текст)
+        elements_with_text = await tab.find(text='Example', find_all=True)
+        logger.debug(f"Найдено элементов с текстом 'Example': {len(elements_with_text)}")
+        
         # 4. Ввод текста с человеческим поведением (если есть поля ввода)
-        input_fields = await tab.find(tag_name='input')
-        if input_fields and len(input_fields) > 0:
+        input_fields = await tab.find(tag_name='input', find_all=True)
+        if input_fields:
             try:
                 await input_fields[0].type_text("Пример текста от бота", humanize=True)
                 logger.debug("Текст введён с человеческим поведением")
@@ -321,7 +326,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.debug(f"Не удалось ввести текст: {e}")
         
         # 5. Наведение мыши с человеческим поведением (если есть элементы)
-        if len(elements_by_class) > 0:
+        if elements_by_class:
             try:
                 await elements_by_class[0].hover(humanize=True)
                 logger.debug("Наведение мыши выполнено")
@@ -329,7 +334,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.debug(f"Не удалось выполнить наведение: {e}")
         
-        # ===== ИЗВЛЕЧЕНИЕ ДАННЫХ (без моделей) =====
+        # ===== ИЗВЛЕЧЕНИЕ ДАННЫХ =====
         logger.debug("Извлекаем данные со страницы...")
         
         # Получаем заголовок страницы
@@ -436,7 +441,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
         "• Человеческое поведение (скроллы, клики, ввод)\n"
-        "• Гибкий поиск элементов\n"
+        "• Гибкий поиск элементов (find_all=True)\n"
         "• Извлечение данных (заголовки, цены, описания)\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
