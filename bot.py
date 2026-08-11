@@ -54,6 +54,189 @@ from browser_harness.helpers import (
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
+# ДОПОЛНИТЕЛЬНЫЕ ИМПОРТЫ ДЛЯ CDP
+# ============================================================
+
+import websockets
+import threading
+from functools import wraps
+
+# ============================================================
+# ГЛОБАЛЬНЫЕ НАСТРОЙКИ ТАЙМАУТОВ
+# ============================================================
+
+CDP_TIMEOUT = 30.0  # 30 секунд для CDP операций
+X_TIMEOUT = 60.0    # 60 секунд для X/Twitter
+DEFAULT_RETRIES = 3
+
+# ============================================================
+# ОБЕРТКИ С ТАЙМАУТАМИ
+# ============================================================
+
+def with_timeout(timeout=CDP_TIMEOUT, retries=DEFAULT_RETRIES):
+    """Декоратор для добавления таймаута и повторных попыток"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(retries):
+                try:
+                    # Запускаем в отдельном потоке с таймаутом
+                    result = None
+                    error = None
+                    
+                    def target():
+                        nonlocal result, error
+                        try:
+                            result = func(*args, **kwargs)
+                        except Exception as e:
+                            error = e
+                    
+                    thread = threading.Thread(target=target)
+                    thread.daemon = True
+                    thread.start()
+                    thread.join(timeout=timeout)
+                    
+                    if thread.is_alive():
+                        raise TimeoutError(f"Операция превысила таймаут {timeout}с (попытка {attempt+1}/{retries})")
+                    
+                    if error:
+                        raise error
+                    
+                    return result
+                    
+                except TimeoutError as e:
+                    last_error = e
+                    logger.warning(f"⏱️ {func.__name__} таймаут, попытка {attempt+1}/{retries}")
+                    if attempt < retries - 1:
+                        time.sleep(2 ** attempt)  # Экспоненциальная задержка
+                    continue
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"⚠️ {func.__name__} ошибка: {e}, попытка {attempt+1}/{retries}")
+                    if attempt < retries - 1:
+                        time.sleep(1)
+                    continue
+            
+            raise last_error or RuntimeError(f"Все {retries} попыток провалились")
+        return wrapper
+    return decorator
+
+# ============================================================
+# ПЕРЕОПРЕДЕЛЕННЫЕ ФУНКЦИИ С ТАЙМАУТАМИ
+# ============================================================
+
+@with_timeout(timeout=CDP_TIMEOUT)
+def safe_page_info():
+    """Безопасная версия page_info с таймаутом"""
+    try:
+        return page_info()
+    except Exception as e:
+        logger.error(f"❌ page_info ошибка: {e}")
+        raise
+
+@with_timeout(timeout=X_TIMEOUT)
+def safe_page_info_x():
+    """Специальная версия page_info для X с большим таймаутом"""
+    try:
+        # Прямой CDP запрос с большим таймаутом
+        resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+        pages = resp.json()
+        if not pages:
+            raise RuntimeError("Нет активных вкладок")
+        
+        ws_url = pages[0]["webSocketDebuggerUrl"]
+        
+        # Используем asyncio для прямого CDP вызова
+        async def get_info():
+            async with websockets.connect(ws_url, timeout=30.0) as ws:
+                await ws.send(json.dumps({
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": "JSON.stringify({url:location.href,title:document.title,w:innerWidth,h:innerHeight,sx:scrollX,sy:scrollY,pw:document.documentElement.scrollWidth,ph:document.documentElement.scrollHeight})",
+                        "timeout": 30000,  # 30 секунд в мс
+                        "returnByValue": True
+                    }
+                }))
+                
+                response = json.loads(await asyncio.wait_for(ws.recv(), timeout=35.0))
+                
+                if "error" in response:
+                    raise RuntimeError(f"CDP ошибка: {response['error']}")
+                
+                result = response.get("result", {})
+                if "exceptionDetails" in result:
+                    raise RuntimeError(f"JS ошибка: {result['exceptionDetails']}")
+                
+                # Парсим результат
+                value = result.get("result", {}).get("value", "{}")
+                info = json.loads(value)
+                
+                return info
+        
+        # Запускаем асинхронную функцию в новом цикле
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            info = loop.run_until_complete(get_info())
+        finally:
+            loop.close()
+        
+        return info
+        
+    except asyncio.TimeoutError:
+        raise TimeoutError("X/Twitter страница не отвечает после 30 секунд")
+    except Exception as e:
+        logger.error(f"❌ safe_page_info_x ошибка: {e}")
+        raise
+
+@with_timeout(timeout=CDP_TIMEOUT)
+def safe_goto_url(url):
+    """Безопасная версия goto_url с таймаутом"""
+    try:
+        goto_url(url)
+        
+        # Специальная обработка для X/Twitter
+        if "x.com" in url or "twitter.com" in url:
+            logger.info("🐦 Обнаружен X/Twitter, даем время на загрузку...")
+            time.sleep(5)  # Дополнительное ожидание для React
+            wait_for_load(timeout=60.0)
+        else:
+            wait_for_load()
+        
+        return True
+    except Exception as e:
+        logger.error(f"❌ safe_goto_url ошибка: {e}")
+        raise
+
+@with_timeout(timeout=CDP_TIMEOUT)
+def safe_capture_screenshot(filename=None):
+    """Безопасная версия capture_screenshot с таймаутом"""
+    try:
+        if not filename:
+            timestamp = int(time.time())
+            filename = f"screenshot_{timestamp}.png"
+        full_path = os.path.join(SCREENSHOTS_DIR, filename)
+        capture_screenshot(path=full_path)
+        return filename
+    except Exception as e:
+        logger.error(f"❌ safe_capture_screenshot ошибка: {e}")
+        raise
+
+@with_timeout(timeout=CDP_TIMEOUT)
+def safe_js(expression):
+    """Безопасная версия js с таймаутом"""
+    try:
+        result = js(expression)
+        if isinstance(result, dict):
+            return str(result.get('result', result))
+        return str(result) if result is not None else "✅ JavaScript выполнен"
+    except Exception as e:
+        logger.error(f"❌ safe_js ошибка: {e}")
+        raise
+
+# ============================================================
 # DSPy АДАПТЕР ДЛЯ AGNES AI
 # ============================================================
 
@@ -177,17 +360,12 @@ class BrowserTask(Signature):
     - 📸 Скриншот: [имя файла]
     - ℹ️ Результат: [что получилось]
     - ❌ Ошибка: [если была]
-
-    Примеры успешных задач:
-    - "открыть google.com, найти новости о ИИ, сделать скриншот"
-    - "перейти на GitHub, найти репозиторий browser-harness, показать звезды"
-    - "заполнить форму регистрации на сайте"
     """
     question = InputField(desc="Задача пользователя для выполнения в браузере")
     answer = OutputField(desc="Подробный отчет о выполнении задачи с результатами")
 
 # ============================================================
-# ИНСТРУМЕНТЫ
+# ИНСТРУМЕНТЫ (С БЕЗОПАСНЫМИ ОБЕРТКАМИ)
 # ============================================================
 
 def tool_new_tab() -> str:
@@ -201,8 +379,7 @@ def tool_new_tab() -> str:
 def tool_goto_url(url: str) -> str:
     """Перейти на URL и дождаться загрузки"""
     try:
-        goto_url(url)
-        wait_for_load()
+        safe_goto_url(url)
         return f"✅ Перешел на {url}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
@@ -210,29 +387,24 @@ def tool_goto_url(url: str) -> str:
 def tool_wait_for_load() -> str:
     """Дождаться загрузки страницы"""
     try:
-        wait_for_load()
+        wait_for_load(timeout=60.0)
         return "✅ Страница загружена"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        logger.warning(f"⚠️ wait_for_load() failed: {e}")
+        time.sleep(5)  # Даем время на прогрузку
+        return "✅ Ожидание завершено (таймаут)"
 
 def tool_js(expression: str) -> str:
     """Выполнить JavaScript на странице"""
     try:
-        result = js(expression)
-        if isinstance(result, dict):
-            return str(result.get('result', result))
-        return str(result) if result is not None else "✅ JavaScript выполнен"
+        return safe_js(expression)
     except Exception as e:
         return f"❌ Ошибка JavaScript: {e}"
 
 def tool_capture_screenshot(filename: str = None) -> str:
     """Сделать скриншот страницы"""
     try:
-        if not filename:
-            timestamp = int(time.time())
-            filename = f"screenshot_{timestamp}.png"
-        full_path = os.path.join(SCREENSHOTS_DIR, filename)
-        capture_screenshot(path=full_path)
+        filename = safe_capture_screenshot(filename)
         return f"✅ Скриншот сохранен: {filename}"
     except Exception as e:
         return f"❌ Ошибка: {e}"
@@ -278,12 +450,31 @@ def tool_scroll(dx: int, dy: int) -> str:
         return f"❌ Ошибка: {e}"
 
 def tool_page_info() -> str:
-    """Получить информацию о странице"""
+    """Получить информацию о странице (с автоматическим определением X)"""
     try:
-        info = page_info()
-        return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+        # Проверяем, не X ли это
+        try:
+            current_info = safe_page_info()
+            url = current_info.get('url', '')
+            
+            # Если это X/Twitter - используем специальную функцию
+            if "x.com" in url or "twitter.com" in url:
+                logger.info("🐦 Используем специальный парсер для X")
+                info = safe_page_info_x()
+            else:
+                info = current_info
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Первичная page_info() не удалась: {e}")
+            # Пробуем X-версию как fallback
+            info = safe_page_info_x()
+        
+        return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')[:100]}"
+        
+    except TimeoutError as e:
+        return f"❌ Таймаут при получении информации (30 сек): {e}"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ Ошибка: {str(e)[:200]}"
 
 def tool_list_tabs() -> str:
     """Список всех открытых вкладок"""
@@ -398,7 +589,6 @@ else:
 
 try:
     from cookies import COOKIES
-    import websockets
     
     async def set_cookies_async():
         """Установить куки через WebSocket"""
@@ -565,7 +755,7 @@ async def log(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def tab_command(update, context):
-    """Показать все открытые вкладки"""
+    """Показать все открытые вкладки с улучшенной обработкой ошибок"""
     try:
         tabs = list_tabs()
         current = current_tab()
@@ -574,36 +764,80 @@ async def tab_command(update, context):
             await update.message.reply_text("📭 Нет открытых вкладок")
             return
         
-        # Форматируем вывод
         result = "📑 *Открытые вкладки:*\n\n"
+        failed_tabs = []
+        
         for tab in tabs:
-            # Получаем информацию о вкладке
             try:
-                # Переключаемся на вкладку чтобы получить информацию
                 switch_tab(tab)
-                info = page_info()
-                title = info.get('title', 'Без названия')[:50]
-                url = info.get('url', 'unknown')[:60]
                 
-                # Экранируем специальные символы для Markdown
-                title = escape_markdown(title, version=2)
-                url = escape_markdown(url, version=2)
+                # Пробуем получить информацию с таймаутом
+                try:
+                    # Быстрая проверка с таймаутом 5 секунд
+                    info = None
+                    
+                    def get_info():
+                        nonlocal info
+                        try:
+                            # Проверяем URL для определения X
+                            current_info = page_info()
+                            url = current_info.get('url', '')
+                            
+                            if "x.com" in url or "twitter.com" in url:
+                                info = safe_page_info_x()
+                            else:
+                                info = current_info
+                        except Exception as e:
+                            raise e
+                    
+                    thread = threading.Thread(target=get_info)
+                    thread.daemon = True
+                    thread.start()
+                    thread.join(timeout=8.0)  # 8 секунд на получение информации
+                    
+                    if thread.is_alive():
+                        title = "⏳ Загрузка..."
+                        url = "⏳ Таймаут (страница медленно грузится)"
+                    elif info is None:
+                        title = "❌ Не удалось получить информацию"
+                        url = "❌ Ошибка"
+                    else:
+                        title = info.get('title', 'Без названия')[:50]
+                        url = info.get('url', 'unknown')[:60]
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось получить инфо для вкладки {tab}: {e}")
+                    title = "⚠️ Ошибка получения"
+                    url = f"❌ {str(e)[:50]}"
+                
+                # Экранируем для Markdown
+                title_escaped = escape_markdown(title, version=2)
+                url_escaped = escape_markdown(url, version=2)
                 
                 if tab == current:
                     result += f"👉 *ТЕКУЩАЯ* \\(ID: `{tab}`\\)\n"
                 else:
                     result += f"ID: `{tab}`\n"
-                result += f"   📄 {title}\n"
-                result += f"   🔗 {url}\n\n"
+                result += f"   📄 {title_escaped}\n"
+                result += f"   🔗 {url_escaped}\n\n"
+                
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось получить инфо для вкладки {tab}: {e}")
+                logger.warning(f"⚠️ Ошибка обработки вкладки {tab}: {e}")
+                failed_tabs.append(str(tab))
                 result += f"ID: `{tab}`\n"
-                result += f"   ❌ Недоступно\n\n"
+                result += f"   ❌ Недоступно: {str(e)[:50]}\n\n"
         
         # Возвращаемся на текущую вкладку
-        switch_tab(current)
+        try:
+            switch_tab(current)
+        except:
+            pass
         
-        # Отправляем результат
+        # Добавляем информацию о проблемных вкладках
+        if failed_tabs:
+            result += f"\n⚠️ Проблемные вкладки: {', '.join(failed_tabs)}\n"
+            result += "Рекомендуется закрыть их через /close"
+        
         if len(result) > 4000:
             result = result[:4000] + "\n\n\\.\\.\\. \\(обрезано\\)"
         
@@ -614,6 +848,8 @@ async def tab_command(update, context):
         
     except Exception as e:
         logger.error(f"❌ Ошибка в /tab: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def switch_command(update, context):
@@ -631,17 +867,24 @@ async def switch_command(update, context):
         tab_id = int(context.args[0])
         switch_tab(tab_id)
         
-        # Получаем информацию о новой вкладке
-        info = page_info()
-        title = escape_markdown(info.get('title', 'Без названия'), version=2)
-        url = escape_markdown(info.get('url', 'unknown')[:100], version=2)
-        
-        await update.message.reply_text(
-            f"✅ Переключился на вкладку `{tab_id}`\n"
-            f"📄 {title}\n"
-            f"🔗 {url}",
-            parse_mode='MarkdownV2'
-        )
+        # Получаем информацию о новой вкладке с таймаутом
+        try:
+            info = safe_page_info()
+            title = escape_markdown(info.get('title', 'Без названия'), version=2)
+            url = escape_markdown(info.get('url', 'unknown')[:100], version=2)
+            
+            await update.message.reply_text(
+                f"✅ Переключился на вкладку `{tab_id}`\n"
+                f"📄 {title}\n"
+                f"🔗 {url}",
+                parse_mode='MarkdownV2'
+            )
+        except:
+            await update.message.reply_text(
+                f"✅ Переключился на вкладку `{tab_id}`\n"
+                f"⚠️ Но не удалось получить информацию о странице",
+                parse_mode='MarkdownV2'
+            )
         
     except ValueError:
         await update.message.reply_text("❌ ID вкладки должен быть числом")
@@ -666,8 +909,7 @@ async def newtab_command(update, context):
     """Открыть новую вкладку"""
     try:
         new_tab()
-        # Ждем загрузки
-        wait_for_load()
+        wait_for_load(timeout=30.0)
         current = current_tab()
         await update.message.reply_text(
             f"✅ Новая вкладка открыта\n"
