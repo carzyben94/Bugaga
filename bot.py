@@ -15,6 +15,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
+from dspy.adapters.json_adapter import JSONAdapter
 
 # ==================== НАСТРОЙКА ====================
 logging.basicConfig(
@@ -155,7 +156,7 @@ def wait_for_chrome(max_attempts=20, delay=1):
     logger.error("❌ Chrome не запустился")
     return False
 
-# ==================== CDP КЛИЕНТ С БЛОКИРОВКОЙ ====================
+# ==================== CDP КЛИЕНТ ====================
 class SimpleCDPClient:
     def __init__(self):
         self.ws = None
@@ -882,23 +883,19 @@ if not TOKEN:
 if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
-        settings.configure(lm=lm)
-        browser_agent = ReActV2(
-            signature=BrowserTask,
-            tools=tools,
-            max_iters=12,
-            parallel_tool_calls=False  # 👈 ОТКЛЮЧАЕМ ПАРАЛЛЕЛЬНЫЕ ВЫЗОВЫ
-        )
-        logger.info("✅ DSPy агент создан с parallel_tool_calls=False")
-    except TypeError:
-        # Если параметр не поддерживается, создаем без него
-        logger.warning("⚠️ parallel_tool_calls не поддерживается, создаем без него")
+        
+        # 🔥 СОЗДАЕМ АДАПТЕР С ОТКЛЮЧЕННЫМИ ПАРАЛЛЕЛЬНЫМИ ВЫЗОВАМИ
+        adapter = JSONAdapter(parallel_tool_calls=False)
+        
+        # Настраиваем с адаптером
+        settings.configure(lm=lm, adapter=adapter)
+        
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
             max_iters=12,
         )
-        logger.info("✅ DSPy агент создан")
+        logger.info("✅ DSPy агент создан с parallel_tool_calls=False")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
 
