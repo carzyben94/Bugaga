@@ -25,7 +25,15 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
-# ==================== ЗАПУСК CHROME С МАСКИРОВКОЙ ====================
+# ==================== ЗАГРУЗКА КУК ====================
+try:
+    from cookies import COOKIES
+    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
+except ImportError:
+    COOKIES = []
+    logger.warning("⚠️ cookies.py не найден")
+
+# ==================== ЗАПУСК CHROME ====================
 CHROME_PATHS = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
@@ -172,6 +180,10 @@ class SimpleCDPClient:
             self.is_connected = True
             self._loop = asyncio.get_running_loop()
             logger.info("✅ Подключено к Chrome")
+            
+            # Включаем Network домен
+            await self.send_command("Network.enable")
+            
             return True
             
         except Exception as e:
@@ -344,11 +356,40 @@ class SimpleCDPClient:
 browser = None
 main_loop = None
 
+def set_cookies_in_browser():
+    """Установить куки в браузере через CDP"""
+    if not browser or not browser.is_connected:
+        logger.warning("⚠️ Браузер не подключен")
+        return False
+    
+    if not COOKIES:
+        logger.warning("⚠️ Нет кук для установки")
+        return False
+    
+    try:
+        result = run_async_in_main_loop(
+            browser.send_command("Network.setCookies", {
+                "cookies": COOKIES
+            })
+        )
+        logger.info(f"🍪 Установлено {len(COOKIES)} кук")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки кук: {e}")
+        return False
+
 async def init_browser():
     global browser, main_loop
     browser = SimpleCDPClient()
     main_loop = asyncio.get_running_loop()
-    return await browser.connect()
+    success = await browser.connect()
+    
+    if success and COOKIES:
+        # 🔥 СРАЗУ УСТАНАВЛИВАЕМ КУКИ
+        await asyncio.sleep(0.5)  # небольшая задержка
+        set_cookies_in_browser()
+    
+    return success
 
 # ==================== ИНСТРУМЕНТЫ ====================
 def run_async_in_main_loop(coro):
@@ -437,9 +478,8 @@ def find_element(selector: str) -> str:
     except Exception as e:
         return f"❌ {str(e)[:100]}"
 
-# ==================== УНИВЕРСАЛЬНЫЙ ПОИСК ====================
 def smart_find(what: str) -> str:
-    """Умный поиск любого элемента на странице (работает на любом сайте)"""
+    """Умный поиск любого элемента на странице"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -448,7 +488,6 @@ def smart_find(what: str) -> str:
             function smartFind(what) {{
                 const results = [];
                 
-                // 1. Поиск по тексту
                 const walker = document.createTreeWalker(
                     document.body,
                     NodeFilter.SHOW_TEXT,
@@ -474,7 +513,6 @@ def smart_find(what: str) -> str:
                     }}
                 }}
                 
-                // 2. Поиск по атрибутам
                 if (results.length === 0) {{
                     const attrs = ['title', 'alt', 'aria-label', 'placeholder'];
                     for (const attr of attrs) {{
@@ -494,7 +532,6 @@ def smart_find(what: str) -> str:
                     }}
                 }}
                 
-                // 3. Поиск по селекторам
                 if (results.length === 0) {{
                     const selectors = [
                         `[data-testid*="${{what}}" i]`,
@@ -551,7 +588,7 @@ tools = [
     Tool(execute_js),
     Tool(page_info),
     Tool(find_element),
-    Tool(smart_find),  # Универсальный поиск
+    Tool(smart_find),
 ]
 
 # ==================== DSPy ====================
@@ -632,11 +669,13 @@ if AGNES_API_KEY:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Chrome готов" if browser and browser.is_connected else "❌ Chrome не доступен"
     dspy_status = "✅ DSPy активен" if browser_agent else "❌ DSPy отключен"
+    cookies_status = f"🍪 {len(COOKIES)} кук" if COOKIES else "❌ Нет кук"
     
     await update.message.reply_text(
         f"🤖 Бот готов!\n\n"
         f"🌐 {status}\n"
-        f"🧠 {dspy_status}\n\n"
+        f"🧠 {dspy_status}\n"
+        f"{cookies_status}\n\n"
         f"/dspy <запрос> — выполнить задачу"
     )
 
