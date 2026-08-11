@@ -1,4 +1,4 @@
-# bot.py - bsw запускает браузер с маскировкой, Harness подключается
+# bot.py - Правильное подключение через CDP
 import os
 import sys
 import asyncio
@@ -14,6 +14,7 @@ from browser_harness.helpers import (
     click_at_xy, wait_for_element, close_tab, js,
     page_info, current_tab
 )
+from browser_harness.cdp import connect
 
 # Импортируем маскировку
 from bsw import StealthBrowser
@@ -47,37 +48,29 @@ class HarnessBot:
         cdp_url = self.browser["cdp_url"]
         logger.info(f"🔗 CDP URL: {cdp_url}")
         
-        # 3. Устанавливаем переменную для Harness
-        os.environ["BU_CDP_URL"] = "http://localhost:9222"
-        
-        # Ждём, пока браузер полностью инициализируется
         await asyncio.sleep(2)
         
-        logger.info("🔗 Шаг 2: Подключение Browser Harness...")
+        logger.info("🔗 Шаг 2: Подключение Browser Harness через CDP...")
         
-        # 4. Создаём вкладку с навигацией (синхронный вызов)
+        # 3. Подключаемся через CDP напрямую
         try:
+            # Устанавливаем соединение с браузером
+            connect(cdp_url)  # синхронное подключение
+            logger.info("✅ CDP соединение установлено")
+            
+            # Создаём вкладку
             self.page = new_tab("https://example.com")
-            logger.info("✅ Вкладка создана через new_tab(url)")
-        except Exception as e:
-            logger.error(f"❌ Ошибка new_tab: {e}")
-            # Если не работает, пробуем создать пустую вкладку
-            try:
-                self.page = new_tab()
-                logger.info("✅ Вкладка создана через new_tab()")
-            except Exception as e2:
-                logger.error(f"❌ Ошибка new_tab(): {e2}")
-                raise
-        
-        # Ждём загрузки страницы
-        try:
+            logger.info("✅ Вкладка создана")
+            
+            # Ждём загрузки
             wait_for_load()
             logger.info("✅ Страница загружена")
+            
         except Exception as e:
-            logger.warning(f"⚠️ wait_for_load: {e}")
+            logger.error(f"❌ Ошибка подключения: {e}")
+            raise
         
         self.is_ready = True
-        logger.info(f"✅ Текущая вкладка: {current_tab()}")
         logger.info("✅ HarnessBot готов!")
         return self
     
@@ -121,14 +114,6 @@ class HarnessBot:
             logger.error(f"❌ Ошибка скриншота: {e}")
             return None
     
-    async def get_page_info(self) -> dict:
-        """Информация о странице"""
-        try:
-            return page_info()
-        except Exception as e:
-            logger.error(f"❌ Ошибка page_info: {e}")
-            return {}
-    
     async def close(self):
         """Закрытие"""
         logger.info("🔚 Закрываю...")
@@ -164,22 +149,12 @@ async def main():
         text = await bot.get_text("h1")
         logger.info(f"📝 Текст: {text}")
         
-        # 3. Информация о странице
-        info = await bot.get_page_info()
-        logger.info(f"📄 Информация: {info}")
-        
-        # 4. Скриншот
+        # 3. Скриншот
         img = await bot.screenshot()
         if img:
             with open("screenshot.png", "wb") as f:
                 f.write(img)
             logger.info(f"📸 Скриншот сохранён (размер: {len(img)} байт)")
-        
-        # 5. Пример работы с другой страницей
-        # await bot.go_to("https://google.com")
-        # await bot.click("input[name='q']")
-        # await bot.type_text("input[name='q']", "Hello")
-        # await bot.click("button[type='submit']")
         
         # === БЕСКОНЕЧНОЕ ОЖИДАНИЕ ===
         while True:
