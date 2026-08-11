@@ -217,7 +217,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             };
         """
         
-        # Внедряем JS-скрипт (правильный формат)
+        # Внедряем JS-скрипт
         result = await tab._connection_handler.execute_command({
             'method': 'Page.addScriptToEvaluateOnNewDocument',
             'params': {'source': js_script}
@@ -234,8 +234,15 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.scroll.to_top(humanize=True)
         await asyncio.sleep(0.5)
         
-        # Получаем информацию (тоже правильный формат)
+        # Получаем информацию
         title = await tab.title
+        
+        # Функция для безопасного извлечения значения
+        def get_result_value(response, default='N/A'):
+            try:
+                return response.get('result', {}).get('result', {}).get('value', default)
+            except:
+                return default
         
         user_agent_result = await tab._connection_handler.execute_command({
             'method': 'Runtime.evaluate',
@@ -259,12 +266,18 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await browser.close()
         
+        # Извлекаем значения с проверкой
+        user_agent = get_result_value(user_agent_result)
+        webdriver_hidden = get_result_value(webdriver_result, 'False')
+        language = get_result_value(language_result)
+        plugins_count = get_result_value(plugins_result, '0')
+        
         await update.message.reply_text(
             f"✅ Заголовок: {title}\n"
-            f"🛡️ WebDriver скрыт: {webdriver_result['result']['value']}\n"
-            f"🌐 Язык: {language_result['result']['value']}\n"
-            f"🔌 Плагинов: {plugins_result['result']['value']}\n"
-            f"📱 User-Agent: {user_agent_result['result']['value'][:50]}...\n"
+            f"🛡️ WebDriver скрыт: {webdriver_hidden}\n"
+            f"🌐 Язык: {language}\n"
+            f"🔌 Плагинов: {plugins_count}\n"
+            f"📱 User-Agent: {user_agent[:50]}...\n"
             f"🎭 Headless New: Активен"
         )
         logger.info("Команда /parse выполнена успешно")
