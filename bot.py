@@ -1,20 +1,19 @@
 import os
 import logging
-import subprocess
-import asyncio
 import httpx
-import websockets
-import json
-import base64
-import time
-import socket
-import threading
-import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
+
+# Пытаемся импортировать Plasmate
+try:
+    from dspy_plasmate import PlasmateFetchTool, WebQAModule, PlasmateRetriever
+    PLASMATE_AVAILABLE = True
+except ImportError:
+    PLASMATE_AVAILABLE = False
+    print("❌ Установите: pip install dspy-plasmate")
 
 # ==================== НАСТРОЙКА ====================
 logging.basicConfig(
@@ -22,831 +21,143 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
 
-# ==================== ЗАГРУЗКА КУК ====================
-try:
-    from cookies import COOKIES
-    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
-except ImportError:
-    COOKIES = []
-    logger.warning("⚠️ cookies.py не найден")
+# ==================== ПЕРЕМЕННЫЕ ====================
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+PLASMATE_URL = os.environ.get("PLASMATE_URL", "http://localhost:9222")
 
-# ==================== ЗАПУСК CHROME ====================
-CHROME_PATHS = [
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-]
+if not TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
-def find_chrome():
-    for path in CHROME_PATHS:
-        if os.path.exists(path):
-            return path
-    return None
+# ==================== ИНИЦИАЛИЗАЦИЯ PLASMATE ====================
+plasmate_tool = None
+webqa_module = None
+retriever = None
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
-
-def start_chrome():
-    chrome_path = find_chrome()
-    if not chrome_path:
-        logger.error("❌ Chrome не найден!")
-        return False
-    
+if PLASMATE_AVAILABLE:
     try:
-        subprocess.run(["pkill", "-f", "chromium"], capture_output=True)
-        subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
-        time.sleep(2)
+        # Инструмент для навигации
+        plasmate_tool = PlasmateFetchTool(base_url=PLASMATE_URL)
+        logger.info(f"✅ Plasmate подключен: {PLASMATE_URL}")
         
-        user_agent = random.choice(USER_AGENTS)
+        # Модуль для вопросов по странице
+        webqa_module = WebQAModule()
+        logger.info("✅ WebQAModule готов")
         
-        subprocess.Popen([
-            chrome_path,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--remote-debugging-port=9222",
-            "--window-size=1280,720",
-            f"--user-agent={user_agent}",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=IsolateOrigins,site-per-process",
-            "--disable-site-isolation-trials",
-            "--disable-web-security",
-            "--disable-features=BlockInsecurePrivateNetworkRequests",
-            "--disable-features=OutOfBlinkCors",
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-field-trial-config",
-            "--disable-ipc-flooding-protection",
-            "--disable-application-cache",
-            "--disable-extensions",
-            "--disable-plugins",
-            "--disable-notifications",
-            "--disable-popup-blocking",
-            "--disable-sync",
-            "--disable-translate",
-            "--disable-default-apps",
-            "--disable-session-crashed-bubble",
-            "--disable-infobars",
-            "--disable-component-extensions-with-background-pages",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-hang-monitor",
-            "--disable-prompt-on-repost",
-            "--disable-client-side-phishing-detection",
-            "--disable-component-update",
-            "--disable-datasaver-prompt",
-            "--disable-desktop-notifications",
-            "--disable-logging",
-            "--disable-print-preview",
-            "--disable-reading-from-canvas",
-            "--disable-shared-workers",
-            "--disable-software-rasterizer",
-            "--disable-threaded-animation",
-            "--disable-threaded-scrolling",
-            "--disable-voice-input",
-            "--disable-wake-on-wifi",
-            "--disk-cache-size=0",
-            "--media-cache-size=0",
-            "--force-color-profile=srgb",
-            "--mute-audio",
-            "--use-gl=swiftshader",
-            "about:blank"
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        logger.info(f"✅ Chrome запущен с маскировкой")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        return False
-
-def wait_for_chrome(max_attempts=20, delay=1):
-    for attempt in range(max_attempts):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', 9222))
-            sock.close()
-            
-            if result == 0:
-                response = httpx.get("http://localhost:9222/json/list", timeout=2.0)
-                if response.status_code == 200:
-                    pages = response.json()
-                    if pages:
-                        logger.info(f"✅ Chrome готов")
-                        return True
-                    else:
-                        httpx.get("http://localhost:9222/json/new", timeout=2.0)
-                        return True
-                    
-            logger.info(f"⏳ Ожидание Chrome... ({attempt + 1}/{max_attempts})")
-        except Exception as e:
-            logger.debug(f"⚠️ {e}")
-        
-        time.sleep(delay)
-    
-    logger.error("❌ Chrome не запустился")
-    return False
-
-# ==================== CDP КЛИЕНТ С ПОДДЕРЖКОЙ ПАРАЛЛЕЛЬНЫХ ВЫЗОВОВ ====================
-class SimpleCDPClient:
-    def __init__(self):
-        self.ws = None
-        self.is_connected = False
-        self.msg_id = 0
-        self._loop = None
-        self.ws_url = None
-        self._pending = {}  # 👈 Хранилище для параллельных запросов
-        self._send_lock = asyncio.Lock()  # 👈 Только для отправки
-        
-    async def connect(self):
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get("http://localhost:9222/json/list", timeout=5.0)
-                pages = resp.json()
-                
-                if not pages:
-                    resp = await client.get("http://localhost:9222/json/new", timeout=5.0)
-                    pages = [resp.json()]
-                
-                self.ws_url = pages[0]["webSocketDebuggerUrl"]
-                logger.info(f"✅ WebSocket URL: {self.ws_url}")
-            
-            self.ws = await websockets.connect(
-                self.ws_url,
-                ping_interval=30,
-                ping_timeout=30,
-                close_timeout=15,
-                max_size=10**7
-            )
-            self.is_connected = True
-            self._loop = asyncio.get_running_loop()
-            logger.info("✅ Подключено к Chrome")
-            
-            # Запускаем обработчик сообщений для параллельных вызовов
-            asyncio.create_task(self._message_handler())
-            
-            await self.send_command("Network.enable")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка: {e}")
-            return False
-    
-    async def _message_handler(self):
-        """Обработчик входящих сообщений для параллельных вызовов"""
-        try:
-            async for message in self.ws:
-                try:
-                    data = json.loads(message)
-                    cmd_id = data.get("id")
-                    
-                    if cmd_id and cmd_id in self._pending:
-                        future = self._pending.pop(cmd_id)
-                        if not future.done():
-                            future.set_result(data)
-                            
-                except json.JSONDecodeError:
-                    continue
-                    
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("⚠️ Соединение закрыто")
-            self.is_connected = False
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки: {e}")
-    
-    async def reconnect(self):
-        """Переподключение при потере соединения"""
-        try:
-            if self.ws:
-                await self.ws.close()
-            self.is_connected = False
-            
-            async with httpx.AsyncClient() as client:
-                resp = await client.get("http://localhost:9222/json/list", timeout=5.0)
-                pages = resp.json()
-                if pages:
-                    self.ws_url = pages[0]["webSocketDebuggerUrl"]
-                else:
-                    return False
-            
-            self.ws = await websockets.connect(
-                self.ws_url,
-                ping_interval=30,
-                ping_timeout=30,
-                close_timeout=15,
-                max_size=10**7
-            )
-            self.is_connected = True
-            asyncio.create_task(self._message_handler())
-            await self.send_command("Network.enable")
-            logger.info("✅ Переподключено к Chrome")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка переподключения: {e}")
-            return False
-    
-    async def send_command(self, method, params=None, timeout=15.0):
-        """Отправка команды с поддержкой параллельных вызовов"""
-        if not self.is_connected:
-            raise Exception("Не подключено")
-        
-        # Блокируем только отправку, НЕ чтение
-        async with self._send_lock:
-            self.msg_id += 1
-            cmd_id = self.msg_id
-            cmd = {"id": cmd_id, "method": method}
-            if params:
-                cmd["params"] = params
-            
-            # Создаем future для этого запроса
-            future = asyncio.Future()
-            self._pending[cmd_id] = future
-            
-            await self.ws.send(json.dumps(cmd))
-        
-        # Ждем ответ (не блокируем другие запросы)
-        try:
-            response = await asyncio.wait_for(future, timeout=timeout)
-            
-            if "error" in response:
-                raise Exception(f"CDP ошибка: {response['error']}")
-            return response.get("result", {})
-            
-        except asyncio.TimeoutError:
-            self._pending.pop(cmd_id, None)
-            raise Exception(f"Таймаут {method}")
-        except Exception as e:
-            self._pending.pop(cmd_id, None)
-            raise Exception(f"Ошибка: {e}")
-    
-    async def navigate(self, url):
-        try:
-            if not url.startswith(("http://", "https://")):
-                url = "https://" + url
-            
-            if not self.is_connected:
-                logger.warning("⚠️ Соединение потеряно, переподключаемся...")
-                await self.reconnect()
-            
-            result = await self.send_command("Page.navigate", {"url": url}, timeout=15.0)
-            
-            if "errorText" in result:
-                return {"success": False, "error": result["errorText"]}
-            
-            await self.wait_for_load()
-            
-            return {"success": True, "url": url}
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка навигации: {e}")
-            return {"success": False, "error": str(e)}
-    
-    async def wait_for_load(self, timeout=15.0):
-        start = time.time()
-        
-        while time.time() - start < timeout:
-            try:
-                result = await self.send_command("Runtime.evaluate", {
-                    "expression": "document.readyState"
-                }, timeout=3.0)
-                
-                state = result.get("result", {}).get("value", "loading")
-                if state == "complete":
-                    logger.info("✅ DOM загружен")
-                    break
-                    
-            except Exception as e:
-                logger.debug(f"⚠️ {e}")
-            
-            await asyncio.sleep(0.3)
-        
-        start = time.time()
-        while time.time() - start < 5.0:
-            try:
-                result = await self.send_command("Runtime.evaluate", {
-                    "expression": "document.body !== null"
-                }, timeout=2.0)
-                
-                if result.get("result", {}).get("value", False):
-                    logger.info("✅ Body найден")
-                    break
-                    
-            except Exception as e:
-                logger.debug(f"⚠️ {e}")
-            
-            await asyncio.sleep(0.3)
-        
-        await asyncio.sleep(0.5)
-        
-        return True
-    
-    # ==================== УМНОЕ ОЖИДАНИЕ ДЛЯ SPA ====================
-    
-    async def wait_for_selector(self, selector, timeout=10.0):
-        """Ожидание появления элемента"""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                result = await self.send_command("Runtime.evaluate", {
-                    "expression": f"document.querySelector('{selector}') !== null",
-                    "returnByValue": True
-                }, timeout=2.0)
-                
-                if result.get("result", {}).get("value", False):
-                    logger.info(f"✅ Элемент '{selector}' появился")
-                    return True
-                    
-            except Exception as e:
-                logger.debug(f"⚠️ {e}")
-            
-            await asyncio.sleep(0.5)
-        
-        logger.warning(f"⚠️ Элемент '{selector}' не появился за {timeout}с")
-        return False
-    
-    async def wait_for_network_idle(self, timeout=5.0):
-        """Ожидание завершения сетевых запросов"""
-        start = time.time()
-        
-        while time.time() - start < timeout:
-            try:
-                result = await self.send_command("Runtime.evaluate", {
-                    "expression": """
-                        (function() {
-                            if (window.performance && window.performance.getEntriesByType) {
-                                const resources = performance.getEntriesByType('resource');
-                                const pending = resources.filter(r => 
-                                    !r.responseEnd || r.responseEnd === 0
-                                );
-                                return pending.length;
-                            }
-                            return 0;
-                        })()
-                    """,
-                    "returnByValue": True
-                }, timeout=2.0)
-                
-                pending = result.get("result", {}).get("value", 0)
-                
-                if pending == 0:
-                    logger.info("✅ Сеть простаивает")
-                    return True
-                    
-            except Exception as e:
-                logger.debug(f"⚠️ {e}")
-            
-            await asyncio.sleep(0.5)
-        
-        return False
-    
-    async def wait_for_spa(self, timeout=15.0):
-        """Умное ожидание для SPA"""
-        start = time.time()
-        
-        last_length = 0
-        stable_count = 0
-        
-        while time.time() - start < timeout:
-            try:
-                result = await self.send_command("Runtime.evaluate", {
-                    "expression": "document.querySelectorAll('*').length",
-                    "returnByValue": True
-                }, timeout=2.0)
-                
-                current_length = result.get("result", {}).get("value", 0)
-                
-                if current_length == last_length:
-                    stable_count += 1
-                    if stable_count >= 3:
-                        logger.info("✅ DOM стабилен")
-                        break
-                else:
-                    stable_count = 0
-                    last_length = current_length
-                    
-            except Exception as e:
-                logger.debug(f"⚠️ {e}")
-            
-            await asyncio.sleep(0.5)
-        
-        await self.wait_for_network_idle(timeout=5)
-        await asyncio.sleep(1)
-        
-        return True
-    
-    async def wait_for_content(self, timeout=15.0):
-        """Полное умное ожидание контента"""
-        await self.wait_for_spa(timeout)
-        
-        selectors = ['article', '[data-testid="tweet"]', '[data-testid="cellInnerDiv"]']
-        for selector in selectors:
-            if await self.wait_for_selector(selector, 5):
-                logger.info(f"✅ Контент найден: {selector}")
-                return True
-        
-        return False
-    
-    async def scroll_down(self, times=3):
-        """Прокрутка вниз"""
-        for i in range(times):
-            await self.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
-            await asyncio.sleep(1.5)
-    
-    async def find_element(self, selector, timeout=10.0):
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                result = await self.send_command("Runtime.evaluate", {
-                    "expression": f"""
-                        const el = document.querySelector('{selector}');
-                        if (el) {{
-                            return {{
-                                exists: true,
-                                text: el.textContent?.trim() || null,
-                                innerHTML: el.innerHTML || null
-                            }};
-                        }}
-                        return {{exists: false}};
-                    """,
-                    "returnByValue": True
-                }, timeout=3.0)
-                
-                data = result.get("result", {}).get("value", {})
-                if data.get("exists"):
-                    return data
-                    
-            except Exception as e:
-                logger.debug(f"⚠️ {e}")
-            
-            await asyncio.sleep(0.3)
-        
-        return {"exists": False}
-    
-    async def screenshot(self, filename=None):
-        try:
-            result = await self.send_command("Page.captureScreenshot", {
-                "format": "png",
-                "captureBeyondViewport": True
-            }, timeout=10.0)
-            
-            if not filename:
-                filename = f"screenshot_{int(time.time())}.png"
-            
-            data = base64.b64decode(result["data"])
-            with open(filename, "wb") as f:
-                f.write(data)
-            
-            return {"success": True, "filename": filename}
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def evaluate(self, script):
-        try:
-            result = await self.send_command("Runtime.evaluate", {
-                "expression": script,
-                "returnByValue": True
-            }, timeout=10.0)
-            
-            value = result.get("result", {}).get("value")
-            return {"success": True, "result": value}
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def get_info(self):
-        try:
-            url_result = await self.evaluate("window.location.href")
-            title_result = await self.evaluate("document.title")
-            
-            url = url_result.get("result", "unknown") if url_result.get("success") else "unknown"
-            title = title_result.get("result", "unknown") if title_result.get("success") else "unknown"
-            
-            return {"success": True, "url": url, "title": title}
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def close(self):
-        if self.ws:
-            await self.ws.close()
-        self.is_connected = False
-
-# ==================== ГЛОБАЛЬНЫЙ КЛИЕНТ И LOOP ====================
-browser = None
-main_loop = None
-
-def set_cookies_in_browser():
-    if not browser or not browser.is_connected:
-        logger.warning("⚠️ Браузер не подключен")
-        return False
-    
-    if not COOKIES:
-        logger.warning("⚠️ Нет кук для установки")
-        return False
-    
-    try:
-        run_async_in_main_loop(
-            browser.send_command("Network.setCookies", {
-                "cookies": COOKIES
-            })
-        )
-        logger.info(f"🍪 Установлено {len(COOKIES)} кук")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Ошибка установки кук: {e}")
-        return False
-
-async def init_browser():
-    global browser, main_loop
-    browser = SimpleCDPClient()
-    main_loop = asyncio.get_running_loop()
-    success = await browser.connect()
-    
-    if success and COOKIES:
-        await asyncio.sleep(0.5)
-        set_cookies_in_browser()
-    
-    return success
-
-# ==================== ИНСТРУМЕНТЫ ====================
-def run_async_in_main_loop(coro):
-    global main_loop
-    
-    if main_loop is None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-    
-    if main_loop.is_running():
-        future = asyncio.run_coroutine_threadsafe(coro, main_loop)
-        return future.result(timeout=30)
-    else:
-        return main_loop.run_until_complete(coro)
-
-def goto_url(url: str) -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        result = run_async_in_main_loop(browser.navigate(url))
-        
-        if result.get("success"):
-            return f"✅ Открыл {url}"
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def capture_screenshot() -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        filename = f"screenshot_{int(time.time())}.png"
-        result = run_async_in_main_loop(browser.screenshot(filename))
-        
-        if result.get("success"):
-            return f"✅ Скриншот: {filename}"
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def execute_js(script: str) -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        result = run_async_in_main_loop(browser.evaluate(script))
-        
-        if result.get("success"):
-            return str(result.get("result", "✅ Выполнено"))
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def page_info() -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        result = run_async_in_main_loop(browser.get_info())
-        
-        if result.get("success"):
-            return f"URL: {result['url']}\nЗаголовок: {result['title']}"
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def find_element(selector: str) -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        result = run_async_in_main_loop(browser.find_element(selector))
-        
-        if result.get("exists"):
-            text = result.get("text", "")
-            if text:
-                return f"✅ Найден: {text[:200]}"
-            return f"✅ Элемент '{selector}' найден"
-        return f"❌ Элемент '{selector}' не найден"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def smart_find(what: str) -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        script = f"""
-            function smartFind(what) {{
-                const results = [];
-                
-                const walker = document.createTreeWalker(
-                    document.body,
-                    NodeFilter.SHOW_TEXT,
-                    null,
-                    false
-                );
-                
-                let node;
-                while (node = walker.nextNode()) {{
-                    const text = node.textContent.trim();
-                    if (text && text.toLowerCase().includes(what.toLowerCase())) {{
-                        const parent = node.parentElement;
-                        if (parent) {{
-                            const text_clean = text.replace(/\\s+/g, ' ').slice(0, 200);
-                            results.push({{
-                                type: 'text',
-                                tag: parent.tagName.toLowerCase(),
-                                text: text_clean,
-                                selector: parent.className ? '.' + parent.className.split(' ')[0] : parent.tagName.toLowerCase()
-                            }});
-                            if (results.length >= 10) break;
-                        }}
-                    }}
-                }}
-                
-                if (results.length === 0) {{
-                    const attrs = ['title', 'alt', 'aria-label', 'placeholder'];
-                    for (const attr of attrs) {{
-                        const elements = document.querySelectorAll(`[${{attr}}*="${{what}}" i]`);
-                        for (const el of elements) {{
-                            const value = el.getAttribute(attr);
-                            if (value) {{
-                                results.push({{
-                                    type: 'attribute',
-                                    attr: attr,
-                                    value: value,
-                                    tag: el.tagName.toLowerCase(),
-                                    selector: el.className ? '.' + el.className.split(' ')[0] : el.tagName.toLowerCase()
-                                }});
-                            }}
-                        }}
-                    }}
-                }}
-                
-                if (results.length === 0) {{
-                    const selectors = [
-                        `[data-testid*="${{what}}" i]`,
-                        `[class*="${{what}}" i]`,
-                        `[id*="${{what}}" i]`,
-                        `[name*="${{what}}" i]`
-                    ];
-                    for (const selector of selectors) {{
-                        try {{
-                            const elements = document.querySelectorAll(selector);
-                            for (const el of elements) {{
-                                const text = el.textContent?.trim() || '';
-                                results.push({{
-                                    type: 'selector',
-                                    selector: selector,
-                                    tag: el.tagName.toLowerCase(),
-                                    text: text.slice(0, 200)
-                                }});
-                            }}
-                        }} catch(e) {{}}
-                    }}
-                }}
-                
-                return results.slice(0, 10);
-            }}
-            return smartFind('{what}');
-        """
-        
-        result = run_async_in_main_loop(browser.evaluate(script))
-        
-        if result.get("success"):
-            items = result.get("result", [])
-            if items:
-                output = [f"🔍 Найдено '{what}':"]
-                for i, item in enumerate(items, 1):
-                    if item.get('type') == 'text':
-                        output.append(f"{i}. {item.get('tag')}: {item.get('text', '')[:100]}")
-                    elif item.get('type') == 'attribute':
-                        output.append(f"{i}. {item.get('tag')} [{item.get('attr')}]: {item.get('value')}")
-                    else:
-                        output.append(f"{i}. {item.get('tag')}: {item.get('text', '')[:100]}")
-                return "\n".join(output)
-            
-            return f"❌ '{what}' не найден на странице"
-        return f"❌ Ошибка: {result.get('error', '')}"
+        # Ретривер для RAG
+        retriever = PlasmateRetriever()
+        logger.info("✅ PlasmateRetriever готов")
         
     except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
+        logger.error(f"❌ Ошибка инициализации Plasmate: {e}")
+        PLASMATE_AVAILABLE = False
 
-# ==================== ИНСТРУМЕНТЫ SPA ====================
+# ==================== ИНСТРУМЕНТЫ ДЛЯ DSPy ====================
 
-def wait_for_spa() -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
+def fetch_page(url: str) -> str:
+    """Открыть страницу и получить её содержимое"""
+    if not plasmate_tool:
+        return "❌ Plasmate не доступен"
     
     try:
-        run_async_in_main_loop(browser.wait_for_spa(timeout=15))
-        return "✅ SPA контент загружен (DOM стабилен, сеть простаивает)"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
-
-def wait_for_content() -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        result = run_async_in_main_loop(browser.wait_for_content(timeout=15))
-        if result:
-            return "✅ Контент загружен (посты найдены)"
-        return "⚠️ Контент не загрузился полностью"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
-
-def scroll_page(times: int = 3) -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        run_async_in_main_loop(browser.scroll_down(times))
-        return f"✅ Прокрутил {times} раз"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
-
-def smart_find_with_scroll(what: str, scrolls: int = 5) -> str:
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        run_async_in_main_loop(browser.wait_for_content(timeout=10))
+        result = plasmate_tool(url)
+        if hasattr(result, 'content'):
+            content = result.content
+        else:
+            content = str(result)
         
-        for i in range(scrolls):
-            result = run_async_in_main_loop(browser.evaluate(f"""
-                const text = document.body.innerText;
-                const found = text.toLowerCase().includes('{what.lower()}');
-                if (found) {{
-                    const matches = text.match(new RegExp('.{{0,100}}' + '{what}' + '.{{0,100}}', 'gi'));
-                    return matches ? matches.slice(0, 5) : [];
-                }}
-                return [];
-            """))
-            
-            if result.get("success"):
-                matches = result.get("result", [])
-                if matches:
-                    return f"🔍 Найдено '{what}':\n" + "\n".join([f"• {m[:150]}..." for m in matches])
-            
-            run_async_in_main_loop(browser.scroll_down(1))
+        # Ограничиваем длину для Telegram
+        if len(content) > 3000:
+            content = content[:3000] + "..."
         
-        return f"❌ '{what}' не найден после {scrolls} прокруток"
-        
+        return f"✅ Страница загружена:\n{content}"
     except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+def ask_webpage(url: str, question: str) -> str:
+    """Задать вопрос по содержимому страницы"""
+    if not webqa_module:
+        return "❌ WebQAModule не доступен"
+    
+    try:
+        result = webqa_module(url=url, question=question)
+        answer = result.answer if hasattr(result, 'answer') else str(result)
+        return f"📝 Ответ: {answer}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+def search_web(query: str) -> str:
+    """Поискать информацию в интернете (через Google или другие источники)"""
+    if not plasmate_tool:
+        return "❌ Plasmate не доступен"
+    
+    try:
+        search_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        result = plasmate_tool(search_url)
+        
+        if hasattr(result, 'content'):
+            content = result.content
+        else:
+            content = str(result)
+        
+        # Парсим результаты поиска (заглушка, можно улучшить)
+        import re
+        snippets = re.findall(r'<h3[^>]*>(.*?)</h3>', content, re.IGNORECASE)
+        
+        if snippets:
+            output = f"🔍 Результаты поиска по '{query}':\n"
+            for i, snippet in enumerate(snippets[:5], 1):
+                clean = re.sub(r'<[^>]+>', '', snippet).strip()
+                output += f"{i}. {clean}\n"
+            return output
+        
+        # Если не нашли заголовков, возвращаем сырой контент
+        return f"📄 Страница поиска:\n{content[:2000]}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+def get_page_title(url: str) -> str:
+    """Получить заголовок страницы"""
+    if not plasmate_tool:
+        return "❌ Plasmate не доступен"
+    
+    try:
+        result = plasmate_tool(url)
+        if hasattr(result, 'title'):
+            return f"📌 Заголовок: {result.title}"
+        return f"📌 Заголовок: {str(result)[:200]}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:200]}"
+
+def extract_links(url: str) -> str:
+    """Извлечь все ссылки со страницы"""
+    if not plasmate_tool:
+        return "❌ Plasmate не доступен"
+    
+    try:
+        result = plasmate_tool(url)
+        if hasattr(result, 'links'):
+            links = result.links
+            if links:
+                output = "🔗 Ссылки на странице:\n"
+                for i, link in enumerate(links[:10], 1):
+                    output += f"{i}. {link}\n"
+                return output
+        return "🔗 Ссылок не найдено"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:200]}"
 
 # ==================== СПИСОК ИНСТРУМЕНТОВ ====================
 tools = [
-    Tool(goto_url),
-    Tool(capture_screenshot),
-    Tool(execute_js),
-    Tool(page_info),
-    Tool(find_element),
-    Tool(smart_find),
-    Tool(wait_for_spa),
-    Tool(wait_for_content),
-    Tool(scroll_page),
-    Tool(smart_find_with_scroll),
+    Tool(fetch_page, name="fetch_page", desc="Открыть веб-страницу и получить её текст"),
+    Tool(ask_webpage, name="ask_webpage", desc="Задать вопрос по содержимому страницы. Нужны url и вопрос"),
+    Tool(search_web, name="search_web", desc="Поискать информацию в интернете по запросу"),
+    Tool(get_page_title, name="get_page_title", desc="Получить заголовок страницы по URL"),
+    Tool(extract_links, name="extract_links", desc="Извлечь все ссылки со страницы"),
 ]
 
-# ==================== DSPy ====================
+# ==================== LM ДЛЯ DSPy ====================
 class AgnesLM(dspy.LM):
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
@@ -895,43 +206,45 @@ class AgnesLM(dspy.LM):
     def __call__(self, prompt=None, messages=None, **kwargs):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
+# ==================== DSPy АГЕНТ ====================
 class BrowserTask(Signature):
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
-# ==================== ИНИЦИАЛИЗАЦИЯ ====================
+# Инициализация
 browser_agent = None
-AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-if not TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
-
-if AGNES_API_KEY:
+if AGNES_API_KEY and PLASMATE_AVAILABLE:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
         settings.configure(lm=lm)
+        
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
             max_iters=15,
         )
-        logger.info("✅ DSPy агент создан")
+        logger.info("✅ DSPy агент с Plasmate создан")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка создания агента: {e}")
+else:
+    logger.warning("⚠️ DSPy агент не создан: проверьте API ключ и Plasmate")
 
-# ==================== КОМАНДЫ ====================
+# ==================== ТЕЛЕГРАМ БОТ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status = "✅ Chrome готов" if browser and browser.is_connected else "❌ Chrome не доступен"
+    status = "✅ Plasmate готов" if plasmate_tool else "❌ Plasmate не доступен"
     dspy_status = "✅ DSPy активен" if browser_agent else "❌ DSPy отключен"
-    cookies_status = f"🍪 {len(COOKIES)} кук" if COOKIES else "❌ Нет кук"
     
     await update.message.reply_text(
         f"🤖 Бот готов!\n\n"
         f"🌐 {status}\n"
         f"🧠 {dspy_status}\n"
-        f"{cookies_status}\n\n"
-        f"/dspy <запрос> — выполнить задачу"
+        f"📊 Инструментов: {len(tools)}\n\n"
+        f"Используй:\n"
+        f"/dspy <запрос> — выполнить задачу\n"
+        f"/fetch <url> — открыть страницу\n"
+        f"/ask <url> | <вопрос> — спросить по странице\n"
+        f"/search <запрос> — поискать в интернете"
     )
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -965,9 +278,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = str(result)
         
         if answer and len(answer) > 10:
-            if "asyncio" in answer.lower() or "event loop" in answer.lower():
-                answer = "❌ Не удалось выполнить задачу из-за технической ошибки. Попробуйте позже."
-            
             await msg.edit_text(f"✅ {answer[:4000]}")
         else:
             await msg.edit_text("❌ Не удалось выполнить задачу")
@@ -976,33 +286,53 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Ошибка: {e}")
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def fetch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("📝 Укажи URL после /fetch")
+        return
+    
+    url = context.args[0]
+    result = fetch_page(url)
+    await update.message.reply_text(result[:4000])
+
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("📝 Используй: /ask <url> | <вопрос>")
+        return
+    
+    full = " ".join(context.args)
+    if "|" not in full:
+        await update.message.reply_text("📝 Используй разделитель | между url и вопросом")
+        return
+    
+    url, question = full.split("|", 1)
+    url = url.strip()
+    question = question.strip()
+    
+    result = ask_webpage(url, question)
+    await update.message.reply_text(result[:4000])
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("📝 Укажи поисковый запрос после /search")
+        return
+    
+    query = " ".join(context.args)
+    result = search_web(query)
+    await update.message.reply_text(result[:4000])
+
 # ==================== ЗАПУСК ====================
-def main():
-    global main_loop
+if __name__ == "__main__":
+    import asyncio
     
-    logger.info("🚀 Запуск бота...")
-    
-    if start_chrome():
-        if wait_for_chrome():
-            main_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(main_loop)
-            
-            success = main_loop.run_until_complete(init_browser())
-            if success:
-                logger.info("✅ Браузер готов")
-            else:
-                logger.error("❌ Браузер не готов")
-        else:
-            logger.error("❌ Chrome не готов")
-    else:
-        logger.error("❌ Не удалось запустить Chrome")
+    logger.info("🚀 Запуск бота с Plasmate...")
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dspy", dspy_command))
+    app.add_handler(CommandHandler("fetch", fetch_command))
+    app.add_handler(CommandHandler("ask", ask_command))
+    app.add_handler(CommandHandler("search", search_command))
     
     logger.info("✅ Бот запущен!")
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
