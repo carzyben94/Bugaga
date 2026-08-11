@@ -163,7 +163,8 @@ class SimpleCDPClient:
         self.msg_id = 0
         self._loop = None
         self.ws_url = None
-        self._lock = asyncio.Lock()  # Блокировка для WebSocket
+        self._lock = asyncio.Lock()
+        self._reconnecting = False
         
     async def connect(self):
         try:
@@ -198,6 +199,10 @@ class SimpleCDPClient:
             return False
     
     async def reconnect(self):
+        if self._reconnecting:
+            return False
+        
+        self._reconnecting = True
         try:
             if self.ws:
                 await self.ws.close()
@@ -220,18 +225,29 @@ class SimpleCDPClient:
             )
             self.is_connected = True
             await self.send_command("Network.enable")
+            
+            # Переустанавливаем куки
+            if COOKIES:
+                await self.send_command("Network.setCookies", {"cookies": COOKIES})
+            
             logger.info("✅ Переподключено к Chrome")
             return True
             
         except Exception as e:
             logger.error(f"❌ Ошибка переподключения: {e}")
             return False
+        finally:
+            self._reconnecting = False
     
     async def send_command(self, method, params=None, timeout=15.0):
-        # Блокировка - только одна команда за раз
         async with self._lock:
             if not self.is_connected:
-                raise Exception("Не подключено")
+                # Пробуем переподключиться
+                if await self.reconnect():
+                    # Повторяем запрос после переподключения
+                    pass
+                else:
+                    raise Exception("Браузер не подключен")
             
             self.msg_id += 1
             cmd = {"id": self.msg_id, "method": method}
@@ -254,8 +270,11 @@ class SimpleCDPClient:
                 raise Exception(f"Таймаут {method}")
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("⚠️ Соединение закрыто, переподключаемся...")
-                await self.reconnect()
-                raise Exception("Соединение восстановлено, повторите запрос")
+                self.is_connected = False
+                if await self.reconnect():
+                    # Повторяем запрос
+                    return await self.send_command(method, params, timeout)
+                raise Exception("Соединение потеряно")
             except Exception as e:
                 raise Exception(f"Ошибка: {e}")
     
@@ -263,10 +282,6 @@ class SimpleCDPClient:
         try:
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
-            
-            if not self.is_connected:
-                logger.warning("⚠️ Соединение потеряно, переподключаемся...")
-                await self.reconnect()
             
             result = await self.send_command("Page.navigate", {"url": url}, timeout=15.0)
             
@@ -321,7 +336,6 @@ class SimpleCDPClient:
         return True
     
     async def wait_for_selector(self, selector, timeout=10.0):
-        """Ожидание появления элемента"""
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -343,7 +357,6 @@ class SimpleCDPClient:
         return False
     
     async def wait_for_network_idle(self, timeout=5.0):
-        """Ожидание завершения сетевых запросов"""
         start = time.time()
         
         while time.time() - start < timeout:
@@ -378,10 +391,8 @@ class SimpleCDPClient:
         return False
     
     async def wait_for_spa(self, timeout=15.0):
-        """Умное ожидание для SPA (как в Pydoll)"""
         start = time.time()
         
-        # 1. Ждем пока DOM станет стабильным
         last_length = 0
         stable_count = 0
         
@@ -408,20 +419,14 @@ class SimpleCDPClient:
             
             await asyncio.sleep(0.5)
         
-        # 2. Ждем завершения сетевых запросов
         await self.wait_for_network_idle(timeout=5)
-        
-        # 3. Доп. задержка для рендеринга
         await asyncio.sleep(1)
         
         return True
     
     async def wait_for_content(self, timeout=15.0):
-        """Полное умное ожидание контента (как в Pydoll)"""
-        # 1. Ждем SPA стабильность
         await self.wait_for_spa(timeout)
         
-        # 2. Ждем конкретный контент (для X/Twitter)
         selectors = ['article', '[data-testid="tweet"]', '[data-testid="cellInnerDiv"]']
         for selector in selectors:
             if await self.wait_for_selector(selector, 5):
@@ -431,7 +436,6 @@ class SimpleCDPClient:
         return False
     
     async def scroll_down(self, times=3):
-        """Прокрутка вниз (как в Pydoll)"""
         for i in range(times):
             await self.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
             await asyncio.sleep(1.5)
@@ -521,7 +525,6 @@ browser = None
 main_loop = None
 
 def set_cookies_in_browser():
-    """Установить куки в браузере через CDP"""
     if not browser or not browser.is_connected:
         logger.warning("⚠️ Браузер не подключен")
         return False
@@ -642,7 +645,6 @@ def find_element(selector: str) -> str:
         return f"❌ {str(e)[:100]}"
 
 def smart_find(what: str) -> str:
-    """Умный поиск любого элемента на странице"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -744,10 +746,7 @@ def smart_find(what: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:100]}"
 
-# ==================== НОВЫЕ ИНСТРУМЕНТЫ (SPA + PYDOLL) ====================
-
 def wait_for_spa() -> str:
-    """Умное ожидание для SPA (как в Pydoll)"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -758,7 +757,6 @@ def wait_for_spa() -> str:
         return f"❌ Ошибка: {str(e)[:100]}"
 
 def wait_for_content() -> str:
-    """Ожидание контента (как в Pydoll)"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -771,7 +769,6 @@ def wait_for_content() -> str:
         return f"❌ Ошибка: {str(e)[:100]}"
 
 def scroll_page(times: int = 3) -> str:
-    """Прокрутить страницу вниз"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -782,17 +779,13 @@ def scroll_page(times: int = 3) -> str:
         return f"❌ Ошибка: {str(e)[:100]}"
 
 def smart_find_with_scroll(what: str, scrolls: int = 5) -> str:
-    """Прокрутить и найти текст"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
     try:
-        # Сначала ждем контент
         run_async_in_main_loop(browser.wait_for_content(timeout=10))
         
-        # Прокручиваем и ищем
         for i in range(scrolls):
-            # Проверяем наличие
             result = run_async_in_main_loop(browser.evaluate(f"""
                 const text = document.body.innerText;
                 const found = text.toLowerCase().includes('{what.lower()}');
@@ -808,7 +801,6 @@ def smart_find_with_scroll(what: str, scrolls: int = 5) -> str:
                 if matches:
                     return f"🔍 Найдено '{what}':\n" + "\n".join([f"• {m[:150]}..." for m in matches])
             
-            # Прокручиваем
             run_async_in_main_loop(browser.scroll_down(1))
         
         return f"❌ '{what}' не найден после {scrolls} прокруток"
@@ -898,7 +890,7 @@ if AGNES_API_KEY:
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=15,
+            max_iters=12,
         )
         logger.info("✅ DSPy агент создан")
     except Exception as e:
@@ -918,7 +910,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/dspy <запрос> — выполнить задачу"
     )
 
+# Блокировка для предотвращения параллельных вызовов
+_dspy_lock = asyncio.Lock()
+
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _dspy_lock
+    
     if not browser_agent:
         await update.message.reply_text("❌ DSPy не инициализирован")
         return
@@ -933,13 +930,15 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Думаю...")
     
     try:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            def run_agent():
-                return browser_agent(question=query)
-            
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(executor, run_agent)
+        # Блокировка - только один вызов агента за раз
+        async with _dspy_lock:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                def run_agent():
+                    return browser_agent(question=query)
+                
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(executor, run_agent)
         
         if hasattr(result, 'answer'):
             answer = result.answer
@@ -958,6 +957,13 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
+        # Пробуем переподключить браузер при ошибке
+        if browser:
+            try:
+                await browser.reconnect()
+                logger.info("✅ Браузер переподключен после ошибки")
+            except:
+                pass
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== ЗАПУСК ====================
@@ -989,4 +995,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
