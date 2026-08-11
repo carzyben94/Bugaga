@@ -18,25 +18,14 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
-    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
-    
-    # User-Agent (реальный Chrome)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
-    
-    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
-    
-    # WebGL — программный рендеринг
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
-    
-    # Защита WebRTC
     options.webrtc_leak_protection = True
-    
-    # Размер окна
     options.add_argument('--window-size=1920,1080')
     
     # ===== HEADLESS NEW =====
@@ -45,7 +34,7 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     
-    # Дополнительная маскировка (без дублей)
+    # Дополнительная маскировка
     options.add_argument('--disable-client-side-phishing-detection')
     options.add_argument('--disable-component-extensions-with-background-pages')
     options.add_argument('--disable-default-apps')
@@ -57,24 +46,26 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
     
-    # УБРАЛИ ДУБЛИ: --no-first-run, --no-default-browser-check, 
-    # --disable-notifications, --disable-popup-blocking, --disable-save-password-bubble
-    # Pydoll уже добавляет их по умолчанию
-    
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА =====
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ИСПРАВЛЕННАЯ СТРУКТУРА) =====
     options.browser_preferences = {
-        'intl.accept_languages': 'en-US,en;q=0.9',
-        'profile.default_content_setting_values.geolocation': 2,
-        'profile.default_content_setting_values.notifications': 2,
-        'profile.default_content_setting_values.media_stream_mic': 2,
-        'profile.default_content_setting_values.media_stream_camera': 2,
-        'profile.default_content_setting_values.midi_sysex': 2,
-        'profile.default_content_setting_values.push_messaging': 2,
-        'profile.default_content_setting_values.ppapi_broker': 2,
-        'profile.default_content_setting_values.automatic_downloads': 1,
-        'profile.password_manager_enabled': False,
+        'profile': {
+            'default_content_setting_values': {
+                'geolocation': 2,
+                'notifications': 2,
+                'media_stream_mic': 2,
+                'media_stream_camera': 2,
+                'midi_sysex': 2,
+                'push_messaging': 2,
+                'ppapi_broker': 2,
+                'automatic_downloads': 1,
+                'cookies': 1,
+            },
+            'password_manager_enabled': False,
+        },
         'credentials_enable_service': False,
-        'profile.default_content_setting_values.cookies': 1,
+        'intl': {
+            'accept_languages': 'en-US,en;q=0.9',
+        },
     }
     
     return options
@@ -224,62 +215,49 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ===== 4. ОСНОВНАЯ ЛОГИКА С ПОЛНОЙ ЭМУЛЯЦИЕЙ ЧЕЛОВЕКА =====
         
-        # 4.1 Переход на страницу с паузой
         await tab.go_to('https://example.com')
         await human_delay(1.0, 2.5)
         
-        # 4.2 Поиск элементов с человеческим движением мыши
+        # Ищем элементы
         h1_element = await tab.find_element('h1')
-        
-        # 4.3 Наводим мышку на элемент с эмуляцией человека
         await tab.mouse.move_to_element(h1_element, humanize=True)
         await human_delay(0.3, 0.8)
-        
-        # 4.4 Кликаем с эмуляцией человека
         await h1_element.click(humanize=True)
         await human_delay(0.5, 1.0)
         
-        # 4.5 Ищем параграф
         p_element = await tab.find_element('p')
-        
-        # 4.6 Наводим мышку с человеческим движением
         await tab.mouse.move_to_element(p_element, humanize=True)
         await human_delay(0.3, 0.7)
-        
-        # 4.7 Выделяем текст (двойной клик) с эмуляцией человека
         await p_element.click(humanize=True)
         await human_delay(0.1, 0.3)
         await p_element.click(humanize=True)
         await human_delay(0.5, 1.0)
         
-        # 4.8 Скролл с эмуляцией человека
+        # Скролл
         await tab.scroll.to_bottom(humanize=True)
         await human_delay(1.0, 2.0)
-        
         await tab.scroll.to_top(humanize=True)
         await human_delay(0.5, 1.5)
         
-        # 4.9 Движение мышкой по случайным координатам (имитация активности)
+        # Случайные движения
         for _ in range(3):
             x = random.randint(100, 1800)
             y = random.randint(100, 900)
             await tab.mouse.move(x, y, humanize=True)
             await human_delay(0.5, 1.5)
         
-        # 4.10 Получаем информацию
+        # Получаем информацию
         title = await tab.title
         user_agent = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.userAgent'}
         )
         
-        # 4.11 Проверка headless
         is_headless = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.webdriver === undefined'}
         )
         
-        # 4.12 Закрываем браузер
         await browser.close()
         
         await update.message.reply_text(
