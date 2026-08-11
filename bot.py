@@ -1,199 +1,208 @@
 import os
+import json
 import logging
 import asyncio
+import websockets
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from pyppeteer import launch
-from pyppeteer.errors import PageError
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
-# Глобальные переменные
-browser = None
-pages = {}
+class CDPClient:
+    def __init__(self):
+        self.ws = None
+        self.message_id = 0
+        
+    async def connect(self, ws_url):
+        """Подключение к Chrome DevTools"""
+        self.ws = await websockets.connect(ws_url)
+        return self.ws
+        
+    async def send_command(self, method, params=None):
+        """Отправить CDP команду"""
+        self.message_id += 1
+        message = {
+            "id": self.message_id,
+            "method": method,
+            "params": params or {}
+        }
+        await self.ws.send(json.dumps(message))
+        response = await self.ws.recv()
+        return json.loads(response)
+    
+    async def get_targets(self):
+        """Получить список вкладок"""
+        # Подключаемся к /json/list
+        async with websockets.connect('ws://localhost:9222/json/list') as ws:
+            response = await ws.recv()
+            return json.loads(response)
+    
+    async def close(self):
+        if self.ws:
+            await self.ws.close()
 
-async def init_browser():
-    """Инициализация браузера"""
-    global browser
-    if not browser:
-        browser = await launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
-        )
-    return browser
+cdp = CDPClient()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 CDP Client Bot\n\n"
+        "🤖 CDP Client\n\n"
         "Команды:\n"
-        "/open <url> - открыть страницу\n"
-        "/screenshot - скриншот текущей страницы\n"
-        "/click <selector> - клик по элементу\n"
-        "/type <selector> <text> - ввести текст\n"
-        "/evaluate <js_code> - выполнить JS\n"
-        "/close - закрыть текущую страницу\n"
-        "/pages - список открытых страниц"
+        "/connect <ws_url> - подключиться к Chrome\n"
+        "/targets - список вкладок\n"
+        "/attach <target_id> - прикрепиться к вкладке\n"
+        "/evaluate <js> - выполнить JS\n"
+        "/screenshot - скриншот\n"
+        "/navigate <url> - перейти по URL\n"
+        "/dom - получить DOM"
     )
 
-async def open_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Открыть новую страницу"""
+async def connect_chrome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подключиться к Chrome через WebSocket"""
     try:
         if not context.args:
-            await update.message.reply_text("❌ Укажите URL: /open https://example.com")
+            await update.message.reply_text(
+                "❌ Укажите WebSocket URL\n"
+                "Пример: /connect ws://localhost:9222/devtools/browser/xxx"
+            )
             return
         
-        url = context.args[0]
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-        
-        b = await init_browser()
-        page = await b.newPage()
-        
-        # Сохраняем страницу
-        page_id = str(id(page))
-        pages[page_id] = page
-        
-        await page.goto(url, waitUntil='networkidle0')
-        
-        title = await page.title()
-        await update.message.reply_text(
-            f"✅ Страница открыта\n"
-            f"📄 {title}\n"
-            f"🔗 {url}\n"
-            f"🆔 ID: {page_id[:8]}..."
-        )
+        ws_url = context.args[0]
+        await cdp.connect(ws_url)
+        await update.message.reply_text(f"✅ Подключено к CDP\n{ws_url}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сделать скриншот"""
+async def list_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список всех вкладок"""
     try:
-        if not pages:
-            await update.message.reply_text("❌ Нет открытых страниц. Используйте /open")
+        targets = await cdp.get_targets()
+        
+        if not targets:
+            await update.message.reply_text("📭 Нет вкладок")
             return
         
-        # Берем последнюю открытую страницу
-        page = list(pages.values())[-1]
+        msg = "📄 Вкладки:\n\n"
+        for i, target in enumerate(targets, 1):
+            msg += f"{i}. {target.get('title', 'Без названия')[:30]}\n"
+            msg += f"   ID: {target.get('id', '')[:16]}...\n"
+            msg += f"   URL: {target.get('url', '')[:50]}\n\n"
         
-        screenshot_bytes = await page.screenshot(fullPage=True)
-        await update.message.reply_photo(
-            photo=screenshot_bytes,
-            caption=f"📸 Скриншот страницы"
-        )
+        await update.message.reply_text(msg[:4000])
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ {e}")
 
-async def click_element(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кликнуть по элементу"""
+async def attach_to_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Прикрепиться к вкладке"""
     try:
         if not context.args:
-            await update.message.reply_text("❌ Укажите селектор: /click #button")
+            await update.message.reply_text("❌ /attach <target_id>")
             return
         
-        if not pages:
-            await update.message.reply_text("❌ Нет открытых страниц")
-            return
+        target_id = context.args[0]
+        ws_url = f"ws://localhost:9222/devtools/page/{target_id}"
         
-        selector = ' '.join(context.args)
-        page = list(pages.values())[-1]
+        await cdp.connect(ws_url)
         
-        await page.waitForSelector(selector, timeout=5000)
-        await page.click(selector)
+        # Включение нужных доменов
+        await cdp.send_command("Page.enable")
+        await cdp.send_command("DOM.enable")
+        await cdp.send_command("Runtime.enable")
         
-        await update.message.reply_text(f"✅ Кликнул по: {selector}")
+        await update.message.reply_text(f"✅ Прикреплен к вкладке {target_id[:16]}...")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ввести текст"""
-    try:
-        if len(context.args) < 2:
-            await update.message.reply_text("❌ /type <selector> <text>")
-            return
-        
-        if not pages:
-            await update.message.reply_text("❌ Нет открытых страниц")
-            return
-        
-        selector = context.args[0]
-        text = ' '.join(context.args[1:])
-        page = list(pages.values())[-1]
-        
-        await page.waitForSelector(selector, timeout=5000)
-        await page.click(selector)
-        await page.type(selector, text)
-        
-        await update.message.reply_text(f"✅ Введено: {text}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ {e}")
 
 async def evaluate_js(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнить JavaScript"""
+    """Выполнить JavaScript через CDP"""
     try:
         if not context.args:
-            await update.message.reply_text("❌ /evaluate <js_code>")
+            await update.message.reply_text("❌ /evaluate document.title")
             return
         
-        if not pages:
-            await update.message.reply_text("❌ Нет открытых страниц")
+        if not cdp.ws:
+            await update.message.reply_text("❌ Не подключен. Используйте /connect")
             return
         
         js_code = ' '.join(context.args)
-        page = list(pages.values())[-1]
+        result = await cdp.send_command("Runtime.evaluate", {
+            "expression": js_code,
+            "returnByValue": True
+        })
         
-        result = await page.evaluate(js_code)
-        await update.message.reply_text(f"✅ Результат:\n{str(result)[:1000]}")
+        value = result.get('result', {}).get('result', {}).get('value', 'undefined')
+        await update.message.reply_text(f"✅ Результат:\n{str(value)[:1000]}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ {e}")
 
-async def close_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрыть страницу"""
+async def take_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сделать скриншот через CDP"""
     try:
-        if not pages:
-            await update.message.reply_text("❌ Нет открытых страниц")
+        if not cdp.ws:
+            await update.message.reply_text("❌ Не подключен")
             return
         
-        page_id = list(pages.keys())[-1]
-        page = pages.pop(page_id)
-        await page.close()
+        result = await cdp.send_command("Page.captureScreenshot", {
+            "format": "png",
+            "quality": 100
+        })
         
-        await update.message.reply_text(f"✅ Страница закрыта")
+        import base64
+        img_data = base64.b64decode(result.get('result', {}).get('data', ''))
+        
+        await update.message.reply_photo(photo=img_data)
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_text(f"❌ {e}")
 
-async def list_pages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список открытых страниц"""
-    if not pages:
-        await update.message.reply_text("📭 Нет открытых страниц")
-        return
-    
-    msg = "📄 Открытые страницы:\n\n"
-    for i, (page_id, page) in enumerate(pages.items(), 1):
-        try:
-            url = await page.url()
-            title = await page.title()
-            msg += f"{i}. {title[:30]}\n   {url[:50]}\n   ID: {page_id[:8]}...\n\n"
-        except:
-            msg += f"{i}. Страница {page_id[:8]}...\n"
-    
-    await update.message.reply_text(msg[:4000])
+async def navigate_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перейти по URL"""
+    try:
+        if not context.args:
+            await update.message.reply_text("❌ /navigate https://example.com")
+            return
+        
+        if not cdp.ws:
+            await update.message.reply_text("❌ Не подключен")
+            return
+        
+        url = context.args[0]
+        result = await cdp.send_command("Page.navigate", {"url": url})
+        
+        frame_id = result.get('result', {}).get('frameId', '')
+        await update.message.reply_text(f"✅ Переход на {url}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+
+async def get_dom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить DOM дерево"""
+    try:
+        if not cdp.ws:
+            await update.message.reply_text("❌ Не подключен")
+            return
+        
+        result = await cdp.send_command("DOM.getDocument", {"depth": 2})
+        
+        import json
+        dom = json.dumps(result, indent=2)[:3000]
+        await update.message.reply_text(f"📄 DOM:\n{dom}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("open", open_page))
-    app.add_handler(CommandHandler("screenshot", screenshot))
-    app.add_handler(CommandHandler("click", click_element))
-    app.add_handler(CommandHandler("type", type_text))
+    app.add_handler(CommandHandler("connect", connect_chrome))
+    app.add_handler(CommandHandler("targets", list_targets))
+    app.add_handler(CommandHandler("attach", attach_to_target))
     app.add_handler(CommandHandler("evaluate", evaluate_js))
-    app.add_handler(CommandHandler("close", close_page))
-    app.add_handler(CommandHandler("pages", list_pages))
+    app.add_handler(CommandHandler("screenshot", take_screenshot))
+    app.add_handler(CommandHandler("navigate", navigate_to))
+    app.add_handler(CommandHandler("dom", get_dom))
     
-    print("🤖 Бот запущен...")
+    print("🤖 CDP Client Bot запущен")
     app.run_polling()
 
 if __name__ == "__main__":
