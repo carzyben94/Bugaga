@@ -7,7 +7,44 @@ import base64
 import json
 import time
 
-# Добавляем путь к Browser Harness
+# ============================================================
+# 1. НАСТРОЙКА ЛОГГЕРА (ДО ВСЕГО ОСТАЛЬНОГО)
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/app/logs/bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 2. ПАПКИ
+# ============================================================
+
+SCREENSHOTS_DIR = '/app/screenshots'
+LOGS_DIR = '/app/logs'
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# ============================================================
+# 3. ИМПОРТ КУК (ПОСЛЕ СОЗДАНИЯ ЛОГГЕРА)
+# ============================================================
+
+try:
+    from cookies import COOKIES
+    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
+except ImportError:
+    logger.warning("⚠️ cookies.py не найден, куки не загружены")
+    COOKIES = []
+
+# ============================================================
+# 4. ДОБАВЛЯЕМ ПУТЬ К BROWSER HARNESS
+# ============================================================
+
 sys.path.insert(0, "browser-harness/src")
 
 # Импорты Browser Harness
@@ -38,34 +75,10 @@ from telegram.helpers import escape_markdown
 # Импортируем маскировку
 from bsw import StealthBrowser
 
-# Импортируем куки
-try:
-    from cookies import COOKIES
-    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
-except ImportError:
-    logger.warning("⚠️ cookies.py не найден, куки не загружены")
-    COOKIES = []
-
 # Токен
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
-
-# Папки
-SCREENSHOTS_DIR = '/app/screenshots'
-LOGS_DIR = '/app/logs'
-os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -358,7 +371,6 @@ class HarnessBot:
             return
         
         try:
-            # Форматируем куки для CDP
             cookies_list = []
             for cookie in COOKIES:
                 cookie_data = {
@@ -375,7 +387,6 @@ class HarnessBot:
                     cookie_data["expires"] = cookie["expires"]
                 cookies_list.append(cookie_data)
             
-            # Отправляем одной командой
             await self._cdp_send("Network.setCookies", {
                 "cookies": cookies_list
             })
@@ -752,7 +763,6 @@ class HarnessBot:
         logger.info(f"🧠 DSPy запрос: {question}")
         
         try:
-            # Запускаем агента в отдельном потоке
             loop = asyncio.get_running_loop()
             answer = await loop.run_in_executor(
                 None, run_agent, self.dspy_agent, question
@@ -789,6 +799,11 @@ bot = None  # Глобальный экземпляр
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /dspy"""
+    # Проверка на None
+    if not update or not update.message:
+        logger.warning("⚠️ update.message is None")
+        return
+    
     if not context.args:
         await update.message.reply_text(
             "🧠 **DSPy Agent**\n\n"
