@@ -162,6 +162,7 @@ class SimpleCDPClient:
         self.is_connected = False
         self.msg_id = 0
         self._loop = None
+        self.ws_url = None
         
     async def connect(self):
         try:
@@ -173,15 +174,21 @@ class SimpleCDPClient:
                     resp = await client.get("http://localhost:9222/json/new", timeout=5.0)
                     pages = [resp.json()]
                 
-                ws_url = pages[0]["webSocketDebuggerUrl"]
-                logger.info(f"✅ WebSocket URL: {ws_url}")
+                self.ws_url = pages[0]["webSocketDebuggerUrl"]
+                logger.info(f"✅ WebSocket URL: {self.ws_url}")
             
-            self.ws = await websockets.connect(ws_url)
+            # Увеличенные таймауты для WebSocket
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=30,
+                ping_timeout=30,
+                close_timeout=15,
+                max_size=10**7
+            )
             self.is_connected = True
             self._loop = asyncio.get_running_loop()
             logger.info("✅ Подключено к Chrome")
             
-            # Включаем Network домен
             await self.send_command("Network.enable")
             
             return True
@@ -190,7 +197,38 @@ class SimpleCDPClient:
             logger.error(f"❌ Ошибка: {e}")
             return False
     
-    async def send_command(self, method, params=None, timeout=10.0):
+    async def reconnect(self):
+        """Переподключение при потере соединения"""
+        try:
+            if self.ws:
+                await self.ws.close()
+            self.is_connected = False
+            
+            async with httpx.AsyncClient() as client:
+                resp = await client.get("http://localhost:9222/json/list", timeout=5.0)
+                pages = resp.json()
+                if pages:
+                    self.ws_url = pages[0]["webSocketDebuggerUrl"]
+                else:
+                    return False
+            
+            self.ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=30,
+                ping_timeout=30,
+                close_timeout=15,
+                max_size=10**7
+            )
+            self.is_connected = True
+            await self.send_command("Network.enable")
+            logger.info("✅ Переподключено к Chrome")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка переподключения: {e}")
+            return False
+    
+    async def send_command(self, method, params=None, timeout=15.0):
         if not self.is_connected:
             raise Exception("Не подключено")
         
@@ -213,6 +251,10 @@ class SimpleCDPClient:
                     
         except asyncio.TimeoutError:
             raise Exception(f"Таймаут {method}")
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("⚠️ Соединение закрыто, переподключаемся...")
+            await self.reconnect()
+            raise Exception("Соединение восстановлено, повторите запрос")
         except Exception as e:
             raise Exception(f"Ошибка: {e}")
     
@@ -221,7 +263,12 @@ class SimpleCDPClient:
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             
-            result = await self.send_command("Page.navigate", {"url": url}, timeout=10.0)
+            # Проверяем соединение перед навигацией
+            if not self.is_connected:
+                logger.warning("⚠️ Соединение потеряно, переподключаемся...")
+                await self.reconnect()
+            
+            result = await self.send_command("Page.navigate", {"url": url}, timeout=15.0)
             
             if "errorText" in result:
                 return {"success": False, "error": result["errorText"]}
@@ -231,6 +278,7 @@ class SimpleCDPClient:
             return {"success": True, "url": url}
             
         except Exception as e:
+            logger.error(f"❌ Ошибка навигации: {e}")
             return {"success": False, "error": str(e)}
     
     async def wait_for_load(self, timeout=15.0):
@@ -385,8 +433,7 @@ async def init_browser():
     success = await browser.connect()
     
     if success and COOKIES:
-        # 🔥 СРАЗУ УСТАНАВЛИВАЕМ КУКИ
-        await asyncio.sleep(0.5)  # небольшая задержка
+        await asyncio.sleep(0.5)
         set_cookies_in_browser()
     
     return success
