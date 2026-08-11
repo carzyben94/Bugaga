@@ -44,6 +44,46 @@ def create_full_stealth_options() -> ChromiumOptions:
     # ===== НАСТРОЙКИ WEBRTC =====
     options.webrtc_leak_protection = True
     
+    # ===== НАСТРОЙКИ БРАУЗЕРА (СЛОВАРЬ) =====
+    # Pydoll сам преобразует этот словарь в JSON
+    options.browser_preferences = {
+        'intl': {
+            'accept_languages': 'en-US,en;q=0.9'
+        },
+        'profile': {
+            'default_content_setting_values': {
+                'geolocation': 2,           # Блокировать геолокацию
+                'notifications': 2,          # Блокировать уведомления
+                'media_stream_mic': 2,       # Блокировать микрофон
+                'media_stream_camera': 2,    # Блокировать камеру
+                'midi_sysex': 2,             # Блокировать MIDI
+                'push_messaging': 2,         # Блокировать push-уведомления
+                'ppapi_broker': 2,           # Блокировать PPAPI
+                'automatic_downloads': 1,    # Разрешить автоматические загрузки
+                'cookies': 1                 # Разрешить cookies
+            },
+            'password_manager_enabled': False,  # Отключить менеджер паролей
+            'content_settings': {
+                'exceptions': {
+                    'geolocation': {
+                        'https://*,*': {
+                            'last_modified': '13000000000000000',
+                            'setting': 2
+                        }
+                    }
+                }
+            }
+        },
+        'credentials_enable_service': False,  # Отключить сохранение паролей
+        'download': {
+            'default_directory': '/tmp/downloads',  # Папка для загрузок
+            'prompt_for_download': False            # Не спрашивать куда сохранять
+        },
+        'safebrowsing': {
+            'enabled': False  # Отключить Safe Browsing
+        }
+    }
+    
     return options
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,16 +242,15 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {'expression': 'navigator.userAgent'}
         )
         
-        # Проверяем маскировку
         is_webdriver_hidden = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.webdriver === undefined'}
         )
         
-        # Проверяем плагины
-        plugins_count = await tab._connection_handler.execute_command(
+        # Проверяем настройки языка
+        language = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
-            {'expression': 'navigator.plugins.length'}
+            {'expression': 'navigator.language'}
         )
         
         await browser.close()
@@ -219,7 +258,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Заголовок: {title}\n"
             f"🛡️ WebDriver скрыт: {is_webdriver_hidden['result']['value']}\n"
-            f"🔌 Плагинов: {plugins_count['result']['value']}\n"
+            f"🌐 Язык: {language['result']['value']}\n"
             f"📱 User-Agent: {user_agent['result']['value'][:50]}...\n"
             f"🎭 Headless New: Активен"
         )
@@ -235,7 +274,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Полная маскировка navigator\n"
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
-        "• Человеческое поведение\n\n"
+        "• Человеческое поведение\n"
+        "• Настройки браузера через Preferences\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
         "/parse - Запустить браузер с маскировкой"
