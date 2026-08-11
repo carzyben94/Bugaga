@@ -38,6 +38,14 @@ from telegram.helpers import escape_markdown
 # Импортируем маскировку
 from bsw import StealthBrowser
 
+# Импортируем куки
+try:
+    from cookies import COOKIES
+    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
+except ImportError:
+    logger.warning("⚠️ cookies.py не найден, куки не загружены")
+    COOKIES = []
+
 # Токен
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
@@ -324,21 +332,57 @@ class HarnessBot:
         self.daemon = ensure_daemon()
         logger.info("✅ Daemon запущен")
         
-        # 4. Создаём вкладку через Harness
+        # 4. Устанавливаем куки ДО создания вкладки
+        await self._set_cookies()
+        
+        # 5. Создаём вкладку через Harness
         self.page = new_tab("https://example.com")
         logger.info(f"✅ Вкладка создана: {self.page}")
         
-        # 5. Ждём загрузки
+        # 6. Ждём загрузки
         wait_for_load()
         logger.info("✅ Страница загружена")
         
-        # 6. Инициализация DSPy с инструментами
+        # 7. Инициализация DSPy с инструментами
         await self._init_dspy()
         
         self.is_ready = True
         logger.info(f"✅ Текущая вкладка: {current_tab()}")
         logger.info("✅ HarnessBot готов!")
         return self
+    
+    async def _set_cookies(self):
+        """Установить куки через CDP одной командой"""
+        if not COOKIES:
+            logger.info("ℹ️ Нет кук для установки")
+            return
+        
+        try:
+            # Форматируем куки для CDP
+            cookies_list = []
+            for cookie in COOKIES:
+                cookie_data = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain", ""),
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                }
+                if "sameSite" in cookie:
+                    cookie_data["sameSite"] = cookie["sameSite"]
+                if "expires" in cookie:
+                    cookie_data["expires"] = cookie["expires"]
+                cookies_list.append(cookie_data)
+            
+            # Отправляем одной командой
+            await self._cdp_send("Network.setCookies", {
+                "cookies": cookies_list
+            })
+            logger.info(f"✅ Установлено {len(cookies_list)} кук")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка установки кук: {e}")
     
     async def _init_dspy(self):
         """Инициализация DSPy агента с инструментами Browser Harness"""
@@ -809,6 +853,7 @@ async def main():
     
     logger.info("🚀 Бот запущен! Команда: /dspy")
     logger.info(f"🧠 DSPy статус: {'✅ Активен' if bot.dspy_agent else '❌ Отключен'}")
+    logger.info(f"🍪 Куки: {'✅ Загружены' if COOKIES else '❌ Нет'}")
     
     # Запускаем polling
     await app.initialize()
