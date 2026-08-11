@@ -34,22 +34,16 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     
-    # Дополнительная маскировка
-    options.add_argument('--disable-client-side-phishing-detection')
-    options.add_argument('--disable-component-extensions-with-background-pages')
-    options.add_argument('--disable-default-apps')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-plugins')
-    options.add_argument('--disable-translate')
-    options.add_argument('--disable-web-security')
-    options.add_argument('--disable-xss-auditor')
-    options.add_argument('--no-zygote')
-    options.add_argument('--single-process')
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
+    # Используем ТОЛЬКО готовые хелперы из документации [citation:7]
+    options.block_notifications = True   # 2 = блокировать [citation:1]
+    options.block_popups = True          # 1 = разрешить [citation:1]
+    options.password_manager_enabled = False
+    options.set_accept_languages('en-US,en;q=0.9')
+    options.prompt_for_download = False
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ЧЕРЕЗ _set_pref_path) =====
-    # Это ЕДИНСТВЕННЫЙ правильный способ без ошибок!
+    # Для остальных настроек используем _set_pref_path [citation:1]
     options._set_pref_path(['profile', 'default_content_setting_values', 'geolocation'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'notifications'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_mic'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_camera'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'midi_sysex'], 2)
@@ -57,17 +51,12 @@ def create_full_stealth_options() -> ChromiumOptions:
     options._set_pref_path(['profile', 'default_content_setting_values', 'ppapi_broker'], 2)
     options._set_pref_path(['profile', 'default_content_setting_values', 'automatic_downloads'], 1)
     options._set_pref_path(['profile', 'default_content_setting_values', 'cookies'], 1)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'popups'], 1)
-    options._set_pref_path(['profile', 'password_manager_enabled'], False)
     options._set_pref_path(['credentials_enable_service'], False)
-    options._set_pref_path(['intl', 'accept_languages'], 'en-US,en;q=0.9')
-    options._set_pref_path(['download', 'prompt_for_download'], False)
     options._set_pref_path(['safebrowsing', 'enabled'], True)
     
     return options
 
 async def human_delay(min_seconds: float = 0.5, max_seconds: float = 2.0):
-    """Случайная задержка как у человека"""
     await asyncio.sleep(random.uniform(min_seconds, max_seconds))
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,7 +75,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': """
-                    // ===== NAVIGATOR =====
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
                     });
@@ -102,13 +90,11 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(navigator, 'languages', {
                         get: () => ['en-US', 'en']
                     });
-                    
                     delete navigator.__proto__.webdriver;
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
                     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 16 });
                     
-                    // ===== WebGL =====
                     (() => {
                         const patchWebGL = (proto) => {
                             const oldGetParameter = proto.getParameter;
@@ -127,7 +113,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     })();
                     
-                    // ===== Canvas =====
                     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                     HTMLCanvasElement.prototype.toDataURL = function(type) {
                         if (type === 'image/png' || !type) {
@@ -143,7 +128,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return originalToDataURL.call(this, type);
                     };
                     
-                    // ===== Audio =====
                     if (window.OfflineAudioContext) {
                         const originalCreateBuffer = OfflineAudioContext.prototype.createBuffer;
                         OfflineAudioContext.prototype.createBuffer = function() {
@@ -160,7 +144,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         };
                     }
                     
-                    // ===== Plugins =====
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => {
                             const plugins = [
@@ -176,22 +159,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     });
                     
-                    // ===== MIME Types =====
-                    Object.defineProperty(navigator, 'mimeTypes', {
-                        get: () => {
-                            const mimeTypes = [
-                                { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-                                { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
-                            ];
-                            mimeTypes.__proto__ = MimeTypeArray.prototype;
-                            mimeTypes.length = mimeTypes.length;
-                            mimeTypes.item = (i) => mimeTypes[i] || null;
-                            mimeTypes.namedItem = (type) => mimeTypes.find(m => m.type === type) || null;
-                            return mimeTypes;
-                        }
-                    });
-                    
-                    // ===== Screen =====
                     Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
                     Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
                     Object.defineProperty(screen, 'width', { get: () => 1920 });
@@ -199,7 +166,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
                     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     
-                    // ===== Window =====
                     Object.defineProperty(window, 'outerWidth', { get: () => 1920 });
                     Object.defineProperty(window, 'outerHeight', { get: () => 1080 });
                     Object.defineProperty(window, 'innerWidth', { get: () => 1920 });
@@ -207,7 +173,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(window, 'screenX', { get: () => 0 });
                     Object.defineProperty(window, 'screenY', { get: () => 0 });
                     
-                    // ===== Performance =====
                     Object.defineProperty(performance, 'memory', {
                         get: () => ({
                             jsHeapSizeLimit: 2172649472,
@@ -216,7 +181,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         })
                     });
                     
-                    // ===== Chrome object =====
                     window.chrome = {
                         runtime: {},
                         loadTimes: function() {},
@@ -231,13 +195,11 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tab.go_to(url)
         await human_delay(2.0, 4.0)
         
-        # Скролл с эмуляцией человека
         await tab.scroll.to_bottom(humanize=True)
         await human_delay(1.0, 2.0)
         await tab.scroll.to_top(humanize=True)
         await human_delay(0.5, 1.5)
         
-        # Получаем информацию
         title = await tab.title
         current_url = await tab.current_url
         
@@ -251,12 +213,10 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {'expression': 'navigator.userAgent'}
         )
         
-        # Делаем скриншот
         screenshot = await tab.screenshot()
         
         await browser.close()
         
-        # Отправляем результат
         await update.message.reply_text(
             f"✅ Страница загружена!\n"
             f"📌 Заголовок: {title}\n"
@@ -266,7 +226,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎭 Маскировка: 100%"
         )
         
-        # Отправляем скриншот
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"📸 Скриншот {url}"
