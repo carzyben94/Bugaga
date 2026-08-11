@@ -39,12 +39,10 @@ def find_chrome():
             return path
     return None
 
-# Список User-Agent для ротации
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
 ]
 
 def start_chrome():
@@ -54,33 +52,24 @@ def start_chrome():
         return False
     
     try:
-        # Убиваем старые процессы
         subprocess.run(["pkill", "-f", "chromium"], capture_output=True)
         subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
         time.sleep(2)
         
-        # Случайный User-Agent
         user_agent = random.choice(USER_AGENTS)
         
-        # Полная маскировка как в Pydoll
         subprocess.Popen([
             chrome_path,
-            "--headless=new",  # Новый headless режим
+            "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--remote-debugging-port=9222",
             "--window-size=1280,720",
-            
-            # Маскировка User-Agent
             f"--user-agent={user_agent}",
-            
-            # Отключаем признаки автоматизации
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
             "--disable-site-isolation-trials",
-            
-            # Дополнительная маскировка
             "--disable-web-security",
             "--disable-features=BlockInsecurePrivateNetworkRequests",
             "--disable-features=OutOfBlinkCors",
@@ -233,10 +222,8 @@ class SimpleCDPClient:
             return {"success": False, "error": str(e)}
     
     async def wait_for_load(self, timeout=15.0):
-        """Улучшенное ожидание загрузки"""
         start = time.time()
         
-        # 1. Ждем complete
         while time.time() - start < timeout:
             try:
                 result = await self.send_command("Runtime.evaluate", {
@@ -253,7 +240,6 @@ class SimpleCDPClient:
             
             await asyncio.sleep(0.3)
         
-        # 2. Ждем наличие body
         start = time.time()
         while time.time() - start < 5.0:
             try:
@@ -270,13 +256,11 @@ class SimpleCDPClient:
             
             await asyncio.sleep(0.3)
         
-        # 3. Доп. задержка для динамического контента
         await asyncio.sleep(0.5)
         
         return True
     
     async def find_element(self, selector, timeout=10.0):
-        """Найти элемент на странице"""
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -368,7 +352,6 @@ async def init_browser():
 
 # ==================== ИНСТРУМЕНТЫ ====================
 def run_async_in_main_loop(coro):
-    """Запустить корутину в главном event loop"""
     global main_loop
     
     if main_loop is None:
@@ -386,7 +369,6 @@ def run_async_in_main_loop(coro):
         return main_loop.run_until_complete(coro)
 
 def goto_url(url: str) -> str:
-    """Открыть URL"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -400,7 +382,6 @@ def goto_url(url: str) -> str:
         return f"❌ {str(e)[:100]}"
 
 def capture_screenshot() -> str:
-    """Сделать скриншот"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -415,7 +396,6 @@ def capture_screenshot() -> str:
         return f"❌ {str(e)[:100]}"
 
 def execute_js(script: str) -> str:
-    """Выполнить JavaScript"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -429,7 +409,6 @@ def execute_js(script: str) -> str:
         return f"❌ {str(e)[:100]}"
 
 def page_info() -> str:
-    """Информация о странице"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -443,7 +422,6 @@ def page_info() -> str:
         return f"❌ {str(e)[:100]}"
 
 def find_element(selector: str) -> str:
-    """Найти элемент на странице по CSS селектору"""
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
     
@@ -459,6 +437,113 @@ def find_element(selector: str) -> str:
     except Exception as e:
         return f"❌ {str(e)[:100]}"
 
+# ==================== УНИВЕРСАЛЬНЫЙ ПОИСК ====================
+def smart_find(what: str) -> str:
+    """Умный поиск любого элемента на странице (работает на любом сайте)"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        script = f"""
+            function smartFind(what) {{
+                const results = [];
+                
+                // 1. Поиск по тексту
+                const walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+                
+                let node;
+                while (node = walker.nextNode()) {{
+                    const text = node.textContent.trim();
+                    if (text && text.toLowerCase().includes(what.toLowerCase())) {{
+                        const parent = node.parentElement;
+                        if (parent) {{
+                            const text_clean = text.replace(/\\s+/g, ' ').slice(0, 200);
+                            results.push({{
+                                type: 'text',
+                                tag: parent.tagName.toLowerCase(),
+                                text: text_clean,
+                                selector: parent.className ? '.' + parent.className.split(' ')[0] : parent.tagName.toLowerCase()
+                            }});
+                            if (results.length >= 10) break;
+                        }}
+                    }}
+                }}
+                
+                // 2. Поиск по атрибутам
+                if (results.length === 0) {{
+                    const attrs = ['title', 'alt', 'aria-label', 'placeholder'];
+                    for (const attr of attrs) {{
+                        const elements = document.querySelectorAll(`[${{attr}}*="${{what}}" i]`);
+                        for (const el of elements) {{
+                            const value = el.getAttribute(attr);
+                            if (value) {{
+                                results.push({{
+                                    type: 'attribute',
+                                    attr: attr,
+                                    value: value,
+                                    tag: el.tagName.toLowerCase(),
+                                    selector: el.className ? '.' + el.className.split(' ')[0] : el.tagName.toLowerCase()
+                                }});
+                            }}
+                        }}
+                    }}
+                }}
+                
+                // 3. Поиск по селекторам
+                if (results.length === 0) {{
+                    const selectors = [
+                        `[data-testid*="${{what}}" i]`,
+                        `[class*="${{what}}" i]`,
+                        `[id*="${{what}}" i]`,
+                        `[name*="${{what}}" i]`
+                    ];
+                    for (const selector of selectors) {{
+                        try {{
+                            const elements = document.querySelectorAll(selector);
+                            for (const el of elements) {{
+                                const text = el.textContent?.trim() || '';
+                                results.push({{
+                                    type: 'selector',
+                                    selector: selector,
+                                    tag: el.tagName.toLowerCase(),
+                                    text: text.slice(0, 200)
+                                }});
+                            }}
+                        }} catch(e) {{}}
+                    }}
+                }}
+                
+                return results.slice(0, 10);
+            }}
+            return smartFind('{what}');
+        """
+        
+        result = run_async_in_main_loop(browser.evaluate(script))
+        
+        if result.get("success"):
+            items = result.get("result", [])
+            if items:
+                output = [f"🔍 Найдено '{what}':"]
+                for i, item in enumerate(items, 1):
+                    if item.get('type') == 'text':
+                        output.append(f"{i}. {item.get('tag')}: {item.get('text', '')[:100]}")
+                    elif item.get('type') == 'attribute':
+                        output.append(f"{i}. {item.get('tag')} [{item.get('attr')}]: {item.get('value')}")
+                    else:
+                        output.append(f"{i}. {item.get('tag')}: {item.get('text', '')[:100]}")
+                return "\n".join(output)
+            
+            return f"❌ '{what}' не найден на странице"
+        return f"❌ Ошибка: {result.get('error', '')}"
+        
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:100]}"
+
 # ==================== СПИСОК ИНСТРУМЕНТОВ ====================
 tools = [
     Tool(goto_url),
@@ -466,6 +551,7 @@ tools = [
     Tool(execute_js),
     Tool(page_info),
     Tool(find_element),
+    Tool(smart_find),  # Универсальный поиск
 ]
 
 # ==================== DSPy ====================
