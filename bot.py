@@ -17,31 +17,18 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
-    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
-    
-    # User-Agent (реальный Chrome)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
-    
-    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
-    
-    # WebGL — программный рендеринг
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
-    
-    # Размер окна
     options.add_argument('--window-size=1920,1080')
-    
-    # HEADLESS NEW
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    
-    # Дополнительная маскировка (без дубликатов)
     options.add_argument('--disable-client-side-phishing-detection')
     options.add_argument('--disable-component-extensions-with-background-pages')
     options.add_argument('--disable-default-apps')
@@ -57,24 +44,28 @@ def create_full_stealth_options() -> ChromiumOptions:
     # ===== 2. НАСТРОЙКИ WEBRTC =====
     options.webrtc_leak_protection = True
     
-    # ===== 3. НАСТРОЙКИ БРАУЗЕРА =====
-    preferences = {
-        'intl.accept_languages': 'en-US,en;q=0.9',
-        'profile.default_content_setting_values.geolocation': 2,
-        'profile.default_content_setting_values.notifications': 2,
-        'profile.default_content_setting_values.media_stream_mic': 2,
-        'profile.default_content_setting_values.media_stream_camera': 2,
-        'profile.default_content_setting_values.midi_sysex': 2,
-        'profile.default_content_setting_values.push_messaging': 2,
-        'profile.default_content_setting_values.ppapi_broker': 2,
-        'profile.default_content_setting_values.automatic_downloads': 1,
-        'profile.password_manager_enabled': False,
-        'credentials_enable_service': False,
-        'profile.default_content_setting_values.cookies': 1,
+    # ===== 3. НАСТРОЙКИ БРАУЗЕРА (правильный способ) =====
+    # Используем browser_preferences вместо set_capability
+    options.browser_preferences = {
+        'intl': {
+            'accept_languages': 'en-US,en;q=0.9'
+        },
+        'profile': {
+            'default_content_setting_values': {
+                'geolocation': 2,
+                'notifications': 2,
+                'media_stream_mic': 2,
+                'media_stream_camera': 2,
+                'midi_sysex': 2,
+                'push_messaging': 2,
+                'ppapi_broker': 2,
+                'automatic_downloads': 1,
+                'cookies': 1
+            },
+            'password_manager_enabled': False
+        },
+        'credentials_enable_service': False
     }
-    
-    # Устанавливаем preferences
-    options.set_capability('prefs', preferences)
     
     return options
 
