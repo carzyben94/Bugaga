@@ -52,12 +52,12 @@ class CDPClient:
         if success:
             success2, msg2 = await self.connect()
             if success2:
-                return True, f"✅ Chrome запущен и подключен"
+                return True, "✅ Chrome запущен и подключен"
             return False, msg2
         return False, msg
     
     async def launch_chrome(self):
-        """Запустить Chromium"""
+        """Запустить Chromium в headless режиме"""
         try:
             if self.is_launching:
                 return False, "⏳ Уже запускается..."
@@ -72,17 +72,24 @@ class CDPClient:
                 self.is_launching = False
                 return False, f"❌ Chromium не найден: {chrome_cmd}"
             
-            # Запускаем
+            # Headless режим с новой сессией
             cmd = [
                 chrome_cmd,
                 '--remote-debugging-port=9222',
+                '--headless=new',  # Новый headless режим
                 '--no-first-run',
                 '--no-default-browser-check',
                 '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-software-rasterizer',
+                '--disable-extensions',
+                '--disable-setuid-sandbox',
+                '--no-sandbox',
                 '--window-size=1280,720',
                 '--new-window', 'about:blank'
             ]
             
+            # Запускаем
             self.chrome_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -95,7 +102,7 @@ class CDPClient:
                 ws_url = self.get_first_tab_ws()
                 if ws_url:
                     self.is_launching = False
-                    return True, f"✅ Chromium запущен"
+                    return True, f"✅ Chromium headless запущен"
             
             self.is_launching = False
             return False, "❌ Не удалось запустить Chromium"
@@ -159,19 +166,50 @@ class CDPClient:
         
         img_data = base64.b64decode(result.get('result', {}).get('data', ''))
         return img_data
+    
+    async def new_tab(self, url="about:blank"):
+        """Создать новую вкладку"""
+        try:
+            # Создаем новую вкладку через HTTP
+            resp = requests.get(f"http://localhost:9222/json/new?{url}")
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("webSocketDebuggerUrl")
+            return None
+        except:
+            return None
 
 cdp = CDPClient()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 CDP Client\n\n"
+        "🤖 CDP Client (Headless)\n\n"
         "Команды:\n"
         "/screenshot - скриншот\n"
+        "/newtab <url> - новая вкладка\n"
         "/evaluate <js> - выполнить JS\n"
         "/navigate <url> - перейти\n"
         "/tabs - список вкладок\n"
         "/status - статус"
     )
+
+async def new_tab(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создать новую вкладку"""
+    try:
+        success, msg = await cdp.ensure_chrome()
+        if not success:
+            await update.message.reply_text(f"❌ {msg}")
+            return
+        
+        url = context.args[0] if context.args else "about:blank"
+        ws_url = await cdp.new_tab(url)
+        
+        if ws_url:
+            await update.message.reply_text(f"✅ Новая вкладка: {url}")
+        else:
+            await update.message.reply_text("❌ Не удалось создать вкладку")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -255,6 +293,7 @@ async def list_tabs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = "📊 Статус:\n"
     status_msg += f"Подключен: {'✅ Да' if cdp.ws else '❌ Нет'}\n"
+    status_msg += f"Режим: Headless New\n"
     status_msg += f"Chromium: /usr/bin/chromium\n"
     
     try:
@@ -274,6 +313,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("screenshot", screenshot))
+    app.add_handler(CommandHandler("newtab", new_tab))
     app.add_handler(CommandHandler("evaluate", evaluate))
     app.add_handler(CommandHandler("navigate", navigate))
     app.add_handler(CommandHandler("tabs", list_tabs))
@@ -281,6 +321,7 @@ def main():
     
     print("🤖 CDP Client Bot запущен")
     print("📁 Chromium: /usr/bin/chromium")
+    print("🎯 Режим: Headless New")
     app.run_polling()
 
 if __name__ == "__main__":
