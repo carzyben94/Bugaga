@@ -91,8 +91,7 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tab = await browser.start()
         logger.debug("Браузер запущен")
         
-        # ===== ВНЕДРЯЕМ JS-СКРИПТЫ =====
-        # Создаём JS-скрипт для маскировки
+        # JS-скрипт для маскировки
         js_script = """
             // ===== NAVIGATOR =====
             Object.defineProperty(navigator, 'userAgent', {
@@ -218,52 +217,48 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             };
         """
         
-        # Внедряем JS-скрипт
-        result = await tab._connection_handler.execute_command(
-            'Page.addScriptToEvaluateOnNewDocument',
-            {
-                'source': js_script
-            }
-        )
+        # Внедряем JS-скрипт (правильный формат)
+        result = await tab._connection_handler.execute_command({
+            'method': 'Page.addScriptToEvaluateOnNewDocument',
+            'params': {'source': js_script}
+        })
         logger.debug(f"JS-скрипт внедрён: {result}")
         
-        # ===== ПЕРЕХОДИМ НА СТРАНИЦУ =====
+        # Переходим на страницу
         await tab.go_to('https://example.com')
         await asyncio.sleep(2)
         
-        # ===== СКРОЛЛ =====
+        # Скролл
         await tab.scroll.to_bottom(humanize=True)
         await asyncio.sleep(1)
         await tab.scroll.to_top(humanize=True)
         await asyncio.sleep(0.5)
         
-        # ===== ПОЛУЧАЕМ ИНФОРМАЦИЮ =====
+        # Получаем информацию (тоже правильный формат)
         title = await tab.title
         
-        # Выполняем JS для получения информации
-        user_agent_result = await tab._connection_handler.execute_command(
-            'Runtime.evaluate',
-            {'expression': 'navigator.userAgent'}
-        )
+        user_agent_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.userAgent'}
+        })
         
-        webdriver_result = await tab._connection_handler.execute_command(
-            'Runtime.evaluate',
-            {'expression': 'navigator.webdriver === undefined'}
-        )
+        webdriver_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.webdriver === undefined'}
+        })
         
-        language_result = await tab._connection_handler.execute_command(
-            'Runtime.evaluate',
-            {'expression': 'navigator.language'}
-        )
+        language_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.language'}
+        })
         
-        plugins_result = await tab._connection_handler.execute_command(
-            'Runtime.evaluate',
-            {'expression': 'navigator.plugins.length'}
-        )
+        plugins_result = await tab._connection_handler.execute_command({
+            'method': 'Runtime.evaluate',
+            'params': {'expression': 'navigator.plugins.length'}
+        })
         
         await browser.close()
         
-        # Отправляем результат
         await update.message.reply_text(
             f"✅ Заголовок: {title}\n"
             f"🛡️ WebDriver скрыт: {webdriver_result['result']['value']}\n"
