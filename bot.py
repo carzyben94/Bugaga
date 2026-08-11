@@ -1,3 +1,5 @@
+# bot.py - исправленная версия
+
 import os
 import logging
 import asyncio
@@ -28,12 +30,24 @@ class ChromeClient:
         self.msg_id = 0
         self.page_id = None
         self.script_id = None
+        self.tab_id = None
     
     async def connect(self):
-        response = requests.get(f'http://{self.host}:{self.port}/json/version')
-        ws_url = response.json()['webSocketDebuggerUrl']
+        """Подключение к Chrome через /json/list"""
+        resp = requests.get(f'http://{self.host}:{self.port}/json/list')
+        pages = resp.json()
+        
+        if not pages:
+            raise Exception("❌ Нет активных вкладок в Chrome!")
+        
+        page = pages[0]
+        ws_url = page['webSocketDebuggerUrl']
+        self.tab_id = page.get('id')
+        
+        logging.info(f"📄 Используем вкладку: {page.get('title', 'No title')}")
+        
         self.websocket = await websockets.connect(ws_url)
-        logging.info(f"✅ Подключен к Chrome: {ws_url}")
+        logging.info(f"✅ Подключен к Chrome через /json/list")
         return self
     
     async def send_command(self, method, params=None):
@@ -48,6 +62,29 @@ class ChromeClient:
     
     async def enable_runtime(self):
         return await self.send_command('Runtime.enable')
+    
+    async def enable_network(self):
+        return await self.send_command('Network.enable')
+    
+    async def set_viewport(self, width=1280, height=720):
+        """Установка размера viewport через Emulation.setDeviceMetricsOverride"""
+        return await self.send_command('Emulation.setDeviceMetricsOverride', {
+            'width': width,
+            'height': height,
+            'deviceScaleFactor': 1,
+            'mobile': False,
+            'screenWidth': width,
+            'screenHeight': height,
+            'positionX': 0,
+            'positionY': 0,
+            'viewport': {
+                'x': 0,
+                'y': 0,
+                'width': width,
+                'height': height,
+                'scale': 1
+            }
+        })
     
     async def inject_stealth_js(self):
         """Инъекция JavaScript из config.py"""
@@ -77,15 +114,57 @@ class ChromeClient:
         return result
     
     async def screenshot(self):
-        # Реалистичная пауза перед скриншотом
-        await asyncio.sleep(random.uniform(0.5, 1.5))
+        """Скриншот с фиксированным размером 1280x720"""
+        # Сначала устанавливаем viewport
+        await self.set_viewport(1280, 720)
         
-        result = await self.send_command('Page.captureScreenshot', SCREENSHOT_CONFIG)
-        return base64.b64decode(result['result']['data'])
+        # Реалистичная пауза перед скриншотом
+        await asyncio.sleep(random.uniform(0.5, 1.0))
+        
+        # Делаем скриншот БЕЗ captureBeyondViewport
+        result = await self.send_command('Page.captureScreenshot', {
+            'format': 'png',
+            'quality': 100,
+            'captureBeyondViewport': False  # ❗ Важно: убираем
+        })
+        
+        screenshot_data = base64.b64decode(result['result']['data'])
+        
+        # Проверяем размер (Telegram лимит ~20MB)
+        if len(screenshot_data) > 20 * 1024 * 1024:
+            logging.warning(f"⚠️ Скриншот слишком большой: {len(screenshot_data) / 1024 / 1024:.2f}MB")
+            # Пробуем сжать
+            result = await self.send_command('Page.captureScreenshot', {
+                'format': 'jpeg',
+                'quality': 70,
+                'captureBeyondViewport': False
+            })
+            screenshot_data = base64.b64decode(result['result']['data'])
+        
+        return screenshot_data
+    
+    async def get_page_info(self):
+        """Получить информацию о текущей странице"""
+        result = await self.send_command('Runtime.evaluate', {
+            'expression': '''
+                JSON.stringify({
+                    title: document.title,
+                    url: window.location.href,
+                    readyState: document.readyState,
+                    scripts: document.scripts.length,
+                    images: document.images.length,
+                    links: document.links.length,
+                    width: window.innerWidth,
+                    height: window.innerHeight
+                })
+            '''
+        })
+        return json.loads(result['result']['result']['value'])
     
     async def close(self):
         if self.websocket:
             await self.websocket.close()
+            logging.info("🔌 WebSocket соединение закрыто")
 
 chrome = None
 
@@ -95,15 +174,19 @@ async def init_chrome():
         chrome = await ChromeClient().connect()
         await chrome.enable_page()
         await chrome.enable_runtime()
+        await chrome.enable_network()
         await chrome.inject_stealth_js()
+        # Устанавливаем дефолтный viewport
+        await chrome.set_viewport(1280, 720)
     return chrome
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🕷️ CDP Скриншот-бот (100% Stealth Mode)\n\n"
         "Команды:\n"
-        "/screenshot <url> - сделать скриншот\n"
-        "/info - информация о маскировке"
+        "/screenshot <url> - сделать скриншот (1280x720)\n"
+        "/info - информация о маскировке\n"
+        "/page - информация о текущей странице"
     )
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,9 +202,15 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await client.navigate(url)
         screenshot_data = await client.screenshot()
         
+        # Проверяем размер перед отправкой
+        if len(screenshot_data) > 20 * 1024 * 1024:
+            await update.message.reply_text("⚠️ Скриншот слишком большой, пробую сжать...")
+            # Повторяем с более низким качеством
+            screenshot_data = await client.screenshot()
+        
         await update.message.reply_photo(
             photo=screenshot_data,
-            caption=f"✅ {url}"
+            caption=f"✅ {url} (1280x720)"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
@@ -145,16 +234,38 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Client Hints:** ✅\n"
         f"**Battery API:** ✅\n"
         f"**Permissions:** ✅\n"
-        f"**Headless режим:** new\n\n"
+        f"**Headless режим:** new\n"
+        f"**Размер скриншота:** 1280x720\n\n"
         f"**✅ Все 100% настроек маскировки активны!**"
     )
     await update.message.reply_text(info_text)
+
+async def page_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Информация о текущей странице"""
+    try:
+        client = await init_chrome()
+        info = await client.get_page_info()
+        
+        text = (
+            f"📄 **Информация о странице**\n\n"
+            f"**Заголовок:** {info.get('title', 'Нет')}\n"
+            f"**URL:** {info.get('url', 'Нет')}\n"
+            f"**Статус:** {info.get('readyState', 'Нет')}\n"
+            f"**Скриптов:** {info.get('scripts', 0)}\n"
+            f"**Картинок:** {info.get('images', 0)}\n"
+            f"**Ссылок:** {info.get('links', 0)}\n"
+            f"**Размер окна:** {info.get('width', 0)}x{info.get('height', 0)}"
+        )
+        await update.message.reply_text(text)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("screenshot", screenshot))
     app.add_handler(CommandHandler("info", info))
+    app.add_handler(CommandHandler("page", page_info))
     
     print("🚀 CDP Бот запущен со 100% STEALTH режимом!")
     print(f"✅ Флагов Chrome: {len(CHROME_FLAGS)}")
@@ -166,6 +277,8 @@ def main():
     print(f"✅ Audio маскировка: {'Включена' if FINGERPRINT_CONFIG['audio_fingerprint'] else 'Выключена'}")
     print(f"✅ Очеловечивание: {'Включено' if HUMANIZATION_CONFIG['mouse']['enabled'] else 'Выключено'}")
     print(f"✅ Headless режим: new")
+    print(f"✅ Размер скриншота: 1280x720")
+    print(f"✅ captureBeyondViewport: False")
     app.run_polling()
 
 if __name__ == "__main__":
