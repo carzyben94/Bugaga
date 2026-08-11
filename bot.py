@@ -9,6 +9,7 @@ import base64
 import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.helpers import escape_markdown
 
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
@@ -19,6 +20,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
 
 # ==================== ЗАПУСК CHROME ====================
 CHROME_PATH = "/usr/bin/chromium"
@@ -32,7 +35,8 @@ def start_chrome():
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--remote-debugging-port=9222"
+            "--remote-debugging-port=9222",
+            "--window-size=1280,720"
         ])
         logger.info("✅ Chrome/Chromium запущен (debug port: 9222)")
         return True
@@ -43,50 +47,422 @@ def start_chrome():
         logger.error("❌ Ошибка запуска Chrome: %s", e)
         return False
 
-# ==================== ПОЛУЧЕНИЕ WEBSOCKET URL ====================
-async def get_websocket_url(max_retries=10, delay=1):
-    """Получает WebSocket URL с повторными попытками"""
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get("http://localhost:9222/json/list", timeout=3.0)
-                pages = resp.json()
-                if pages:
-                    ws_url = pages[0]["webSocketDebuggerUrl"]
-                    logger.info(f"✅ WebSocket URL получен: {ws_url}")
-                    return ws_url
-                else:
-                    logger.warning(f"⚠️ Нет страниц (попытка {attempt + 1}/{max_retries})")
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка подключения (попытка {attempt + 1}/{max_retries}): {e}")
+# ==================== CDP КЛИЕНТ (ПОДХОД PYDOLL) ====================
+class CDPClient:
+    """Клиент для работы с Chrome DevTools Protocol (подход pydoll)"""
+    
+    def __init__(self):
+        self.ws = None
+        self.ws_url = None
+        self.is_connected = False
+        self.message_id = 0
+        self.pending_requests = {}
+        self.event_handlers = {}
         
-        await asyncio.sleep(delay)
-    
-    logger.error("❌ Не удалось получить WebSocket URL")
-    return None
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CDP ====================
-async def execute_cdp_command(method: str, params: dict = None):
-    """Выполняет CDP команду через WebSocket"""
-    ws_url = await get_websocket_url()
-    if not ws_url:
-        return None
-    
-    try:
-        async with websockets.connect(ws_url) as websocket:
-            cmd_id = int(time.time() * 1000) % 100000
-            command = {"id": cmd_id, "method": method}
-            if params:
-                command["params"] = params
+    async def connect(self, max_retries=10, delay=1):
+        """Подключение к Chrome через WebSocket"""
+        # Получаем WebSocket URL
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get("http://localhost:9222/json/list", timeout=3.0)
+                    pages = resp.json()
+                    if pages:
+                        self.ws_url = pages[0]["webSocketDebuggerUrl"]
+                        break
+            except Exception as e:
+                logger.warning(f"⚠️ Попытка {attempt + 1}/{max_retries}: {e}")
             
-            await websocket.send(json.dumps(command))
-            response = await websocket.recv()
-            return json.loads(response)
-    except Exception as e:
-        logger.error(f"❌ CDP ошибка: {e}")
-        return None
+            await asyncio.sleep(delay)
+        else:
+            logger.error("❌ Не удалось получить WebSocket URL")
+            return False
+        
+        # Подключаемся к WebSocket
+        try:
+            self.ws = await websockets.connect(self.ws_url)
+            self.is_connected = True
+            logger.info("✅ Подключение к Chrome через WebSocket установлено")
+            
+            # Включаем необходимые домены
+            await self.send_command("Network.enable")
+            await self.send_command("Page.enable")
+            await self.send_command("Runtime.enable")
+            await self.send_command("DOM.enable")
+            
+            # Запускаем обработчик событий
+            asyncio.create_task(self._handle_events())
+            
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка подключения: {e}")
+            return False
+    
+    async def send_command(self, method: str, params: dict = None):
+        """Отправить CDP команду"""
+        if not self.is_connected:
+            raise Exception("Не подключено к браузеру")
+        
+        self.message_id += 1
+        cmd_id = self.message_id
+        
+        command = {
+            "id": cmd_id,
+            "method": method
+        }
+        if params:
+            command["params"] = params
+        
+        # Отправляем команду
+        await self.ws.send(json.dumps(command))
+        
+        # Ожидаем ответ
+        while True:
+            try:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+                data = json.loads(response)
+                
+                # Если это ответ на нашу команду
+                if data.get("id") == cmd_id:
+                    if "error" in data:
+                        raise Exception(f"CDP ошибка: {data['error']}")
+                    return data.get("result", {})
+                
+                # Если это событие - обрабатываем отдельно
+                if "method" in data:
+                    await self._handle_event(data)
+                    
+            except asyncio.TimeoutError:
+                raise Exception("Таймаут ожидания ответа от CDP")
+    
+    async def _handle_events(self):
+        """Обработчик событий CDP"""
+        try:
+            async for message in self.ws:
+                try:
+                    data = json.loads(message)
+                    if "method" in data:
+                        await self._handle_event(data)
+                except json.JSONDecodeError:
+                    continue
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("⚠️ Соединение с WebSocket закрыто")
+            self.is_connected = False
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки событий: {e}")
+    
+    async def _handle_event(self, event):
+        """Обработка конкретного события"""
+        method = event.get("method")
+        params = event.get("params", {})
+        
+        # Логируем важные события
+        if method == "Page.loadEventFired":
+            logger.info("✅ Событие Page.loadEventFired")
+        elif method == "Page.domContentEventFired":
+            logger.info("✅ Событие Page.domContentEventFired")
+        elif method == "Network.requestWillBeSent":
+            logger.debug(f"🌐 Запрос: {params.get('request', {}).get('url', 'unknown')}")
+        elif method == "Network.responseReceived":
+            logger.debug(f"📥 Ответ: {params.get('response', {}).get('url', 'unknown')}")
+        
+        # Вызываем зарегистрированные обработчики
+        if method in self.event_handlers:
+            for handler in self.event_handlers[method]:
+                await handler(params)
+    
+    def on(self, event_name: str):
+        """Декоратор для регистрации обработчика событий"""
+        def decorator(handler):
+            if event_name not in self.event_handlers:
+                self.event_handlers[event_name] = []
+            self.event_handlers[event_name].append(handler)
+            return handler
+        return decorator
+    
+    # ==================== МЕТОДЫ ЗАГРУЗКИ СТРАНИЦ (ПОДХОД PYDOLL) ====================
+    
+    async def goto_url(self, url: str, timeout: int = 30):
+        """Переход по URL с полным ожиданием загрузки"""
+        try:
+            logger.info(f"🚀 Навигация: {url}")
+            
+            # Отправляем команду навигации с таймаутом
+            result = await asyncio.wait_for(
+                self.send_command("Page.navigate", {"url": url}),
+                timeout=timeout
+            )
+            
+            # Проверяем ошибку навигации
+            if "errorText" in result:
+                raise Exception(f"Ошибка навигации: {result['errorText']}")
+            
+            logger.info("✅ Навигация завершена")
+            
+            # Ждем загрузки страницы
+            await self.wait_for_load()
+            
+            return {"success": True, "url": url}
+            
+        except asyncio.TimeoutError:
+            raise Exception(f"Таймаут загрузки {url}")
+        except Exception as e:
+            raise Exception(f"Ошибка загрузки: {e}")
+    
+    async def wait_for_load(self, timeout: int = 30):
+        """Ожидание полной загрузки страницы"""
+        try:
+            # Ждем событие DOM Content Loaded
+            logger.info("⏳ Ожидание DOM Content Loaded...")
+            await asyncio.wait_for(
+                self._wait_for_event("Page.domContentEventFired"),
+                timeout=timeout
+            )
+            logger.info("✅ DOM Content Loaded")
+            
+            # Ждем событие полной загрузки
+            logger.info("⏳ Ожидание полной загрузки...")
+            await asyncio.wait_for(
+                self._wait_for_event("Page.loadEventFired"),
+                timeout=timeout
+            )
+            logger.info("✅ Страница полностью загружена")
+            
+            # Дополнительно ждем готовности документа
+            await self.wait_for_ready_state()
+            
+            # Ждем завершения сетевых запросов
+            await self.wait_for_network_idle()
+            
+            # Небольшая задержка для рендеринга
+            await asyncio.sleep(1)
+            
+            logger.info("✅ Все ресурсы загружены")
+            
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Таймаут ожидания загрузки")
+        except Exception as e:
+            logger.error(f"❌ Ошибка ожидания загрузки: {e}")
+    
+    async def _wait_for_event(self, event_name: str, timeout: int = 30):
+        """Ожидание конкретного события"""
+        future = asyncio.Future()
+        
+        def handler(params):
+            if not future.done():
+                future.set_result(params)
+        
+        # Регистрируем обработчик
+        if event_name not in self.event_handlers:
+            self.event_handlers[event_name] = []
+        self.event_handlers[event_name].append(handler)
+        
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            # Удаляем обработчик
+            if event_name in self.event_handlers:
+                self.event_handlers[event_name].remove(handler)
+    
+    async def wait_for_ready_state(self, timeout: int = 10):
+        """Ожидание готовности документа"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": "document.readyState"
+                })
+                ready_state = result.get("result", {}).get("value", "loading")
+                
+                if ready_state == "complete":
+                    logger.info(f"✅ document.readyState = {ready_state}")
+                    return True
+                
+                logger.debug(f"⏳ document.readyState = {ready_state}")
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Ошибка проверки readyState: {e}")
+                await asyncio.sleep(0.1)
+        
+        logger.warning("⚠️ Таймаут ожидания readyState = complete")
+        return False
+    
+    async def wait_for_network_idle(self, timeout: int = 5):
+        """Ожидание завершения сетевых запросов"""
+        try:
+            # Получаем количество активных запросов через CDP
+            result = await self.send_command("Network.getPendingRequests")
+            pending = result.get("pendingRequests", [])
+            
+            start_time = time.time()
+            while pending and (time.time() - start_time) < timeout:
+                logger.debug(f"⏳ Активных запросов: {len(pending)}")
+                await asyncio.sleep(0.5)
+                result = await self.send_command("Network.getPendingRequests")
+                pending = result.get("pendingRequests", [])
+            
+            if pending:
+                logger.warning(f"⚠️ Осталось активных запросов: {len(pending)}")
+            else:
+                logger.info("✅ Все сетевые запросы завершены")
+                
+        except Exception as e:
+            logger.debug(f"⚠️ Ошибка проверки сети: {e}")
+    
+    async def wait_for_element(self, selector: str, timeout: int = 10):
+        """Ожидание появления элемента на странице"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": f"document.querySelector('{selector}') !== null"
+                })
+                exists = result.get("result", {}).get("value", False)
+                
+                if exists:
+                    logger.info(f"✅ Элемент '{selector}' найден")
+                    return True
+                
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Ошибка поиска элемента: {e}")
+                await asyncio.sleep(0.1)
+        
+        raise TimeoutError(f"Элемент '{selector}' не найден за {timeout}с")
+    
+    async def wait_for_url(self, expected_url: str, timeout: int = 10):
+        """Ожидание конкретного URL"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": "window.location.href"
+                })
+                current_url = result.get("result", {}).get("value", "")
+                
+                if current_url == expected_url:
+                    logger.info(f"✅ URL соответствует: {expected_url}")
+                    return True
+                
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Ошибка проверки URL: {e}")
+                await asyncio.sleep(0.1)
+        
+        return False
+    
+    async def load_page(self, url: str, wait_for_selector: str = None, timeout: int = 30):
+        """Полная загрузка страницы (комбинированный подход)"""
+        try:
+            # 1. Навигация
+            await self.goto_url(url, timeout)
+            
+            # 2. Ждем готовности DOM
+            await self.wait_for_ready_state()
+            
+            # 3. Ждем завершения сети
+            await self.wait_for_network_idle()
+            
+            # 4. Если указан селектор - ждем его появления
+            if wait_for_selector:
+                await self.wait_for_element(wait_for_selector, timeout)
+            
+            # 5. Дополнительная задержка для анимаций/рендеринга
+            await asyncio.sleep(1)
+            
+            logger.info(f"✅ Страница {url} полностью загружена")
+            return {"success": True, "url": url}
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ==================== ДРУГИЕ МЕТОДЫ ====================
+    
+    async def capture_screenshot(self, filename: str = None):
+        """Сделать скриншот"""
+        try:
+            result = await self.send_command("Page.captureScreenshot")
+            
+            if not filename:
+                filename = f"screenshot_{int(time.time())}.png"
+            
+            # Декодируем base64 и сохраняем
+            image_data = base64.b64decode(result["data"])
+            with open(filename, "wb") as f:
+                f.write(image_data)
+            
+            logger.info(f"✅ Скриншот сохранен: {filename}")
+            return {"success": True, "filename": filename}
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка скриншота: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def execute_js(self, script: str):
+        """Выполнить JavaScript"""
+        try:
+            result = await self.send_command("Runtime.evaluate", {
+                "expression": script
+            })
+            
+            value = result.get("result", {}).get("value")
+            logger.info(f"✅ JS выполнен: {script[:50]}...")
+            return {"success": True, "result": value}
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка JS: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def get_page_info(self):
+        """Получить информацию о странице"""
+        try:
+            url_result = await self.send_command("Runtime.evaluate", {
+                "expression": "window.location.href"
+            })
+            title_result = await self.send_command("Runtime.evaluate", {
+                "expression": "document.title"
+            })
+            
+            url = url_result.get("result", {}).get("value", "unknown")
+            title = title_result.get("result", {}).get("value", "unknown")
+            
+            return {
+                "success": True,
+                "url": url,
+                "title": title
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения информации: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def close(self):
+        """Закрыть соединение"""
+        try:
+            if self.ws:
+                await self.ws.close()
+            self.is_connected = False
+            logger.info("✅ Соединение закрыто")
+        except Exception as e:
+            logger.error(f"❌ Ошибка закрытия: {e}")
 
-# ==================== DSPy АДАПТЕР ДЛЯ AGNES AI ====================
+# ==================== ГЛОБАЛЬНЫЙ ИНСТАНС ====================
+browser = None
+
+async def init_browser():
+    """Инициализация браузера"""
+    global browser
+    browser = CDPClient()
+    await browser.connect()
+    return browser
+
+# ==================== DSPy АДАПТЕР ====================
 class AgnesLM(dspy.LM):
     """Адаптер для Agnes AI"""
     
@@ -158,111 +534,79 @@ class AgnesLM(dspy.LM):
 
 # ==================== СИГНАТУРА DSPy ====================
 class BrowserTask(Signature):
-    """Ты агент с доступом к браузеру через CDP (Chrome DevTools Protocol).
+    """Ты агент с доступом к браузеру через CDP.
     Используй инструменты для выполнения задач пользователя.
     """
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
 # ==================== ИНСТРУМЕНТЫ ДЛЯ DSPy ====================
-def make_tool(func):
-    """Декоратор для создания синхронных инструментов"""
-    return Tool(func)
-
-# Синхронные обертки для асинхронных функций
-def goto_url(url: str) -> str:
-    """Перейти на URL"""
+def sync_run_async(coro):
+    """Запустить асинхронную функцию синхронно"""
     try:
         loop = asyncio.get_running_loop()
+        if loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=60)
     except RuntimeError:
-        loop = None
+        return asyncio.run(coro)
     
-    if loop and loop.is_running():
-        # Если уже есть event loop, создаем задачу
-        future = asyncio.run_coroutine_threadsafe(execute_cdp_command("Page.navigate", {"url": url}), loop)
-        result = future.result(timeout=30)
-    else:
-        # Если нет event loop, запускаем новый
-        result = asyncio.run(execute_cdp_command("Page.navigate", {"url": url}))
-    
-    if result and "result" in result:
-        return f"✅ Перешел на {url}"
-    return f"❌ Ошибка навигации: {result}"
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=60)
+    except:
+        return asyncio.run(coro)
+
+def goto_url(url: str) -> str:
+    """Перейти на URL с полным ожиданием загрузки"""
+    try:
+        result = sync_run_async(browser.load_page(url))
+        if result.get("success"):
+            return f"✅ Страница {url} полностью загружена"
+        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
 def capture_screenshot() -> str:
     """Сделать скриншот страницы"""
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    
-    if loop and loop.is_running():
-        future = asyncio.run_coroutine_threadsafe(execute_cdp_command("Page.captureScreenshot"), loop)
-        result = future.result(timeout=30)
-    else:
-        result = asyncio.run(execute_cdp_command("Page.captureScreenshot"))
-    
-    if result and "result" in result and "data" in result["result"]:
-        timestamp = int(time.time())
-        filename = f"screenshot_{timestamp}.png"
-        
-        # Декодируем base64 и сохраняем
-        image_data = base64.b64decode(result["result"]["data"])
-        with open(filename, "wb") as f:
-            f.write(image_data)
-        
-        return f"✅ Скриншот сохранен: {filename}"
-    return "❌ Не удалось сделать скриншот"
+        filename = f"screenshot_{int(time.time())}.png"
+        result = sync_run_async(browser.capture_screenshot(filename))
+        if result.get("success"):
+            return f"✅ Скриншот сохранен: {filename}"
+        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
-def execute_js(expression: str) -> str:
+def execute_js(script: str) -> str:
     """Выполнить JavaScript на странице"""
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    
-    if loop and loop.is_running():
-        future = asyncio.run_coroutine_threadsafe(
-            execute_cdp_command("Runtime.evaluate", {"expression": expression}), loop
-        )
-        result = future.result(timeout=30)
-    else:
-        result = asyncio.run(execute_cdp_command("Runtime.evaluate", {"expression": expression}))
-    
-    if result and "result" in result:
-        value = result["result"].get("result", {}).get("value", "✅ JS выполнен")
-        return str(value)
-    return "❌ Ошибка выполнения JS"
+        result = sync_run_async(browser.execute_js(script))
+        if result.get("success"):
+            return str(result.get("result", "✅ JS выполнен"))
+        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
 def page_info() -> str:
     """Получить информацию о странице"""
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    
-    if loop and loop.is_running():
-        url_future = asyncio.run_coroutine_threadsafe(
-            execute_cdp_command("Runtime.evaluate", {"expression": "window.location.href"}), loop
-        )
-        title_future = asyncio.run_coroutine_threadsafe(
-            execute_cdp_command("Runtime.evaluate", {"expression": "document.title"}), loop
-        )
-        url_result = url_future.result(timeout=30)
-        title_result = title_future.result(timeout=30)
-    else:
-        url_result = asyncio.run(execute_cdp_command("Runtime.evaluate", {"expression": "window.location.href"}))
-        title_result = asyncio.run(execute_cdp_command("Runtime.evaluate", {"expression": "document.title"}))
-    
-    url = "unknown"
-    title = "unknown"
-    
-    if url_result and "result" in url_result:
-        url = url_result["result"].get("result", {}).get("value", "unknown")
-    if title_result and "result" in title_result:
-        title = title_result["result"].get("result", {}).get("value", "unknown")
-    
-    return f"URL: {url}\nTitle: {title}"
+        result = sync_run_async(browser.get_page_info())
+        if result.get("success"):
+            return f"URL: {result['url']}\nTitle: {result['title']}"
+        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
+
+def wait_for_element(selector: str, timeout: int = 10) -> str:
+    """Ожидать появление элемента"""
+    try:
+        sync_run_async(browser.wait_for_element(selector, timeout))
+        return f"✅ Элемент '{selector}' появился"
+    except Exception as e:
+        return f"❌ Ошибка: {e}"
 
 # Создаем инструменты
 tools = [
@@ -270,11 +614,11 @@ tools = [
     Tool(capture_screenshot),
     Tool(execute_js),
     Tool(page_info),
+    Tool(wait_for_element),
 ]
 
 # ==================== СОЗДАНИЕ АГЕНТА ====================
 def create_browser_agent():
-    """Создать ReActV2 агента"""
     try:
         agent = ReActV2(
             signature=BrowserTask,
@@ -284,7 +628,7 @@ def create_browser_agent():
         logger.info("✅ ReActV2 агент создан")
         return agent
     except Exception as e:
-        logger.error(f"❌ Ошибка создания ReActV2 агента: {e}")
+        logger.error(f"❌ Ошибка создания агента: {e}")
         return None
 
 # ==================== ТОКЕН БОТА ====================
@@ -303,16 +647,9 @@ if AGNES_API_KEY:
             temperature=0.3,
             max_tokens=2000
         )
-        
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
-        
         browser_agent = create_browser_agent()
-        if browser_agent:
-            logger.info("✅ BrowserAgent инициализирован")
-        else:
-            logger.warning("⚠️ Не удалось создать агента")
-        
     except Exception as e:
         logger.warning(f"⚠️ Ошибка инициализации DSPy: {e}")
         browser_agent = None
@@ -322,8 +659,7 @@ else:
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ответ на команду /start"""
-    ws_url = await get_websocket_url()
-    status = "✅ Chrome готов к работе" if ws_url else "❌ Chrome не доступен"
+    status = "✅ Chrome готов к работе" if browser and browser.is_connected else "❌ Chrome не доступен"
     dspy_status = "✅ DSPy активен" if browser_agent else "❌ DSPy отключен"
     
     await update.message.reply_text(
@@ -332,7 +668,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{dspy_status}\n\n"
         f"📌 Доступные команды:\n"
         f"/dspy <запрос> — выполнить задачу через агента\n"
-        f"/start — показать это сообщение"
+        f"/start — показать это сообщение\n\n"
+        f"🔧 Агент умеет:\n"
+        f"• Загружать страницы с полным ожиданием\n"
+        f"• Делать скриншоты\n"
+        f"• Выполнять JavaScript\n"
+        f"• Ожидать элементы\n"
+        f"• Получать информацию о странице"
     )
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,9 +688,10 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not context.args:
         await update.message.reply_text(
-            "📝 **Пример использования:**\n"
+            "📝 **Примеры использования:**\n"
             "/dspy открыть google.com и сделать скриншот\n"
-            "/dspy перейти на youtube.com и показать заголовок",
+            "/dspy перейти на youtube.com и показать заголовок\n"
+            "/dspy загрузить страницу и подождать кнопку 'login'",
             parse_mode='Markdown'
         )
         return
@@ -360,10 +703,8 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
-        # Вызываем агента
         result = browser_agent(question=query)
         
-        # Обрабатываем результат
         if isinstance(result, list):
             answer = result[0] if result else "Пустой ответ"
         elif hasattr(result, 'answer'):
@@ -372,7 +713,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             answer = str(result)
         
         if answer and answer.strip():
-            from telegram.helpers import escape_markdown
             answer_escaped = escape_markdown(answer[:4000], version=2)
             await status_msg.edit_text(
                 f"✅ **Результат:**\n{answer_escaped}",
@@ -383,8 +723,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== ЗАПУСК БОТА ====================
@@ -394,21 +732,23 @@ def main():
     
     # Запускаем Chrome
     start_chrome()
-    
-    # Даём время на запуск
-    logger.info("⏳ Ожидание запуска Chrome...")
     time.sleep(3)
     
-    # Создаём и настраиваем приложение
+    # Инициализируем браузер
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(init_browser())
+    
+    # Создаём приложение
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     # Запускаем поллинг
-    logger.info("✅ Бот успешно запущен! Ожидание команд...")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен (ReActV2)' if browser_agent else '❌ Отключен'}")
+    logger.info("✅ Бот успешно запущен!")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent else '❌ Отключен'}")
+    logger.info(f"🌐 Браузер статус: {'✅ Подключен' if browser and browser.is_connected else '❌ Отключен'}")
     app.run_polling()
 
-# ==================== ТОЧКА ВХОДА ====================
 if __name__ == "__main__":
     main()
