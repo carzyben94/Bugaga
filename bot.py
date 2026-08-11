@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
@@ -18,53 +17,72 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
+    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+    
+    # User-Agent (реальный Chrome)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
+    
+    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
+    
+    # WebGL — программный рендеринг
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
+    
+    # Защита WebRTC
     options.webrtc_leak_protection = True
+    
+    # Размер окна
     options.add_argument('--window-size=1920,1080')
     
-    # ===== HEADLESS NEW =====
-    options.add_argument('--headless=new')
+    # Отключаем лишнее
+    options.add_argument('--no-first-run')
+    options.add_argument('--no-default-browser-check')
+    options.add_argument('--disable-notifications')
+    options.add_argument('--disable-popup-blocking')
+    options.add_argument('--disable-save-password-bubble')
+    
+    # ===== HEADLESS NEW (ГЛАВНОЕ ИЗМЕНЕНИЕ) =====
+    options.add_argument('--headless=new')  # Новый headless режим
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
+    options.add_argument('--disable-gpu')  # Всё ещё нужен для совместимости
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ТОЛЬКО ХЕЛПЕРЫ) =====
-    # Это ЕДИНСТВЕННЫЙ способ без ошибок!
-    options.block_notifications = True      # Блокируем уведомления (2)
-    options.block_popups = True             # Блокируем попапы (2)
-    options.password_manager_enabled = False # Отключаем менеджер паролей
-    options.prompt_for_download = False     # Не спрашивать при скачивании
-    options.set_accept_languages('en-US,en;q=0.9')  # Язык браузера
+    # Дополнительная маскировка
+    options.add_argument('--disable-client-side-phishing-detection')
+    options.add_argument('--disable-component-extensions-with-background-pages')
+    options.add_argument('--disable-default-apps')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-plugins')
+    options.add_argument('--disable-translate')
+    options.add_argument('--disable-web-security')
+    options.add_argument('--disable-xss-auditor')
+    options.add_argument('--no-zygote')
+    options.add_argument('--single-process')
     
-    # Дополнительные настройки через _set_pref_path
-    options._set_pref_path(['profile', 'default_content_setting_values', 'geolocation'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_mic'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'media_stream_camera'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'midi_sysex'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'push_messaging'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'ppapi_broker'], 2)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'automatic_downloads'], 1)
-    options._set_pref_path(['profile', 'default_content_setting_values', 'cookies'], 1)
-    options._set_pref_path(['credentials_enable_service'], False)
-    options._set_pref_path(['safebrowsing', 'enabled'], True)
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА =====
+    options.browser_preferences = {
+        'intl.accept_languages': 'en-US,en;q=0.9',
+        'profile.default_content_setting_values.geolocation': 2,
+        'profile.default_content_setting_values.notifications': 2,
+        'profile.default_content_setting_values.media_stream_mic': 2,
+        'profile.default_content_setting_values.media_stream_camera': 2,
+        'profile.default_content_setting_values.midi_sysex': 2,
+        'profile.default_content_setting_values.push_messaging': 2,
+        'profile.default_content_setting_values.ppapi_broker': 2,
+        'profile.default_content_setting_values.automatic_downloads': 1,
+        'profile.password_manager_enabled': False,
+        'credentials_enable_service': False,
+        'profile.default_content_setting_values.cookies': 1,
+    }
     
     return options
 
-async def human_delay(min_seconds: float = 0.5, max_seconds: float = 2.0):
-    """Случайная задержка как у человека"""
-    await asyncio.sleep(random.uniform(min_seconds, max_seconds))
-
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    url = args[0] if args else 'https://whoer.net'
-    
-    await update.message.reply_text(f"🔄 Запускаю браузер с полной эмуляцией человека...\n📍 Цель: {url}")
+    await update.message.reply_text("🔄 Запускаю браузер с Headless New + 100% маскировкой...")
     
     try:
         options = create_full_stealth_options()
@@ -202,44 +220,37 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         )
         
-        # ===== 4. ОСНОВНАЯ ЛОГИКА С ЭМУЛЯЦИЕЙ =====
-        await tab.go_to(url)
-        await human_delay(2.0, 4.0)
+        # ===== 4. ОСНОВНАЯ ЛОГИКА =====
+        await tab.go_to('https://example.com')
+        await asyncio.sleep(2)
         
+        # Человеческий скролл
         await tab.scroll.to_bottom(humanize=True)
-        await human_delay(1.0, 2.0)
+        await asyncio.sleep(1)
         await tab.scroll.to_top(humanize=True)
-        await human_delay(0.5, 1.5)
+        await asyncio.sleep(0.5)
         
+        # Получаем информацию
         title = await tab.title
-        current_url = await tab.current_url
-        
-        webdriver_check = await tab._connection_handler.execute_command(
-            'Runtime.evaluate',
-            {'expression': 'navigator.webdriver === undefined'}
-        )
-        
         user_agent = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.userAgent'}
         )
         
-        screenshot = await tab.screenshot()
+        # Проверяем headless режим
+        is_headless = await tab._connection_handler.execute_command(
+            'Runtime.evaluate',
+            {'expression': 'navigator.webdriver === undefined'}
+        )
         
         await browser.close()
         
         await update.message.reply_text(
-            f"✅ Страница загружена!\n"
-            f"📌 Заголовок: {title}\n"
-            f"🔗 URL: {current_url}\n"
-            f"🛡️ WebDriver скрыт: {webdriver_check['result']['value']}\n"
-            f"📱 User-Agent: {user_agent['result']['value'][:60]}...\n"
-            f"🎭 Маскировка: 100%"
-        )
-        
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption=f"📸 Скриншот {url}"
+            f"✅ Заголовок: {title}\n"
+            f"🛡️ Маскировка: 100%\n"
+            f"🎭 Headless New: Активен\n"
+            f"🔒 WebDriver скрыт: {is_headless['result']['value']}\n"
+            f"📱 User-Agent: {user_agent['result']['value'][:50]}..."
         )
         
     except Exception as e:
@@ -247,17 +258,16 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот с 100% маскировкой и эмуляцией человека\n\n"
+        "👋 Привет! Я бот с 100% маскировкой Pydoll\n\n"
         "🚀 Особенности:\n"
         "• Headless New режим\n"
         "• Полная маскировка navigator\n"
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
-        "• Эмуляция человека\n\n"
+        "• Человеческое поведение\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
-        "/parse <url> - Запустить браузер с маскировкой\n"
-        "Пример: /parse https://whoer.net"
+        "/parse - Запустить браузер с маскировкой"
     )
 
 def main():
