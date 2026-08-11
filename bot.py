@@ -15,16 +15,17 @@ logger = logging.getLogger(__name__)
 CHROME_PATH = "/usr/bin/chromium"
 
 def start_chrome():
-    """Запускает Chromium в headless-режиме"""
+    """Запускает Chromium в headless-режиме с удалённой отладкой"""
     try:
         subprocess.Popen([
             CHROME_PATH,
             "--headless",
             "--disable-gpu",
             "--no-sandbox",
-            "--disable-dev-shm-usage"
+            "--disable-dev-shm-usage",
+            "--remote-debugging-port=9222"
         ])
-        logger.info("✅ Chrome/Chromium успешно запущен")
+        logger.info("✅ Chrome/Chromium успешно запущен (debug port: 9222)")
         return True
     except FileNotFoundError:
         logger.error("❌ Chrome не найден по пути: %s", CHROME_PATH)
