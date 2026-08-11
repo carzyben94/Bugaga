@@ -15,8 +15,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
-from dspy.adapters.json_adapter import JSONAdapter
-from dspy.adapters.chat_adapter import ChatAdapter
 
 # ==================== НАСТРОЙКА ====================
 logging.basicConfig(
@@ -157,7 +155,7 @@ def wait_for_chrome(max_attempts=20, delay=1):
     logger.error("❌ Chrome не запустился")
     return False
 
-# ==================== CDP КЛИЕНТ ====================
+# ==================== CDP КЛИЕНТ С ПОДДЕРЖКОЙ ПАРАЛЛЕЛЬНЫХ ВЫЗОВОВ ====================
 class SimpleCDPClient:
     def __init__(self):
         self.ws = None
@@ -165,8 +163,8 @@ class SimpleCDPClient:
         self.msg_id = 0
         self._loop = None
         self.ws_url = None
-        self._lock = asyncio.Lock()
-        self._reconnecting = False
+        self._pending = {}  # 👈 Хранилище для параллельных запросов
+        self._send_lock = asyncio.Lock()  # 👈 Только для отправки
         
     async def connect(self):
         try:
@@ -192,6 +190,9 @@ class SimpleCDPClient:
             self._loop = asyncio.get_running_loop()
             logger.info("✅ Подключено к Chrome")
             
+            # Запускаем обработчик сообщений для параллельных вызовов
+            asyncio.create_task(self._message_handler())
+            
             await self.send_command("Network.enable")
             
             return True
@@ -200,11 +201,30 @@ class SimpleCDPClient:
             logger.error(f"❌ Ошибка: {e}")
             return False
     
+    async def _message_handler(self):
+        """Обработчик входящих сообщений для параллельных вызовов"""
+        try:
+            async for message in self.ws:
+                try:
+                    data = json.loads(message)
+                    cmd_id = data.get("id")
+                    
+                    if cmd_id and cmd_id in self._pending:
+                        future = self._pending.pop(cmd_id)
+                        if not future.done():
+                            future.set_result(data)
+                            
+                except json.JSONDecodeError:
+                    continue
+                    
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("⚠️ Соединение закрыто")
+            self.is_connected = False
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки: {e}")
+    
     async def reconnect(self):
-        if self._reconnecting:
-            return False
-        
-        self._reconnecting = True
+        """Переподключение при потере соединения"""
         try:
             if self.ws:
                 await self.ws.close()
@@ -226,60 +246,57 @@ class SimpleCDPClient:
                 max_size=10**7
             )
             self.is_connected = True
+            asyncio.create_task(self._message_handler())
             await self.send_command("Network.enable")
-            
-            if COOKIES:
-                await self.send_command("Network.setCookies", {"cookies": COOKIES})
-            
             logger.info("✅ Переподключено к Chrome")
             return True
             
         except Exception as e:
             logger.error(f"❌ Ошибка переподключения: {e}")
             return False
-        finally:
-            self._reconnecting = False
     
     async def send_command(self, method, params=None, timeout=15.0):
-        async with self._lock:
-            if not self.is_connected:
-                if await self.reconnect():
-                    pass
-                else:
-                    raise Exception("Браузер не подключен")
-            
+        """Отправка команды с поддержкой параллельных вызовов"""
+        if not self.is_connected:
+            raise Exception("Не подключено")
+        
+        # Блокируем только отправку, НЕ чтение
+        async with self._send_lock:
             self.msg_id += 1
-            cmd = {"id": self.msg_id, "method": method}
+            cmd_id = self.msg_id
+            cmd = {"id": cmd_id, "method": method}
             if params:
                 cmd["params"] = params
             
-            try:
-                await self.ws.send(json.dumps(cmd))
-                
-                while True:
-                    response = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
-                    data = json.loads(response)
-                    
-                    if data.get("id") == self.msg_id:
-                        if "error" in data:
-                            raise Exception(f"CDP ошибка: {data['error']}")
-                        return data.get("result", {})
-                        
-            except asyncio.TimeoutError:
-                raise Exception(f"Таймаут {method}")
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("⚠️ Соединение закрыто, переподключаемся...")
-                self.is_connected = False
-                if await self.reconnect():
-                    return await self.send_command(method, params, timeout)
-                raise Exception("Соединение потеряно")
-            except Exception as e:
-                raise Exception(f"Ошибка: {e}")
+            # Создаем future для этого запроса
+            future = asyncio.Future()
+            self._pending[cmd_id] = future
+            
+            await self.ws.send(json.dumps(cmd))
+        
+        # Ждем ответ (не блокируем другие запросы)
+        try:
+            response = await asyncio.wait_for(future, timeout=timeout)
+            
+            if "error" in response:
+                raise Exception(f"CDP ошибка: {response['error']}")
+            return response.get("result", {})
+            
+        except asyncio.TimeoutError:
+            self._pending.pop(cmd_id, None)
+            raise Exception(f"Таймаут {method}")
+        except Exception as e:
+            self._pending.pop(cmd_id, None)
+            raise Exception(f"Ошибка: {e}")
     
     async def navigate(self, url):
         try:
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
+            
+            if not self.is_connected:
+                logger.warning("⚠️ Соединение потеряно, переподключаемся...")
+                await self.reconnect()
             
             result = await self.send_command("Page.navigate", {"url": url}, timeout=15.0)
             
@@ -333,7 +350,10 @@ class SimpleCDPClient:
         
         return True
     
+    # ==================== УМНОЕ ОЖИДАНИЕ ДЛЯ SPA ====================
+    
     async def wait_for_selector(self, selector, timeout=10.0):
+        """Ожидание появления элемента"""
         start = time.time()
         while time.time() - start < timeout:
             try:
@@ -355,6 +375,7 @@ class SimpleCDPClient:
         return False
     
     async def wait_for_network_idle(self, timeout=5.0):
+        """Ожидание завершения сетевых запросов"""
         start = time.time()
         
         while time.time() - start < timeout:
@@ -389,6 +410,7 @@ class SimpleCDPClient:
         return False
     
     async def wait_for_spa(self, timeout=15.0):
+        """Умное ожидание для SPA"""
         start = time.time()
         
         last_length = 0
@@ -423,16 +445,10 @@ class SimpleCDPClient:
         return True
     
     async def wait_for_content(self, timeout=15.0):
+        """Полное умное ожидание контента"""
         await self.wait_for_spa(timeout)
         
-        selectors = [
-            'article',
-            '[data-testid="tweet"]',
-            '[data-testid="cellInnerDiv"]',
-            '[data-testid="tweetText"]',
-            '.css-1dbjc4n'
-        ]
-        
+        selectors = ['article', '[data-testid="tweet"]', '[data-testid="cellInnerDiv"]']
         for selector in selectors:
             if await self.wait_for_selector(selector, 5):
                 logger.info(f"✅ Контент найден: {selector}")
@@ -441,6 +457,7 @@ class SimpleCDPClient:
         return False
     
     async def scroll_down(self, times=3):
+        """Прокрутка вниз"""
         for i in range(times):
             await self.evaluate("window.scrollBy(0, window.innerHeight * 0.7)")
             await asyncio.sleep(1.5)
@@ -751,6 +768,8 @@ def smart_find(what: str) -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:100]}"
 
+# ==================== ИНСТРУМЕНТЫ SPA ====================
+
 def wait_for_spa() -> str:
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
@@ -770,35 +789,6 @@ def wait_for_content() -> str:
         if result:
             return "✅ Контент загружен (посты найдены)"
         return "⚠️ Контент не загрузился полностью"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)[:100]}"
-
-def wait_for_posts() -> str:
-    """Специальное ожидание для постов X.com"""
-    if not browser or not browser.is_connected:
-        return "❌ Браузер не подключен"
-    
-    try:
-        # Ждем сначала SPA
-        run_async_in_main_loop(browser.wait_for_spa(timeout=15))
-        
-        # Прокручиваем чтобы подгрузить
-        run_async_in_main_loop(browser.scroll_down(2))
-        
-        # Ищем посты
-        selectors = [
-            'article',
-            '[data-testid="tweet"]',
-            '[data-testid="cellInnerDiv"]',
-            '[data-testid="tweetText"]'
-        ]
-        
-        for selector in selectors:
-            found = run_async_in_main_loop(browser.wait_for_selector(selector, 5))
-            if found:
-                return f"✅ Найдены посты (селектор: {selector})"
-        
-        return "⚠️ Посты не найдены"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:100]}"
 
@@ -852,7 +842,6 @@ tools = [
     Tool(smart_find),
     Tool(wait_for_spa),
     Tool(wait_for_content),
-    Tool(wait_for_posts),
     Tool(scroll_page),
     Tool(smart_find_with_scroll),
 ]
@@ -921,32 +910,7 @@ if not TOKEN:
 if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
-        
-        # Пробуем разные адаптеры
-        adapter = None
-        
-        # Вариант 1: ChatAdapter (не поддерживает parallel вызовы)
-        try:
-            adapter = ChatAdapter()
-            settings.configure(lm=lm, adapter=adapter)
-            logger.info("✅ Использую ChatAdapter")
-        except Exception as e:
-            logger.warning(f"⚠️ ChatAdapter не сработал: {e}")
-            
-            # Вариант 2: JSONAdapter с отключенными параллельными вызовами
-            try:
-                adapter = JSONAdapter(
-                    parallel_tool_calls=False,
-                    use_native_function_calling=True
-                )
-                settings.configure(lm=lm, adapter=adapter)
-                logger.info("✅ Использую JSONAdapter(parallel_tool_calls=False)")
-            except Exception as e2:
-                logger.warning(f"⚠️ JSONAdapter не сработал: {e2}")
-                # Вариант 3: без адаптера
-                settings.configure(lm=lm)
-                logger.info("✅ Использую стандартный адаптер")
-        
+        settings.configure(lm=lm)
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
@@ -970,12 +934,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/dspy <запрос> — выполнить задачу"
     )
 
-# Блокировка для предотвращения параллельных вызовов
-_dspy_lock = asyncio.Lock()
-
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global _dspy_lock
-    
     if not browser_agent:
         await update.message.reply_text("❌ DSPy не инициализирован")
         return
@@ -990,15 +949,13 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Думаю...")
     
     try:
-        # Блокировка - только один вызов агента за раз
-        async with _dspy_lock:
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                def run_agent():
-                    return browser_agent(question=query)
-                
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(executor, run_agent)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            def run_agent():
+                return browser_agent(question=query)
+            
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(executor, run_agent)
         
         if hasattr(result, 'answer'):
             answer = result.answer
@@ -1017,13 +974,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        # Пробуем переподключить браузер при ошибке
-        if browser:
-            try:
-                await browser.reconnect()
-                logger.info("✅ Браузер переподключен после ошибки")
-            except:
-                pass
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== ЗАПУСК ====================
