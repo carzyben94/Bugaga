@@ -60,85 +60,214 @@ from browser_harness.admin import ensure_daemon
 import websockets
 import threading
 from functools import wraps
+import asyncio
+from typing import Optional, Any, Dict, List
 
 # ============================================================
-# ГЛОБАЛЬНЫЕ НАСТРОЙКИ ТАЙМАУТОВ
+# ГЛОБАЛЬНЫЕ НАСТРОЙКИ (В СТИЛЕ Pydoll)
 # ============================================================
 
-CDP_TIMEOUT = 30.0  # 30 секунд для CDP операций
-X_TIMEOUT = 60.0    # 60 секунд для X/Twitter
+CDP_TIMEOUT = 60.0  # 60 секунд для CDP операций (как в Pydoll)
+X_TIMEOUT = 120.0   # 120 секунд для X/Twitter
+PAGE_LOAD_TIMEOUT = 300.0  # 5 минут на загрузку страницы (как в Pydoll)
 DEFAULT_RETRIES = 3
+RETRY_DELAY = 0.5  # 0.5 секунды между повторными попытками (как в Pydoll)
 
 # ============================================================
-# ОБЕРТКИ С ТАЙМАУТАМИ
+# 1. УМНОЕ ОЖИДАНИЕ ЗАГРУЗКИ СТРАНИЦЫ (Pydoll style)
 # ============================================================
 
-def with_timeout(timeout=CDP_TIMEOUT, retries=DEFAULT_RETRIES):
-    """Декоратор для добавления таймаута и повторных попыток"""
+def wait_for_page_load(timeout: float = PAGE_LOAD_TIMEOUT, check_interval: float = 0.5):
+    """
+    Ожидание полной загрузки страницы с проверкой document.readyState.
+    Как в Pydoll - каждые 0.5 секунды проверяем состояние.
+    """
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            # Проверяем состояние страницы
+            ready_state = js("document.readyState")
+            if ready_state == "complete":
+                logger.info("✅ Страница полностью загружена (readyState: complete)")
+                return True
+            elif ready_state == "interactive":
+                logger.info("ℹ️ DOM построен, страница интерактивна (readyState: interactive)")
+                # Если нужно - можно продолжить, но мы ждем complete
+                time.sleep(check_interval)
+            else:
+                time.sleep(check_interval)
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при проверке readyState: {e}")
+            time.sleep(check_interval)
+    
+    # Если не дождались complete, пробуем проверить еще раз
+    logger.warning(f"⚠️ Таймаут ожидания загрузки страницы ({timeout}с)")
+    return False
+
+def safe_wait_for_load(timeout: float = PAGE_LOAD_TIMEOUT):
+    """Безопасная обертка для wait_for_load с умным ожиданием"""
+    try:
+        # Сначала пробуем стандартный wait_for_load
+        wait_for_load(timeout=timeout)
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ wait_for_load() failed: {e}, пробуем умное ожидание...")
+        # Используем наше умное ожидание
+        return wait_for_page_load(timeout=timeout)
+
+# ============================================================
+# 2. ОБЕРТКА С ПОВТОРНЫМИ ПОПЫТКАМИ И ВОССТАНОВЛЕНИЕМ (Pydoll style)
+# ============================================================
+
+class BrowserError(Exception):
+    """Базовое исключение для ошибок браузера"""
+    pass
+
+class PageLoadTimeout(BrowserError):
+    """Таймаут загрузки страницы"""
+    pass
+
+class CommandExecutionTimeout(BrowserError):
+    """Таймаут выполнения команды"""
+    pass
+
+def with_retry_and_recovery(retries: int = DEFAULT_RETRIES, delay: float = RETRY_DELAY):
+    """
+    Декоратор с повторными попытками и восстановлением состояния.
+    Как в Pydoll - если ошибка, пробуем обновить страницу и повторить.
+    """
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
             last_error = None
+            
             for attempt in range(retries):
                 try:
-                    # Запускаем в отдельном потоке с таймаутом
-                    result = None
-                    error = None
+                    return func(*args, **kwargs)
                     
-                    def target():
-                        nonlocal result, error
-                        try:
-                            result = func(*args, **kwargs)
-                        except Exception as e:
-                            error = e
-                    
-                    thread = threading.Thread(target=target)
-                    thread.daemon = True
-                    thread.start()
-                    thread.join(timeout=timeout)
-                    
-                    if thread.is_alive():
-                        raise TimeoutError(f"Операция превысила таймаут {timeout}с (попытка {attempt+1}/{retries})")
-                    
-                    if error:
-                        raise error
-                    
-                    return result
-                    
-                except TimeoutError as e:
+                except (CommandExecutionTimeout, PageLoadTimeout) as e:
                     last_error = e
                     logger.warning(f"⏱️ {func.__name__} таймаут, попытка {attempt+1}/{retries}")
+                    
                     if attempt < retries - 1:
-                        time.sleep(2 ** attempt)  # Экспоненциальная задержка
-                    continue
+                        # Пробуем восстановить состояние (как в Pydoll)
+                        try:
+                            logger.info("🔄 Пробуем обновить страницу...")
+                            js("location.reload()")
+                            time.sleep(2)
+                            safe_wait_for_load(timeout=30.0)
+                        except:
+                            # Если обновить не получается, пробуем закрыть и открыть новую вкладку
+                            try:
+                                logger.info("🔄 Закрываем и открываем новую вкладку...")
+                                close_tab()
+                                new_tab()
+                            except:
+                                pass
+                        
+                        time.sleep(delay * (2 ** attempt))  # Экспоненциальная задержка
+                        continue
+                        
                 except Exception as e:
                     last_error = e
                     logger.warning(f"⚠️ {func.__name__} ошибка: {e}, попытка {attempt+1}/{retries}")
+                    
                     if attempt < retries - 1:
-                        time.sleep(1)
-                    continue
+                        time.sleep(delay)
+                        continue
             
             raise last_error or RuntimeError(f"Все {retries} попыток провалились")
         return wrapper
     return decorator
 
 # ============================================================
-# ПЕРЕОПРЕДЕЛЕННЫЕ ФУНКЦИИ С ТАЙМАУТАМИ
+# 3. ОЧИСТКА ЗАВИСШИХ КОМАНД (Pydoll style)
 # ============================================================
 
-@with_timeout(timeout=CDP_TIMEOUT)
-def safe_page_info():
-    """Безопасная версия page_info с таймаутом"""
+class CommandManager:
+    """
+    Менеджер команд для очистки зависших запросов.
+    Как в Pydoll - при таймауте команда удаляется.
+    """
+    def __init__(self):
+        self._pending_commands = {}
+        self._lock = threading.Lock()
+    
+    def add_command(self, command_id: int, future: asyncio.Future):
+        with self._lock:
+            self._pending_commands[command_id] = future
+    
+    def resolve_command(self, command_id: int, result: Any):
+        with self._lock:
+            future = self._pending_commands.pop(command_id, None)
+            if future and not future.done():
+                future.set_result(result)
+    
+    def reject_command(self, command_id: int, error: Exception):
+        with self._lock:
+            future = self._pending_commands.pop(command_id, None)
+            if future and not future.done():
+                future.set_exception(error)
+    
+    def clear_all(self):
+        """Очистить все зависшие команды (при разрыве соединения)"""
+        with self._lock:
+            for future in self._pending_commands.values():
+                if not future.done():
+                    future.set_exception(ConnectionError("WebSocket connection closed"))
+            self._pending_commands.clear()
+    
+    def has_pending(self) -> bool:
+        return bool(self._pending_commands)
+
+# Глобальный экземпляр менеджера
+command_manager = CommandManager()
+
+# ============================================================
+# 4. НАСТРОЙКИ БРАУЗЕРА ДЛЯ УСКОРЕНИЯ (Pydoll style)
+# ============================================================
+
+def optimize_browser_for_speed():
+    """
+    Оптимизация браузера для ускорения загрузки.
+    Как в Pydoll - отключаем ненужные ресурсы.
+    """
     try:
+        # Отключаем загрузку изображений
+        js("""
+        (() => {
+            const style = document.createElement('style');
+            style.textContent = 'img { display: none !important; }';
+            document.head.appendChild(style);
+        })()
+        """)
+        logger.info("🚀 Изображения отключены для ускорения")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось оптимизировать браузер: {e}")
+
+# ============================================================
+# 5. ОБНОВЛЕННЫЕ ФУНКЦИИ С НОВЫМИ ПОДХОДАМИ
+# ============================================================
+
+@with_retry_and_recovery(retries=DEFAULT_RETRIES)
+def safe_page_info():
+    """Безопасная версия page_info с умным ожиданием"""
+    try:
+        # Сначала ждем загрузки
+        safe_wait_for_load(timeout=30.0)
         return page_info()
     except Exception as e:
         logger.error(f"❌ page_info ошибка: {e}")
         raise
 
-@with_timeout(timeout=X_TIMEOUT)
+@with_retry_and_recovery(retries=DEFAULT_RETRIES)
 def safe_page_info_x():
     """Специальная версия page_info для X с большим таймаутом"""
     try:
+        # Сначала ждем загрузки
+        safe_wait_for_load(timeout=X_TIMEOUT)
+        
         # Получаем список страниц
         resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
         pages = resp.json()
@@ -191,36 +320,36 @@ def safe_page_info_x():
         return info
         
     except asyncio.TimeoutError:
-        raise TimeoutError(f"X/Twitter страница не отвечает после {X_TIMEOUT} секунд")
+        raise PageLoadTimeout(f"X/Twitter страница не отвечает после {X_TIMEOUT} секунд")
     except Exception as e:
         logger.error(f"❌ safe_page_info_x ошибка: {e}")
         raise
 
-@with_timeout(timeout=CDP_TIMEOUT)
+@with_retry_and_recovery(retries=DEFAULT_RETRIES)
 def safe_goto_url(url):
-    """Безопасная версия goto_url с таймаутом"""
+    """Безопасная версия goto_url с умным ожиданием"""
     try:
         goto_url(url)
         
-        # Специальная обработка для X/Twitter
+        # Используем умное ожидание вместо простого wait_for_load
         if "x.com" in url or "twitter.com" in url:
-            logger.info("🐦 Обнаружен X/Twitter, даем время на загрузку...")
-            time.sleep(5)  # Дополнительное ожидание для React
-            try:
-                wait_for_load(timeout=60.0)
-            except:
-                logger.warning("⚠️ wait_for_load таймаут, но продолжаем")
+            logger.info("🐦 Обнаружен X/Twitter, используем умное ожидание...")
+            # Оптимизируем для скорости
+            time.sleep(2)
+            optimize_browser_for_speed()
+            # Ждем загрузки с увеличенным таймаутом
+            safe_wait_for_load(timeout=X_TIMEOUT)
         else:
-            wait_for_load()
+            safe_wait_for_load(timeout=30.0)
         
         return True
     except Exception as e:
         logger.error(f"❌ safe_goto_url ошибка: {e}")
         raise
 
-@with_timeout(timeout=CDP_TIMEOUT)
+@with_retry_and_recovery(retries=DEFAULT_RETRIES)
 def safe_capture_screenshot(filename=None):
-    """Безопасная версия capture_screenshot с таймаутом"""
+    """Безопасная версия capture_screenshot с восстановлением"""
     try:
         if not filename:
             timestamp = int(time.time())
@@ -232,9 +361,9 @@ def safe_capture_screenshot(filename=None):
         logger.error(f"❌ safe_capture_screenshot ошибка: {e}")
         raise
 
-@with_timeout(timeout=CDP_TIMEOUT)
+@with_retry_and_recovery(retries=DEFAULT_RETRIES)
 def safe_js(expression):
-    """Безопасная версия js с таймаутом"""
+    """Безопасная версия js с повторными попытками"""
     try:
         result = js(expression)
         if isinstance(result, dict):
@@ -245,7 +374,7 @@ def safe_js(expression):
         raise
 
 # ============================================================
-# DSPy АДАПТЕР ДЛЯ AGNES AI
+# DSPy АДАПТЕР ДЛЯ AGNES AI (без изменений)
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -318,7 +447,7 @@ class AgnesLM(dspy.LM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# СИГНАТУРА С УЛУЧШЕННЫМ ПРОМПТОМ
+# СИГНАТУРА (без изменений)
 # ============================================================
 
 class BrowserTask(Signature):
@@ -373,7 +502,7 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Подробный отчет о выполнении задачи с результатами")
 
 # ============================================================
-# ИНСТРУМЕНТЫ (С БЕЗОПАСНЫМИ ОБЕРТКАМИ)
+# ИНСТРУМЕНТЫ (С ОБНОВЛЕННЫМИ ОБЕРТКАМИ)
 # ============================================================
 
 def tool_new_tab() -> str:
@@ -395,11 +524,10 @@ def tool_goto_url(url: str) -> str:
 def tool_wait_for_load() -> str:
     """Дождаться загрузки страницы"""
     try:
-        wait_for_load(timeout=60.0)
+        safe_wait_for_load(timeout=30.0)
         return "✅ Страница загружена"
     except Exception as e:
         logger.warning(f"⚠️ wait_for_load() failed: {e}")
-        time.sleep(5)  # Даем время на прогрузку
         return "✅ Ожидание завершено (таймаут)"
 
 def tool_js(expression: str) -> str:
@@ -479,8 +607,10 @@ def tool_page_info() -> str:
         
         return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')[:100]}"
         
-    except TimeoutError as e:
-        return f"❌ Таймаут при получении информации (30 сек): {e}"
+    except PageLoadTimeout as e:
+        return f"❌ Таймаут загрузки страницы: {e}"
+    except CommandExecutionTimeout as e:
+        return f"❌ Таймаут выполнения команды: {e}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:200]}"
 
@@ -517,7 +647,7 @@ def tool_close_tab() -> str:
         return f"❌ Ошибка: {e}"
 
 # ============================================================
-# ВСЕ ИНСТРУМЕНТЫ
+# ВСЕ ИНСТРУМЕНТЫ (без изменений)
 # ============================================================
 
 tools = [
@@ -548,7 +678,7 @@ def create_browser_agent():
         agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=10,
+            max_iters=15,  # Увеличили до 15 (было 10)
         )
         logger.info("✅ ReActV2 агент создан")
         return agent
@@ -592,7 +722,7 @@ else:
     logger.warning("⚠️ AGNES_API_KEY не задан, DSPy не инициализирован")
 
 # ============================================================
-# КУКИ
+# КУКИ (без изменений)
 # ============================================================
 
 try:
@@ -650,7 +780,7 @@ except ImportError:
         return False
 
 # ============================================================
-# РАЗМЕР ОКНА
+# РАЗМЕР ОКНА (без изменений)
 # ============================================================
 
 async def set_viewport_async():
@@ -727,7 +857,7 @@ else:
 set_viewport_global()
 
 # ============================================================
-# КОМАНДЫ
+# КОМАНДЫ (с обновленной dspy_command)
 # ============================================================
 
 async def start(update, context):
@@ -781,14 +911,14 @@ async def tab_command(update, context):
                 
                 # Пробуем получить информацию с таймаутом
                 try:
-                    # Быстрая проверка с таймаутом 5 секунд
+                    # Быстрая проверка с таймаутом 10 секунд
                     info = None
                     
                     def get_info():
                         nonlocal info
                         try:
                             # Проверяем URL для определения X
-                            current_info = page_info()
+                            current_info = safe_page_info()
                             url = current_info.get('url', '')
                             
                             if "x.com" in url or "twitter.com" in url:
@@ -801,7 +931,7 @@ async def tab_command(update, context):
                     thread = threading.Thread(target=get_info)
                     thread.daemon = True
                     thread.start()
-                    thread.join(timeout=8.0)  # 8 секунд на получение информации
+                    thread.join(timeout=10.0)  # 10 секунд на получение информации
                     
                     if thread.is_alive():
                         title = "⏳ Загрузка..."
@@ -917,7 +1047,7 @@ async def newtab_command(update, context):
     """Открыть новую вкладку"""
     try:
         new_tab()
-        wait_for_load(timeout=30.0)
+        safe_wait_for_load(timeout=30.0)
         current = current_tab()
         await update.message.reply_text(
             f"✅ Новая вкладка открыта\n"
@@ -929,7 +1059,7 @@ async def newtab_command(update, context):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update, context):
-    """Обработчик команды /dspy"""
+    """Обработчик команды /dspy с улучшенной обработкой"""
     if not browser_agent:
         await update.message.reply_text(
             "❌ DSPy не инициализирован.\n"
@@ -949,13 +1079,16 @@ async def dspy_command(update, context):
     username = update.effective_user.username or "unknown"
     logger.info(f"🧠 {username} запросил: {query}")
     
-    status_msg = await update.message.reply_text("🧠 Думаю...")
+    status_msg = await update.message.reply_text("🧠 Думаю... (это может занять до 2 минут)")
     
     try:
-        # Вызываем агента
-        result = browser_agent(question=query)
+        # Выполняем агента с таймаутом
+        result = await asyncio.wait_for(
+            asyncio.to_thread(browser_agent, question=query),
+            timeout=120.0  # 2 минуты на весь процесс
+        )
         
-        # Обработка ответа
+        # Извлекаем ответ
         if isinstance(result, list):
             answer = result[0] if result else "Пустой ответ"
         elif hasattr(result, 'answer'):
@@ -963,15 +1096,37 @@ async def dspy_command(update, context):
         else:
             answer = str(result)
         
-        if answer and answer.strip():
-            answer_escaped = escape_markdown(answer[:4000], version=2)
+        if not answer or not answer.strip():
+            await status_msg.edit_text("❌ Агент вернул пустой ответ")
+            return
+        
+        # Отправляем ответ
+        if len(answer) > 4000:
+            # Длинный ответ - отправляем файлом
+            temp_file = f"/tmp/answer_{update.effective_user.id}_{int(time.time())}.txt"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                f.write(answer)
+            
+            await update.message.reply_document(
+                document=open(temp_file, 'rb'),
+                filename='agent_answer.txt',
+                caption=f"📄 Полный ответ агента ({len(answer)} символов)"
+            )
+            os.remove(temp_file)
+            await status_msg.edit_text("✅ Ответ слишком длинный, отправлен файлом.")
+        else:
+            # Короткий ответ - как текст
+            answer_escaped = escape_markdown(answer, version=2)
             await status_msg.edit_text(
                 f"✅ *Результат:*\n{answer_escaped}",
                 parse_mode='MarkdownV2'
             )
-        else:
-            await status_msg.edit_text("❌ Агент вернул пустой ответ")
-                
+            
+    except asyncio.TimeoutError:
+        await status_msg.edit_text(
+            "⏰ Агент думал более 2 минут.\n"
+            "Попробуйте упростить запрос или разбить на части."
+        )
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
         import traceback
