@@ -155,7 +155,7 @@ def wait_for_chrome(max_attempts=20, delay=1):
     logger.error("❌ Chrome не запустился")
     return False
 
-# ==================== CDP КЛИЕНТ ====================
+# ==================== CDP КЛИЕНТ С БЛОКИРОВКОЙ ====================
 class SimpleCDPClient:
     def __init__(self):
         self.ws = None
@@ -163,6 +163,7 @@ class SimpleCDPClient:
         self.msg_id = 0
         self._loop = None
         self.ws_url = None
+        self._lock = asyncio.Lock()  # Блокировка для WebSocket
         
     async def connect(self):
         try:
@@ -197,7 +198,6 @@ class SimpleCDPClient:
             return False
     
     async def reconnect(self):
-        """Переподключение при потере соединения"""
         try:
             if self.ws:
                 await self.ws.close()
@@ -228,34 +228,36 @@ class SimpleCDPClient:
             return False
     
     async def send_command(self, method, params=None, timeout=15.0):
-        if not self.is_connected:
-            raise Exception("Не подключено")
-        
-        self.msg_id += 1
-        cmd = {"id": self.msg_id, "method": method}
-        if params:
-            cmd["params"] = params
-        
-        try:
-            await self.ws.send(json.dumps(cmd))
+        # Блокировка - только одна команда за раз
+        async with self._lock:
+            if not self.is_connected:
+                raise Exception("Не подключено")
             
-            while True:
-                response = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
-                data = json.loads(response)
+            self.msg_id += 1
+            cmd = {"id": self.msg_id, "method": method}
+            if params:
+                cmd["params"] = params
+            
+            try:
+                await self.ws.send(json.dumps(cmd))
                 
-                if data.get("id") == self.msg_id:
-                    if "error" in data:
-                        raise Exception(f"CDP ошибка: {data['error']}")
-                    return data.get("result", {})
+                while True:
+                    response = await asyncio.wait_for(self.ws.recv(), timeout=timeout)
+                    data = json.loads(response)
                     
-        except asyncio.TimeoutError:
-            raise Exception(f"Таймаут {method}")
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("⚠️ Соединение закрыто, переподключаемся...")
-            await self.reconnect()
-            raise Exception("Соединение восстановлено, повторите запрос")
-        except Exception as e:
-            raise Exception(f"Ошибка: {e}")
+                    if data.get("id") == self.msg_id:
+                        if "error" in data:
+                            raise Exception(f"CDP ошибка: {data['error']}")
+                        return data.get("result", {})
+                        
+            except asyncio.TimeoutError:
+                raise Exception(f"Таймаут {method}")
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("⚠️ Соединение закрыто, переподключаемся...")
+                await self.reconnect()
+                raise Exception("Соединение восстановлено, повторите запрос")
+            except Exception as e:
+                raise Exception(f"Ошибка: {e}")
     
     async def navigate(self, url):
         try:
@@ -317,8 +319,6 @@ class SimpleCDPClient:
         await asyncio.sleep(0.5)
         
         return True
-    
-    # ==================== УМНОЕ ОЖИДАНИЕ ДЛЯ SPA (КАК В PYDOLL) ====================
     
     async def wait_for_selector(self, selector, timeout=10.0):
         """Ожидание появления элемента"""
