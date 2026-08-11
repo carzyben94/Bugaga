@@ -19,7 +19,10 @@ from browser_harness.admin import ensure_daemon
 # Импортируем маскировку
 from bsw import StealthBrowser
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -45,15 +48,12 @@ class HarnessBot:
         logger.info("✅ Браузер запущен через bsw")
         
         # Ждем, пока браузер полностью инициализируется
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         
         logger.info("🔗 Шаг 2: Подключение Browser Harness к браузеру...")
         
-        # Harness подключается к уже запущенному браузеру
-        self.daemon = await ensure_daemon(
-            browser_url="http://localhost:9222",
-            headless=True
-        )
+        # Browser Harness автоматически подключается к localhost:9222
+        self.daemon = ensure_daemon()
         logger.info("✅ Browser Harness подключен")
         
         # Создаем вкладку через Harness
@@ -63,80 +63,88 @@ class HarnessBot:
         logger.info("✅ HarnessBot готов!")
         return self
     
-    # ========== МЕТОДЫ С ПРИОРИТЕТОМ HARNESS ==========
+    # ========== МЕТОДЫ УПРАВЛЕНИЯ ==========
     
     async def go_to(self, url: str):
-        """Переход через Harness"""
+        """Переход на страницу"""
         logger.info(f"🌐 Перехожу на {url}")
         await goto_url(self.page, url)
         await wait_for_load(self.page)
     
     async def get_text(self, selector: str) -> str:
-        """Получение текста через Harness"""
+        """Получение текста по селектору"""
         result = await js(self.page, f"""
             document.querySelector('{selector}')?.textContent || ''
         """)
         return result.get('result', {}).get('value', '')
     
     async def click(self, selector: str):
-        """Клик через Harness"""
+        """Клик по элементу"""
         await wait_for_element(self.page, selector)
         await click_at_xy(self.page, selector)
     
-    async def type(self, selector: str, text: str):
-        """Ввод через Harness"""
+    async def type_text(self, selector: str, text: str):
+        """Ввод текста"""
         await fill_input(self.page, selector, text)
     
     async def screenshot(self) -> bytes:
-        """Скриншот через Harness"""
+        """Скриншот страницы"""
         return await capture_screenshot(self.page)
     
-    async def wait(self, selector: str, timeout: int = 10):
-        """Ожидание элемента через Harness"""
+    async def wait_for_element(self, selector: str, timeout: int = 10):
+        """Ожидание элемента"""
         await wait_for_element(self.page, selector, timeout=timeout)
     
     async def scroll(self, x: int = 0, y: int = 100):
-        """Скролл через Harness"""
+        """Скролл страницы"""
         await scroll(self.page, x, y)
     
-    async def press(self, key: str):
-        """Нажатие клавиши через Harness"""
+    async def press_key(self, key: str):
+        """Нажатие клавиши"""
         await press_key(self.page, key)
     
-    # ========== МЕТОДЫ ДЛЯ ПРЯМОГО ДОСТУПА К CDP ==========
+    async def get_page_info(self) -> dict:
+        """Информация о странице"""
+        return await page_info(self.page)
+    
+    # ========== ПРЯМОЙ ДОСТУП К CDP ==========
     
     async def cdp_send(self, method: str, params: dict = None):
-        """Прямой CDP запрос через Harness"""
+        """Прямой CDP запрос"""
         return await cdp(self.page, method, params or {})
     
     async def js_eval(self, expression: str) -> dict:
-        """Выполнение JS через Harness"""
+        """Выполнение JavaScript"""
         return await js(self.page, expression)
     
     # ========== УПРАВЛЕНИЕ ВКЛАДКАМИ ==========
     
-    async def new_tab(self):
-        """Новая вкладка"""
-        self.page = await new_tab()
+    async def new_tab(self, url: str = None):
+        """Создать новую вкладку"""
+        self.page = await new_tab(url)
         return self.page
     
-    async def close_tab(self):
+    async def close_current_tab(self):
         """Закрыть текущую вкладку"""
         await close_tab(self.page)
     
     async def list_tabs(self):
-        """Список вкладок"""
+        """Список всех вкладок"""
         return await list_tabs()
     
     async def switch_tab(self, index: int):
-        """Переключить вкладку"""
+        """Переключиться на вкладку по индексу"""
         self.page = await switch_tab(index)
         return self.page
+    
+    async def get_current_tab(self):
+        """Получить текущую вкладку"""
+        return await current_tab()
     
     # ========== ЗАКРЫТИЕ ==========
     
     async def close(self):
-        """Закрытие: сначала Harness, потом bsw"""
+        """Закрытие браузера"""
         logger.info("🔚 Закрываю...")
         
         # Закрываем вкладки через Harness
@@ -165,32 +173,50 @@ async def main():
         # Запуск (bsw → Harness)
         await bot.start()
         
-        # Работа через Harness
+        # ===== РАБОТА С БРАУЗЕРОМ =====
+        
+        # 1. Переход на сайт
         await bot.go_to("https://example.com")
         
-        # Получаем текст
+        # 2. Получение текста
         text = await bot.get_text("h1")
         logger.info(f"📝 Текст: {text}")
         
-        # Скриншот
+        # 3. Скриншот
         img = await bot.screenshot()
         with open("screenshot.png", "wb") as f:
             f.write(img)
-        logger.info("📸 Скриншот сохранен")
+        logger.info("📸 Скриншот сохранен (размер: {len(img)} байт)")
         
-        # Пример: прямой CDP запрос
+        # 4. Пример: прямой CDP запрос
         info = await bot.cdp_send("Browser.getVersion")
-        logger.info(f"ℹ️ Браузер: {info}")
+        logger.info(f"ℹ️ Версия браузера: {info}")
         
-        # Бесконечное ожидание
+        # 5. Получение информации о странице
+        page_info = await bot.get_page_info()
+        logger.info(f"📄 Информация: {page_info}")
+        
+        # ===== БЕСКОНЕЧНОЕ ОЖИДАНИЕ =====
         while True:
             await asyncio.sleep(60)
             logger.info("💓 Bot alive")
             
+            # Проверка: жив ли браузер?
+            try:
+                await bot.get_text("html")
+            except Exception as e:
+                logger.warning(f"⚠️ Браузер упал! {e}")
+                logger.info("🔄 Перезапуск браузера...")
+                await bot.close()
+                await bot.start()
+                await bot.go_to("https://example.com")
+                
     except KeyboardInterrupt:
-        logger.info("🛑 Остановка...")
+        logger.info("🛑 Остановка по Ctrl+C...")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         await bot.close()
 
