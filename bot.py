@@ -226,7 +226,6 @@ class SimpleCDPClient:
             self.is_connected = True
             await self.send_command("Network.enable")
             
-            # Переустанавливаем куки
             if COOKIES:
                 await self.send_command("Network.setCookies", {"cookies": COOKIES})
             
@@ -242,9 +241,7 @@ class SimpleCDPClient:
     async def send_command(self, method, params=None, timeout=15.0):
         async with self._lock:
             if not self.is_connected:
-                # Пробуем переподключиться
                 if await self.reconnect():
-                    # Повторяем запрос после переподключения
                     pass
                 else:
                     raise Exception("Браузер не подключен")
@@ -272,7 +269,6 @@ class SimpleCDPClient:
                 logger.warning("⚠️ Соединение закрыто, переподключаемся...")
                 self.is_connected = False
                 if await self.reconnect():
-                    # Повторяем запрос
                     return await self.send_command(method, params, timeout)
                 raise Exception("Соединение потеряно")
             except Exception as e:
@@ -887,6 +883,16 @@ if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
         settings.configure(lm=lm)
+        browser_agent = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=12,
+            parallel_tool_calls=False  # 👈 ОТКЛЮЧАЕМ ПАРАЛЛЕЛЬНЫЕ ВЫЗОВЫ
+        )
+        logger.info("✅ DSPy агент создан с parallel_tool_calls=False")
+    except TypeError:
+        # Если параметр не поддерживается, создаем без него
+        logger.warning("⚠️ parallel_tool_calls не поддерживается, создаем без него")
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
