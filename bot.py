@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
-# ==================== ЗАПУСК CHROME С ПРАВИЛЬНЫМИ ПАРАМЕТРАМИ ====================
-CHROME_PATH = "/usr/bin/chromium"
+# ==================== ЗАПУСК CHROME ====================
 CHROME_PATHS = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
@@ -35,17 +34,15 @@ CHROME_PATHS = [
 ]
 
 def find_chrome():
-    """Найти Chrome/Chromium в системе"""
     for path in CHROME_PATHS:
         if os.path.exists(path):
             return path
     return None
 
 def start_chrome():
-    """Запускает Chromium с правильными параметрами для CDP"""
     chrome_path = find_chrome()
     if not chrome_path:
-        logger.error("❌ Chrome/Chromium не найден!")
+        logger.error("❌ Chrome не найден!")
         return False
     
     try:
@@ -54,10 +51,9 @@ def start_chrome():
         subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
         time.sleep(2)
         
-        # Запускаем с правильными параметрами
         subprocess.Popen([
             chrome_path,
-            "--headless=new",  # Новый headless режим
+            "--headless=new",
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -65,52 +61,47 @@ def start_chrome():
             "--remote-debugging-port=9222",
             "--remote-debugging-address=0.0.0.0",
             "--window-size=1280,720",
-            "--disable-blink-features=AutomationControlled",
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "about:blank"
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         logger.info(f"✅ Chrome запущен ({chrome_path})")
         return True
-        
     except Exception as e:
         logger.error(f"❌ Ошибка запуска Chrome: {e}")
         return False
 
 def wait_for_chrome(max_attempts=20, delay=2):
-    """Ожидание готовности Chrome с проверкой порта"""
     for attempt in range(max_attempts):
         try:
-            # Проверяем доступность порта
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             result = sock.connect_ex(('127.0.0.1', 9222))
             sock.close()
             
             if result == 0:
-                # Проверяем /json/list
-                response = httpx.get("http://localhost:9222/json/list", timeout=5.0)
-                if response.status_code == 200:
-                    pages = response.json()
-                    if pages:
-                        logger.info(f"✅ Chrome готов (попытка {attempt + 1})")
-                        return True
-                    else:
-                        # Создаем новую страницу если нет
-                        try:
+                try:
+                    response = httpx.get("http://localhost:9222/json/list", timeout=5.0)
+                    if response.status_code == 200:
+                        pages = response.json()
+                        if pages:
+                            logger.info(f"✅ Chrome готов")
+                            return True
+                        else:
+                            # Создаем страницу
                             httpx.get("http://localhost:9222/json/new", timeout=5.0)
-                        except:
-                            pass
-            else:
-                logger.info(f"⏳ Ожидание Chrome... (попытка {attempt + 1}/{max_attempts})")
+                            return True
+                except:
+                    pass
+                    
+            logger.info(f"⏳ Ожидание Chrome... ({attempt + 1}/{max_attempts})")
         except Exception as e:
-            logger.debug(f"⚠️ Ошибка проверки: {e}")
+            logger.debug(f"⚠️ {e}")
         
         time.sleep(delay)
     
-    logger.error("❌ Chrome не запустился за отведенное время")
+    logger.error("❌ Chrome не запустился")
     return False
 
-# ==================== CDP КЛИЕНТ ====================
+# ==================== CDP КЛИЕНТ (ИСПРАВЛЕННАЯ ВЕРСИЯ) ====================
 class CDPClient:
     def __init__(self):
         self.ws = None
@@ -122,27 +113,22 @@ class CDPClient:
         """Подключение к Chrome через WebSocket"""
         try:
             # Получаем WebSocket URL
-            async with httpx.AsyncClient() as client:
-                resp = await client.get("http://localhost:9222/json/list", timeout=10.0)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("http://localhost:9222/json/list")
                 pages = resp.json()
                 
                 if not pages:
                     # Создаем новую страницу
-                    resp = await client.get("http://localhost:9222/json/new", timeout=10.0)
+                    resp = await client.get("http://localhost:9222/json/new")
                     pages = [resp.json()]
                 
                 self.ws_url = pages[0]["webSocketDebuggerUrl"]
                 logger.info(f"✅ WebSocket URL: {self.ws_url}")
             
-            # Подключаемся к WebSocket
-            self.ws = await websockets.connect(
-                self.ws_url,
-                timeout=30.0,
-                ping_interval=10,
-                ping_timeout=10
-            )
+            # Подключаемся к WebSocket (без timeout аргумента)
+            self.ws = await websockets.connect(self.ws_url)
             self.is_connected = True
-            logger.info("✅ Подключение к Chrome через WebSocket установлено")
+            logger.info("✅ Подключение к Chrome установлено")
             
             # Включаем домены
             await self.send_command("Network.enable")
@@ -181,7 +167,7 @@ class CDPClient:
             # Отправляем
             await self.ws.send(json.dumps(command))
             
-            # Ждем ответ с таймаутом
+            # Ждем ответ
             while True:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
                 data = json.loads(response)
@@ -192,24 +178,22 @@ class CDPClient:
                     return data.get("result", {})
                     
         except asyncio.TimeoutError:
-            raise Exception("Таймаут ожидания CDP ответа")
+            raise Exception("Таймаут CDP ответа")
         except Exception as e:
             raise Exception(f"Ошибка CDP: {e}")
     
     async def load_page(self, url: str):
-        """Загрузить страницу с ожиданием"""
+        """Загрузить страницу"""
         try:
             logger.info(f"🚀 Загрузка: {url}")
             
-            # Проверяем URL
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
             
-            # Навигация
             result = await self.send_command("Page.navigate", {"url": url})
             
             if "errorText" in result:
-                raise Exception(f"Ошибка навигации: {result['errorText']}")
+                raise Exception(f"Ошибка: {result['errorText']}")
             
             # Ждем загрузки
             await self._wait_for_load()
@@ -217,40 +201,34 @@ class CDPClient:
             return {"success": True, "url": url}
             
         except Exception as e:
-            logger.error(f"❌ Ошибка загрузки: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return {"success": False, "error": str(e)}
     
     async def _wait_for_load(self, timeout=30):
-        """Ожидание загрузки страницы"""
-        try:
-            # Ждем готовности документа
-            start = time.time()
-            while time.time() - start < timeout:
-                try:
-                    result = await self.send_command("Runtime.evaluate", {
-                        "expression": "document.readyState"
-                    })
-                    ready_state = result.get("result", {}).get("value", "loading")
-                    
-                    if ready_state == "complete":
-                        logger.info("✅ Страница загружена")
-                        await asyncio.sleep(1)  # Доп. задержка для рендеринга
-                        return True
-                        
-                except Exception as e:
-                    logger.debug(f"⚠️ Ошибка проверки readyState: {e}")
+        """Ожидание загрузки"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = await self.send_command("Runtime.evaluate", {
+                    "expression": "document.readyState"
+                })
+                ready_state = result.get("result", {}).get("value", "loading")
                 
-                await asyncio.sleep(0.5)
+                if ready_state == "complete":
+                    logger.info("✅ Страница загружена")
+                    await asyncio.sleep(1)
+                    return True
+                    
+            except Exception as e:
+                logger.debug(f"⚠️ {e}")
             
-            logger.warning("⚠️ Таймаут ожидания загрузки")
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка ожидания: {e}")
-            return False
+            await asyncio.sleep(0.5)
+        
+        logger.warning("⚠️ Таймаут загрузки")
+        return False
     
     async def capture_screenshot(self, filename: str = None):
-        """Сделать скриншот"""
+        """Скриншот"""
         try:
             result = await self.send_command("Page.captureScreenshot", {
                 "format": "png",
@@ -284,7 +262,7 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def get_page_info(self):
-        """Получить информацию о странице"""
+        """Информация о странице"""
         try:
             url_result = await self.send_command("Runtime.evaluate", {
                 "expression": "window.location.href"
@@ -302,7 +280,6 @@ class CDPClient:
             return {"success": False, "error": str(e)}
     
     async def close(self):
-        """Закрыть соединение"""
         try:
             if self.ws:
                 await self.ws.close()
@@ -314,17 +291,11 @@ class CDPClient:
 browser = None
 
 async def init_browser():
-    """Инициализация браузера"""
     global browser
     browser = CDPClient()
-    success = await browser.connect()
-    if success:
-        logger.info("✅ Браузер инициализирован")
-    else:
-        logger.error("❌ Не удалось инициализировать браузер")
-    return success
+    return await browser.connect()
 
-# ==================== DSPy АДАПТЕР И ИНСТРУМЕНТЫ ====================
+# ==================== DSPy ====================
 class AgnesLM(dspy.LM):
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
@@ -368,7 +339,7 @@ class AgnesLM(dspy.LM):
                 data = response.json()
                 if "choices" in data and len(data["choices"]) > 0:
                     return [data["choices"][0]["message"]["content"]]
-                return ["Ошибка: пустой ответ от API"]
+                return ["Ошибка: пустой ответ"]
         except Exception as e:
             return [f"Ошибка: {str(e)}"]
     
@@ -379,9 +350,8 @@ class BrowserTask(Signature):
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
-# Инструменты для DSPy
+# ==================== ИНСТРУМЕНТЫ ====================
 def sync_run_async(coro):
-    """Запустить асинхронную функцию синхронно"""
     try:
         loop = asyncio.get_running_loop()
         if loop.is_running():
@@ -399,45 +369,41 @@ def sync_run_async(coro):
         return asyncio.run(coro)
 
 def goto_url(url: str) -> str:
-    """Перейти на URL"""
     try:
         result = sync_run_async(browser.load_page(url))
         if result.get("success"):
-            return f"✅ Успешно открыл {url}"
-        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+            return f"✅ Открыл {url}"
+        return f"❌ {result.get('error', 'Ошибка')}"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ {e}"
 
 def capture_screenshot() -> str:
-    """Сделать скриншот"""
     try:
         filename = f"screenshot_{int(time.time())}.png"
         result = sync_run_async(browser.capture_screenshot(filename))
         if result.get("success"):
-            return f"✅ Скриншот сохранен: {filename}"
-        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+            return f"✅ Скриншот: {filename}"
+        return f"❌ {result.get('error', 'Ошибка')}"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ {e}"
 
 def execute_js(script: str) -> str:
-    """Выполнить JavaScript"""
     try:
         result = sync_run_async(browser.execute_js(script))
         if result.get("success"):
-            return str(result.get("result", "✅ JS выполнен"))
-        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+            return str(result.get("result", "✅ Выполнено"))
+        return f"❌ {result.get('error', 'Ошибка')}"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ {e}"
 
 def page_info() -> str:
-    """Получить информацию о странице"""
     try:
         result = sync_run_async(browser.get_page_info())
         if result.get("success"):
             return f"URL: {result['url']}\nЗаголовок: {result['title']}"
-        return f"❌ Ошибка: {result.get('error', 'Неизвестная ошибка')}"
+        return f"❌ {result.get('error', 'Ошибка')}"
     except Exception as e:
-        return f"❌ Ошибка: {e}"
+        return f"❌ {e}"
 
 tools = [
     Tool(goto_url),
@@ -446,9 +412,13 @@ tools = [
     Tool(page_info),
 ]
 
-# ==================== СОЗДАНИЕ АГЕНТА ====================
+# ==================== ИНИЦИАЛИЗАЦИЯ ====================
 browser_agent = None
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
 if AGNES_API_KEY:
     try:
@@ -463,23 +433,18 @@ if AGNES_API_KEY:
     except Exception as e:
         logger.error(f"❌ Ошибка создания агента: {e}")
 
-# ==================== ОБРАБОТЧИКИ КОМАНД ====================
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
-
+# ==================== КОМАНДЫ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Chrome готов" if browser and browser.is_connected else "❌ Chrome не доступен"
     dspy_status = "✅ DSPy активен" if browser_agent else "❌ DSPy отключен"
     
     await update.message.reply_text(
-        f"🤖 Бот готов к работе!\n\n"
+        f"🤖 Бот готов!\n\n"
         f"🌐 {status}\n"
         f"🧠 {dspy_status}\n\n"
-        f"📌 Команды:\n"
         f"/dspy <запрос> — выполнить задачу\n"
         f"/start — информация\n\n"
-        f"📝 Пример: /dspy открой google.com и сделай скриншот"
+        f"📝 Пример: /dspy открой google.com"
     )
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -488,7 +453,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not context.args:
-        await update.message.reply_text("📝 Напиши задачу после /dspy\nПример: /dspy открой google.com")
+        await update.message.reply_text("📝 Напиши задачу после /dspy")
         return
     
     query = " ".join(context.args)
@@ -521,12 +486,15 @@ def main():
     
     # Запускаем Chrome
     if start_chrome():
-        # Ждем готовности
         if wait_for_chrome():
             # Инициализируем браузер
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(init_browser())
+            success = loop.run_until_complete(init_browser())
+            if success:
+                logger.info("✅ Браузер готов")
+            else:
+                logger.error("❌ Браузер не готов")
         else:
             logger.error("❌ Chrome не готов")
     else:
