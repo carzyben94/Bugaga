@@ -8,7 +8,7 @@ import json
 import base64
 import time
 import socket
-import concurrent.futures
+import threading
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -236,37 +236,102 @@ class SimpleCDPClient:
             await self.ws.close()
         self.is_connected = False
 
-# ==================== ГЛОБАЛЬНЫЙ КЛИЕНТ ====================
+# ==================== ГЛОБАЛЬНЫЙ КЛИЕНТ И LOOP ====================
 browser = None
-browser_loop = None
+main_loop = None
 
 async def init_browser():
-    global browser, browser_loop
+    global browser, main_loop
     browser = SimpleCDPClient()
-    browser_loop = asyncio.get_running_loop()
+    main_loop = asyncio.get_running_loop()
     return await browser.connect()
 
-# ==================== ВЫПОЛНЕНИЕ АСИНХРОННЫХ ФУНКЦИЙ ====================
-def run_async(coro):
-    """Запуск асинхронной функции в правильном loop"""
-    global browser_loop
+# ==================== ИНСТРУМЕНТЫ ====================
+def run_async_in_main_loop(coro):
+    """Запустить корутину в главном event loop"""
+    global main_loop
     
-    try:
-        # Пытаемся получить текущий loop
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # Если нет loop - создаем новый
+    if main_loop is None:
+        # Если нет главного loop, создаем временный
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
     
-    # Если функция уже в правильном loop
-    if loop.is_running():
-        # Создаем future и ждем
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    # Если главный loop запущен - используем его
+    if main_loop.is_running():
+        # Запускаем в главном loop и ждем результат
+        future = asyncio.run_coroutine_threadsafe(coro, main_loop)
         return future.result(timeout=30)
     else:
-        # Запускаем в loop
-        return loop.run_until_complete(coro)
+        # Если loop не запущен - запускаем
+        return main_loop.run_until_complete(coro)
+
+def goto_url(url: str) -> str:
+    """Открыть URL"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        result = run_async_in_main_loop(browser.navigate(url))
+        
+        if result.get("success"):
+            return f"✅ Открыл {url}"
+        return f"❌ {result.get('error', 'Ошибка')}"
+    except Exception as e:
+        return f"❌ {str(e)[:100]}"
+
+def capture_screenshot() -> str:
+    """Сделать скриншот"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        filename = f"screenshot_{int(time.time())}.png"
+        result = run_async_in_main_loop(browser.screenshot(filename))
+        
+        if result.get("success"):
+            return f"✅ Скриншот: {filename}"
+        return f"❌ {result.get('error', 'Ошибка')}"
+    except Exception as e:
+        return f"❌ {str(e)[:100]}"
+
+def execute_js(script: str) -> str:
+    """Выполнить JavaScript"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        result = run_async_in_main_loop(browser.evaluate(script))
+        
+        if result.get("success"):
+            return str(result.get("result", "✅ Выполнено"))
+        return f"❌ {result.get('error', 'Ошибка')}"
+    except Exception as e:
+        return f"❌ {str(e)[:100]}"
+
+def page_info() -> str:
+    """Информация о странице"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        result = run_async_in_main_loop(browser.get_info())
+        
+        if result.get("success"):
+            return f"URL: {result['url']}\nЗаголовок: {result['title']}"
+        return f"❌ {result.get('error', 'Ошибка')}"
+    except Exception as e:
+        return f"❌ {str(e)[:100]}"
+
+tools = [
+    Tool(goto_url),
+    Tool(capture_screenshot),
+    Tool(execute_js),
+    Tool(page_info),
+]
 
 # ==================== DSPy ====================
 class AgnesLM(dspy.LM):
@@ -321,72 +386,6 @@ class BrowserTask(Signature):
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ на задачу")
 
-# ==================== ИНСТРУМЕНТЫ ====================
-def goto_url(url: str) -> str:
-    """Открыть URL"""
-    try:
-        if not browser or not browser.is_connected:
-            return "❌ Браузер не подключен"
-        
-        # Запускаем в правильном loop
-        result = run_async(browser.navigate(url))
-        
-        if result.get("success"):
-            return f"✅ Открыл {url}"
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def capture_screenshot() -> str:
-    """Сделать скриншот"""
-    try:
-        if not browser or not browser.is_connected:
-            return "❌ Браузер не подключен"
-        
-        filename = f"screenshot_{int(time.time())}.png"
-        result = run_async(browser.screenshot(filename))
-        
-        if result.get("success"):
-            return f"✅ Скриншот: {filename}"
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def execute_js(script: str) -> str:
-    """Выполнить JavaScript"""
-    try:
-        if not browser or not browser.is_connected:
-            return "❌ Браузер не подключен"
-        
-        result = run_async(browser.evaluate(script))
-        
-        if result.get("success"):
-            return str(result.get("result", "✅ Выполнено"))
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-def page_info() -> str:
-    """Информация о странице"""
-    try:
-        if not browser or not browser.is_connected:
-            return "❌ Браузер не подключен"
-        
-        result = run_async(browser.get_info())
-        
-        if result.get("success"):
-            return f"URL: {result['url']}\nЗаголовок: {result['title']}"
-        return f"❌ {result.get('error', 'Ошибка')}"
-    except Exception as e:
-        return f"❌ {str(e)[:100]}"
-
-tools = [
-    Tool(goto_url),
-    Tool(capture_screenshot),
-    Tool(execute_js),
-    Tool(page_info),
-]
-
 # ==================== ИНИЦИАЛИЗАЦИЯ ====================
 browser_agent = None
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
@@ -417,9 +416,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 Бот готов!\n\n"
         f"🌐 {status}\n"
         f"🧠 {dspy_status}\n\n"
-        f"/dspy <запрос> — выполнить задачу\n"
-        f"/start — информация\n\n"
-        f"📝 Пример: /dspy открой google.com"
+        f"/dspy <запрос> — выполнить задачу"
     )
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -437,7 +434,8 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Думаю...")
     
     try:
-        # Запускаем агента в отдельном потоке
+        # Запускаем агента в отдельном потоке, чтобы не блокировать
+        import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:
             def run_agent():
                 return browser_agent(question=query)
@@ -446,45 +444,42 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = await loop.run_in_executor(executor, run_agent)
         
         # Извлекаем ответ
-        if isinstance(result, list):
-            answer = result[0] if result else "Нет ответа"
-        elif hasattr(result, 'answer'):
+        if hasattr(result, 'answer'):
             answer = result.answer
+        elif isinstance(result, list):
+            answer = result[0] if result else "Нет ответа"
         else:
             answer = str(result)
         
-        # Очищаем ответ от лишней информации
-        if answer:
-            # Если это Prediction объект - берем только answer
-            if "Prediction" in str(answer):
-                # Пытаемся извлечь последний ответ агента
-                lines = str(answer).split('\n')
-                for line in reversed(lines):
-                    if 'answer=' in line:
-                        answer = line.replace('answer=', '').strip()
-                        break
+        # Очищаем ответ от технической информации
+        if answer and len(answer) > 10:
+            # Если ответ содержит ошибку asyncio - говорим что не получилось
+            if "asyncio" in answer.lower() or "event loop" in answer.lower():
+                answer = "❌ Не удалось выполнить задачу из-за технической ошибки. Попробуйте позже."
             
             await msg.edit_text(f"✅ {answer[:4000]}")
         else:
-            await msg.edit_text("❌ Пустой ответ")
+            await msg.edit_text("❌ Не удалось выполнить задачу")
             
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        import traceback
-        traceback.print_exc()
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ==================== ЗАПУСК ====================
 def main():
+    global main_loop
+    
     logger.info("🚀 Запуск бота...")
     
     # Запускаем Chrome
     if start_chrome():
         if wait_for_chrome():
+            # Создаем главный event loop
+            main_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(main_loop)
+            
             # Инициализируем браузер
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            success = loop.run_until_complete(init_browser())
+            success = main_loop.run_until_complete(init_browser())
             if success:
                 logger.info("✅ Браузер готов")
             else:
