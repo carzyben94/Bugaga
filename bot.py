@@ -139,7 +139,7 @@ def safe_page_info():
 def safe_page_info_x():
     """Специальная версия page_info для X с большим таймаутом"""
     try:
-        # Прямой CDP запрос с большим таймаутом
+        # Получаем список страниц
         resp = httpx.get("http://localhost:9222/json/list", timeout=5.0)
         pages = resp.json()
         if not pages:
@@ -149,7 +149,9 @@ def safe_page_info_x():
         
         # Используем asyncio для прямого CDP вызова
         async def get_info():
-            async with websockets.connect(ws_url, timeout=30.0) as ws:
+            # Убираем timeout из connect() - старая версия websockets
+            async with websockets.connect(ws_url) as ws:
+                # Отправляем запрос на выполнение JS
                 await ws.send(json.dumps({
                     "id": 1,
                     "method": "Runtime.evaluate",
@@ -160,6 +162,7 @@ def safe_page_info_x():
                     }
                 }))
                 
+                # Таймаут только на получение ответа
                 response = json.loads(await asyncio.wait_for(ws.recv(), timeout=35.0))
                 
                 if "error" in response:
@@ -175,18 +178,20 @@ def safe_page_info_x():
                 
                 return info
         
-        # Запускаем асинхронную функцию в новом цикле
+        # Запускаем асинхронную функцию с общим таймаутом
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            info = loop.run_until_complete(get_info())
+            info = loop.run_until_complete(
+                asyncio.wait_for(get_info(), timeout=X_TIMEOUT)
+            )
         finally:
             loop.close()
         
         return info
         
     except asyncio.TimeoutError:
-        raise TimeoutError("X/Twitter страница не отвечает после 30 секунд")
+        raise TimeoutError(f"X/Twitter страница не отвечает после {X_TIMEOUT} секунд")
     except Exception as e:
         logger.error(f"❌ safe_page_info_x ошибка: {e}")
         raise
@@ -201,7 +206,10 @@ def safe_goto_url(url):
         if "x.com" in url or "twitter.com" in url:
             logger.info("🐦 Обнаружен X/Twitter, даем время на загрузку...")
             time.sleep(5)  # Дополнительное ожидание для React
-            wait_for_load(timeout=60.0)
+            try:
+                wait_for_load(timeout=60.0)
+            except:
+                logger.warning("⚠️ wait_for_load таймаут, но продолжаем")
         else:
             wait_for_load()
         
