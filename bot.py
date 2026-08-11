@@ -16,7 +16,7 @@ def create_full_stealth_options() -> ChromiumOptions:
     options = ChromiumOptions()
     options.binary_location = '/usr/bin/chromium'
     
-    # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
+    # ===== АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
@@ -41,31 +41,8 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--single-process')
     options.add_argument('--disable-sync')
     
-    # ===== 2. НАСТРОЙКИ WEBRTC =====
+    # ===== НАСТРОЙКИ WEBRTC =====
     options.webrtc_leak_protection = True
-    
-    # ===== 3. НАСТРОЙКИ БРАУЗЕРА (правильный способ) =====
-    # Используем browser_preferences вместо set_capability
-    options.browser_preferences = {
-        'intl': {
-            'accept_languages': 'en-US,en;q=0.9'
-        },
-        'profile': {
-            'default_content_setting_values': {
-                'geolocation': 2,
-                'notifications': 2,
-                'media_stream_mic': 2,
-                'media_stream_camera': 2,
-                'midi_sysex': 2,
-                'push_messaging': 2,
-                'ppapi_broker': 2,
-                'automatic_downloads': 1,
-                'cookies': 1
-            },
-            'password_manager_enabled': False
-        },
-        'credentials_enable_service': False
-    }
     
     return options
 
@@ -225,20 +202,26 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {'expression': 'navigator.userAgent'}
         )
         
-        # Проверяем headless режим
-        is_headless = await tab._connection_handler.execute_command(
+        # Проверяем маскировку
+        is_webdriver_hidden = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.webdriver === undefined'}
+        )
+        
+        # Проверяем плагины
+        plugins_count = await tab._connection_handler.execute_command(
+            'Runtime.evaluate',
+            {'expression': 'navigator.plugins.length'}
         )
         
         await browser.close()
         
         await update.message.reply_text(
             f"✅ Заголовок: {title}\n"
-            f"🛡️ Маскировка: 100%\n"
-            f"🎭 Headless New: Активен\n"
-            f"🔒 WebDriver скрыт: {is_headless['result']['value']}\n"
-            f"📱 User-Agent: {user_agent['result']['value'][:50]}..."
+            f"🛡️ WebDriver скрыт: {is_webdriver_hidden['result']['value']}\n"
+            f"🔌 Плагинов: {plugins_count['result']['value']}\n"
+            f"📱 User-Agent: {user_agent['result']['value'][:50]}...\n"
+            f"🎭 Headless New: Активен"
         )
         
     except Exception as e:
