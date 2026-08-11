@@ -3,6 +3,7 @@ FROM python:3.12-slim
 # Устанавливаем Plasmate бинарник (вместо Chromium)
 RUN apt-get update && apt-get install -y \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Скачиваем и устанавливаем Plasmate
