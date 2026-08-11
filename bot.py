@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from pydoll.browser.chromium import Chrome
@@ -17,39 +18,26 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.binary_location = '/usr/bin/chromium'
     
     # ===== 1. АРГУМЕНТЫ КОМАНДНОЙ СТРОКИ =====
-    # Скрываем автоматизацию
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument('--disable-features=IsolateOrigins,site-per-process')
-    
-    # User-Agent (реальный Chrome)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36')
-    
-    # Язык и локаль
     options.add_argument('--lang=en-US')
     options.add_argument('--accept-lang=en-US,en;q=0.9')
-    
-    # WebGL — программный рендеринг
     options.add_argument('--use-gl=swiftshader')
     options.add_argument('--disable-features=WebGLDraftExtensions')
-    
-    # Защита WebRTC
     options.webrtc_leak_protection = True
-    
-    # Размер окна
     options.add_argument('--window-size=1920,1080')
-    
-    # Отключаем лишнее
     options.add_argument('--no-first-run')
     options.add_argument('--no-default-browser-check')
     options.add_argument('--disable-notifications')
     options.add_argument('--disable-popup-blocking')
     options.add_argument('--disable-save-password-bubble')
     
-    # ===== HEADLESS NEW (ГЛАВНОЕ ИЗМЕНЕНИЕ) =====
-    options.add_argument('--headless=new')  # Новый headless режим
+    # ===== HEADLESS NEW =====
+    options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')  # Всё ещё нужен для совместимости
+    options.add_argument('--disable-gpu')
     
     # Дополнительная маскировка
     options.add_argument('--disable-client-side-phishing-detection')
@@ -81,8 +69,12 @@ def create_full_stealth_options() -> ChromiumOptions:
     
     return options
 
+async def human_delay(min_seconds: float = 0.5, max_seconds: float = 2.0):
+    """Случайная задержка как у человека"""
+    await asyncio.sleep(random.uniform(min_seconds, max_seconds))
+
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Запускаю браузер с Headless New + 100% маскировкой...")
+    await update.message.reply_text("🔄 Запускаю браузер с полной эмуляцией человека...")
     
     try:
         options = create_full_stealth_options()
@@ -220,35 +212,72 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         )
         
-        # ===== 4. ОСНОВНАЯ ЛОГИКА =====
+        # ===== 4. ОСНОВНАЯ ЛОГИКА С ПОЛНОЙ ЭМУЛЯЦИЕЙ ЧЕЛОВЕКА =====
+        
+        # 4.1 Переход на страницу с паузой
         await tab.go_to('https://example.com')
-        await asyncio.sleep(2)
+        await human_delay(1.0, 2.5)  # Пауза как у человека после загрузки
         
-        # Человеческий скролл
+        # 4.2 Поиск элементов с человеческим движением мыши
+        # Ищем заголовок H1
+        h1_element = await tab.find_element('h1')
+        
+        # 4.3 Наводим мышку на элемент с эмуляцией человека
+        await tab.mouse.move_to_element(h1_element, humanize=True)
+        await human_delay(0.3, 0.8)
+        
+        # 4.4 Кликаем с эмуляцией человека
+        await h1_element.click(humanize=True)
+        await human_delay(0.5, 1.0)
+        
+        # 4.5 Ищем параграф
+        p_element = await tab.find_element('p')
+        
+        # 4.6 Наводим мышку с человеческим движением
+        await tab.mouse.move_to_element(p_element, humanize=True)
+        await human_delay(0.3, 0.7)
+        
+        # 4.7 Выделяем текст (двойной клик) с эмуляцией человека
+        await p_element.click(humanize=True)  # Первый клик
+        await human_delay(0.1, 0.3)
+        await p_element.click(humanize=True)  # Второй клик (выделение)
+        await human_delay(0.5, 1.0)
+        
+        # 4.8 Скролл с эмуляцией человека (как реальный пользователь)
         await tab.scroll.to_bottom(humanize=True)
-        await asyncio.sleep(1)
-        await tab.scroll.to_top(humanize=True)
-        await asyncio.sleep(0.5)
+        await human_delay(1.0, 2.0)  # Пауза на "чтение"
         
-        # Получаем информацию
+        await tab.scroll.to_top(humanize=True)
+        await human_delay(0.5, 1.5)  # Пауза после скролла
+        
+        # 4.9 Движение мышкой по случайным координатам (имитация активности)
+        for _ in range(3):
+            x = random.randint(100, 1800)
+            y = random.randint(100, 900)
+            await tab.mouse.move(x, y, humanize=True)
+            await human_delay(0.5, 1.5)
+        
+        # 4.10 Получаем информацию
         title = await tab.title
         user_agent = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.userAgent'}
         )
         
-        # Проверяем headless режим
+        # 4.11 Проверка headless
         is_headless = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.webdriver === undefined'}
         )
         
+        # 4.12 Закрываем браузер
         await browser.close()
         
         await update.message.reply_text(
             f"✅ Заголовок: {title}\n"
             f"🛡️ Маскировка: 100%\n"
             f"🎭 Headless New: Активен\n"
+            f"👤 Эмуляция человека: Полная\n"
             f"🔒 WebDriver скрыт: {is_headless['result']['value']}\n"
             f"📱 User-Agent: {user_agent['result']['value'][:50]}..."
         )
@@ -258,13 +287,18 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот с 100% маскировкой Pydoll\n\n"
+        "👋 Привет! Я бот с 100% маскировкой и эмуляцией человека\n\n"
         "🚀 Особенности:\n"
         "• Headless New режим\n"
         "• Полная маскировка navigator\n"
         "• WebGL, Canvas, Audio fingerprint\n"
         "• Защита WebRTC\n"
-        "• Человеческое поведение\n\n"
+        "• Эмуляция человека:\n"
+        "  - Движение мыши по кривым Безье\n"
+        "  - Тремор и overshoot\n"
+        "  - Переменная скорость набора\n"
+        "  - Естественные паузы\n"
+        "  - Скролл с физикой\n\n"
         "📌 Команды:\n"
         "/start - Приветствие\n"
         "/parse - Запустить браузер с маскировкой"
