@@ -10,7 +10,7 @@ import time
 # Добавляем путь к Browser Harness
 sys.path.insert(0, "browser-harness/src")
 
-# Импорты Browser Harness (только для управления вкладками)
+# Импорты Browser Harness
 from browser_harness.helpers import (
     new_tab,
     goto_url,
@@ -18,15 +18,37 @@ from browser_harness.helpers import (
     close_tab,
     page_info,
     current_tab,
+    capture_screenshot,
+    js,
 )
 from browser_harness.admin import ensure_daemon
+
+# Импорты Telegram
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.helpers import escape_markdown
 
 # Импортируем маскировку
 from bsw import StealthBrowser
 
+# Токен
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
+
+# Папки
+SCREENSHOTS_DIR = '/app/screenshots'
+LOGS_DIR = '/app/logs'
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_DIR, 'bot.log'), encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -221,6 +243,7 @@ class HarnessBot:
         self.is_ready = False
         self._id = 0
         self.dspy_agent = None
+        self.dspy_lm = None
     
     async def start(self):
         """Запуск браузера через bsw + подключение через CDP"""
@@ -278,14 +301,6 @@ class HarnessBot:
             # ВСЕ ИНСТРУМЕНТЫ BROWSER HARNESS ДЛЯ DSPy
             # ============================================================
             
-            def tool_new_tab() -> str:
-                """Открыть новую вкладку"""
-                try:
-                    new_tab()
-                    return "✅ Новая вкладка открыта"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
             def tool_goto_url(url: str) -> str:
                 """Перейти на URL и дождаться загрузки"""
                 try:
@@ -313,13 +328,6 @@ class HarnessBot:
                 except Exception as e:
                     return f"❌ Ошибка JavaScript: {e}"
             
-            def tool_http_get(url: str) -> str:
-                """Выполнить HTTP GET запрос"""
-                try:
-                    return http_get(url)
-                except Exception as e:
-                    return f"❌ Ошибка HTTP: {e}"
-            
             def tool_capture_screenshot(filename: str = None) -> str:
                 """Сделать скриншот страницы"""
                 try:
@@ -332,83 +340,11 @@ class HarnessBot:
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
-            def tool_fill_input(selector: str, text: str) -> str:
-                """Заполнить поле ввода по CSS селектору"""
-                try:
-                    fill_input(selector, text)
-                    return f"✅ Заполнено: {selector} -> {text}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_click_at_xy(x: int, y: int) -> str:
-                """Кликнуть по координатам"""
-                try:
-                    click_at_xy(x, y)
-                    return f"✅ Клик по ({x}, {y})"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_type_text(text: str) -> str:
-                """Ввести текст"""
-                try:
-                    type_text(text)
-                    return f"✅ Введено: {text}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_press_key(key: str) -> str:
-                """Нажать клавишу"""
-                try:
-                    press_key(key)
-                    return f"✅ Нажата клавиша: {key}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_scroll(dx: int, dy: int) -> str:
-                """Прокрутить страницу"""
-                try:
-                    scroll(dx, dy)
-                    return f"✅ Прокрутка на ({dx}, {dy})"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
             def tool_page_info() -> str:
                 """Получить информацию о странице (URL, Title)"""
                 try:
                     info = page_info()
                     return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_list_tabs() -> str:
-                """Список всех открытых вкладок"""
-                try:
-                    tabs = list_tabs()
-                    return f"Вкладки: {tabs}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_current_tab() -> str:
-                """ID текущей вкладки"""
-                try:
-                    tab = current_tab()
-                    return f"Текущая вкладка: {tab}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_switch_tab(tab_id: int) -> str:
-                """Переключиться на вкладку по ID"""
-                try:
-                    switch_tab(tab_id)
-                    return f"✅ Переключился на вкладку {tab_id}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_close_tab() -> str:
-                """Закрыть текущую вкладку"""
-                try:
-                    close_tab()
-                    return "✅ Вкладка закрыта"
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
@@ -459,35 +395,60 @@ class HarnessBot:
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
+            def tool_list_tabs() -> str:
+                """Список всех открытых вкладок"""
+                try:
+                    tabs = list_tabs()
+                    return f"Вкладки: {tabs}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_current_tab() -> str:
+                """ID текущей вкладки"""
+                try:
+                    tab = current_tab()
+                    return f"Текущая вкладка: {tab}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_switch_tab(tab_id: int) -> str:
+                """Переключиться на вкладку по ID"""
+                try:
+                    switch_tab(tab_id)
+                    return f"✅ Переключился на вкладку {tab_id}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_close_tab() -> str:
+                """Закрыть текущую вкладку"""
+                try:
+                    close_tab()
+                    return "✅ Вкладка закрыта"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
             # ============================================================
             # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ В СПИСОК
             # ============================================================
             
             tools = [
-                Tool(tool_new_tab),
                 Tool(tool_goto_url),
                 Tool(tool_wait_for_load),
                 Tool(tool_js),
-                Tool(tool_http_get),
                 Tool(tool_capture_screenshot),
-                Tool(tool_fill_input),
-                Tool(tool_click_at_xy),
-                Tool(tool_type_text),
-                Tool(tool_press_key),
-                Tool(tool_scroll),
                 Tool(tool_page_info),
-                Tool(tool_list_tabs),
-                Tool(tool_current_tab),
-                Tool(tool_switch_tab),
-                Tool(tool_close_tab),
                 Tool(tool_get_text),
                 Tool(tool_get_links),
                 Tool(tool_get_buttons),
                 Tool(tool_get_headings),
+                Tool(tool_list_tabs),
+                Tool(tool_current_tab),
+                Tool(tool_switch_tab),
+                Tool(tool_close_tab),
             ]
             
             # Инициализируем DSPy с инструментами
-            lm, self.dspy_agent = init_dspy(
+            self.dspy_lm, self.dspy_agent = init_dspy(
                 api_key=AGNES_API_KEY,
                 tools=tools,
                 max_iters=10
@@ -671,62 +632,87 @@ class HarnessBot:
 
 
 # ============================================================
+# TELEGRAM КОМАНДА /dspy
+# ============================================================
+
+bot = None  # Глобальный экземпляр
+
+async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /dspy"""
+    if not context.args:
+        await update.message.reply_text(
+            "🧠 **DSPy Agent**\n\n"
+            "Отправь задачу агенту:\n"
+            "`/dspy открыть google.com и сделать скриншот`\n\n"
+            "Или просто опиши что нужно сделать.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    user_query = " ".join(context.args)
+    username = update.effective_user.username or "unknown"
+    logger.info(f"👤 {username} DSPy запрос: {user_query}")
+    
+    status_msg = await update.message.reply_text("🧠 Думаю...")
+    
+    try:
+        if not bot or not bot.dspy_agent:
+            await status_msg.edit_text(
+                "❌ **DSPy агент не инициализирован.**\n"
+                "Проверьте переменную окружения `AGNES_API_KEY`."
+            )
+            return
+        
+        answer = await bot.ask_dspy(user_query)
+        
+        if not answer or answer.strip() == "":
+            await status_msg.edit_text("❌ Агент вернул пустой ответ")
+            return
+        
+        if len(answer) > 4000:
+            answer = answer[:4000] + "\n\n... (обрезано)"
+        
+        answer_escaped = escape_markdown(answer, version=2)
+        
+        await status_msg.edit_text(
+            f"✅ **Результат:**\n\n{answer_escaped}",
+            parse_mode='MarkdownV2'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ DSPy ошибка: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+
+
+# ============================================================
 # ЗАПУСК
 # ============================================================
 
-# Папки
-SCREENSHOTS_DIR = '/app/screenshots'
-os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-
 async def main():
-    bot = HarnessBot()
+    global bot
     
-    try:
-        # Запуск
-        await bot.start()
-        
-        # === РАБОТА ===
-        
-        # 1. Информация о странице
-        info = await bot.get_page_info()
-        logger.info(f"📄 Информация: {info}")
-        
-        # 2. Получение текста
-        text = await bot.get_text("h1")
-        logger.info(f"📝 Текст: {text}")
-        
-        # 3. Скриншот
-        img = await bot.screenshot("/app/screenshots/page.png")
-        if img:
-            logger.info(f"📸 Скриншот сохранён (размер: {len(img)} байт)")
-        else:
-            logger.warning("⚠️ Скриншот не получен")
-        
-        # 4. Тест DSPy
-        if bot.dspy_agent:
-            result = await bot.ask_dspy("What is the title of this page?")
-            logger.info(f"🧠 DSPy ответ: {result}")
-        
-        # === БЕСКОНЕЧНОЕ ОЖИДАНИЕ ===
-        while True:
-            await asyncio.sleep(60)
-            logger.info("💓 Bot alive")
-            
-            # Простая проверка
-            try:
-                info = page_info()
-                logger.info(f"📌 Страница: {info.get('title', 'unknown')}")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка проверки: {e}")
-                
-    except KeyboardInterrupt:
-        logger.info("🛑 Остановка по Ctrl+C...")
-    except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        await bot.close()
+    # Запускаем HarnessBot
+    bot = HarnessBot()
+    await bot.start()
+    
+    # Создаём Telegram приложение
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Регистрируем команду /dspy
+    app.add_handler(CommandHandler("dspy", dspy_command))
+    
+    logger.info("🚀 Бот запущен! Команда: /dspy")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен' if bot.dspy_agent else '❌ Отключен'}")
+    
+    # Запускаем polling
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    # Бесконечное ожидание
+    while True:
+        await asyncio.sleep(60)
+        logger.info("💓 Bot alive")
 
 
 if __name__ == "__main__":
