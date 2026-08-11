@@ -16,6 +16,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 from dspy.adapters.json_adapter import JSONAdapter
+from dspy.adapters.chat_adapter import ChatAdapter
 
 # ==================== НАСТРОЙКА ====================
 logging.basicConfig(
@@ -424,7 +425,14 @@ class SimpleCDPClient:
     async def wait_for_content(self, timeout=15.0):
         await self.wait_for_spa(timeout)
         
-        selectors = ['article', '[data-testid="tweet"]', '[data-testid="cellInnerDiv"]']
+        selectors = [
+            'article',
+            '[data-testid="tweet"]',
+            '[data-testid="cellInnerDiv"]',
+            '[data-testid="tweetText"]',
+            '.css-1dbjc4n'
+        ]
+        
         for selector in selectors:
             if await self.wait_for_selector(selector, 5):
                 logger.info(f"✅ Контент найден: {selector}")
@@ -765,6 +773,35 @@ def wait_for_content() -> str:
     except Exception as e:
         return f"❌ Ошибка: {str(e)[:100]}"
 
+def wait_for_posts() -> str:
+    """Специальное ожидание для постов X.com"""
+    if not browser or not browser.is_connected:
+        return "❌ Браузер не подключен"
+    
+    try:
+        # Ждем сначала SPA
+        run_async_in_main_loop(browser.wait_for_spa(timeout=15))
+        
+        # Прокручиваем чтобы подгрузить
+        run_async_in_main_loop(browser.scroll_down(2))
+        
+        # Ищем посты
+        selectors = [
+            'article',
+            '[data-testid="tweet"]',
+            '[data-testid="cellInnerDiv"]',
+            '[data-testid="tweetText"]'
+        ]
+        
+        for selector in selectors:
+            found = run_async_in_main_loop(browser.wait_for_selector(selector, 5))
+            if found:
+                return f"✅ Найдены посты (селектор: {selector})"
+        
+        return "⚠️ Посты не найдены"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)[:100]}"
+
 def scroll_page(times: int = 3) -> str:
     if not browser or not browser.is_connected:
         return "❌ Браузер не подключен"
@@ -815,6 +852,7 @@ tools = [
     Tool(smart_find),
     Tool(wait_for_spa),
     Tool(wait_for_content),
+    Tool(wait_for_posts),
     Tool(scroll_page),
     Tool(smart_find_with_scroll),
 ]
@@ -884,18 +922,37 @@ if AGNES_API_KEY:
     try:
         lm = AgnesLM(api_key=AGNES_API_KEY)
         
-        # 🔥 СОЗДАЕМ АДАПТЕР С ОТКЛЮЧЕННЫМИ ПАРАЛЛЕЛЬНЫМИ ВЫЗОВАМИ
-        adapter = JSONAdapter(parallel_tool_calls=False)
+        # Пробуем разные адаптеры
+        adapter = None
         
-        # Настраиваем с адаптером
-        settings.configure(lm=lm, adapter=adapter)
+        # Вариант 1: ChatAdapter (не поддерживает parallel вызовы)
+        try:
+            adapter = ChatAdapter()
+            settings.configure(lm=lm, adapter=adapter)
+            logger.info("✅ Использую ChatAdapter")
+        except Exception as e:
+            logger.warning(f"⚠️ ChatAdapter не сработал: {e}")
+            
+            # Вариант 2: JSONAdapter с отключенными параллельными вызовами
+            try:
+                adapter = JSONAdapter(
+                    parallel_tool_calls=False,
+                    use_native_function_calling=True
+                )
+                settings.configure(lm=lm, adapter=adapter)
+                logger.info("✅ Использую JSONAdapter(parallel_tool_calls=False)")
+            except Exception as e2:
+                logger.warning(f"⚠️ JSONAdapter не сработал: {e2}")
+                # Вариант 3: без адаптера
+                settings.configure(lm=lm)
+                logger.info("✅ Использую стандартный адаптер")
         
         browser_agent = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=12,
+            max_iters=15,
         )
-        logger.info("✅ DSPy агент создан с parallel_tool_calls=False")
+        logger.info("✅ DSPy агент создан")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
 
