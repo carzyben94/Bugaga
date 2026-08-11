@@ -1,5 +1,5 @@
 # ============================================
-# БЛОК 1: ИМПОРТЫ И КОНФИГУРАЦИЯ 
+# БЛОК 1: ИМПОРТЫ И КОНФИГУРАЦИЯ
 # ============================================
 import os
 import asyncio
@@ -7,6 +7,7 @@ import logging
 import json
 import base64
 from io import BytesIO
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -14,7 +15,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from bsw import StealthBrowser
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
@@ -119,6 +123,7 @@ async def browser_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await bot.start_browser()
         await update.message.reply_text("✅ Браузер запущен с маскировкой!")
     except Exception as e:
+        logger.error(f"Ошибка запуска браузера: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
@@ -150,6 +155,7 @@ async def go_to(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await bot.go_to(url)
         await update.message.reply_text("✅ Страница загружена!")
     except Exception as e:
+        logger.error(f"Ошибка перехода: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
@@ -169,6 +175,7 @@ async def get_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Элемент не найден или пуст")
     except Exception as e:
+        logger.error(f"Ошибка получения текста: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
@@ -185,6 +192,7 @@ async def click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await bot.click(selector, humanize=True)
         await update.message.reply_text("✅ Клик выполнен!")
     except Exception as e:
+        logger.error(f"Ошибка клика: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
@@ -206,6 +214,7 @@ async def type_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await bot.type_text(selector, text, humanize=True)
         await update.message.reply_text("✅ Текст введен!")
     except Exception as e:
+        logger.error(f"Ошибка ввода: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
@@ -223,6 +232,7 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Не удалось сделать скриншот")
     except Exception as e:
+        logger.error(f"Ошибка скриншота: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
