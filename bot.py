@@ -35,26 +35,21 @@ class CDPClient:
     
     async def ensure_chrome(self):
         """Убедиться что Chrome запущен и подключиться"""
-        # Проверяем, есть ли подключение
         if self.ws:
             try:
-                # Пинг через простую команду
                 await self.send_command("Runtime.evaluate", {"expression": "1"})
                 return True, "✅ Уже подключен"
             except:
                 self.ws = None
         
-        # Проверяем, запущен ли Chrome
         ws_url = self.get_first_tab_ws()
         if ws_url:
             success, msg = await self.connect()
             if success:
                 return True, "✅ Подключен к существующему Chrome"
         
-        # Запускаем Chrome
         success, msg = await self.launch_chrome()
         if success:
-            # Подключаемся
             success2, msg2 = await self.connect()
             if success2:
                 return True, f"✅ Chrome запущен и подключен"
@@ -62,42 +57,32 @@ class CDPClient:
         return False, msg
     
     async def launch_chrome(self):
-        """Запустить Chrome"""
+        """Запустить Chromium"""
         try:
             if self.is_launching:
                 return False, "⏳ Уже запускается..."
             
             self.is_launching = True
             
-            # Ищем Chrome
-            chrome_paths = [
-                'google-chrome',
-                'google-chrome-stable',
-                'chromium-browser',
-                'chromium',
-                'chrome'
-            ]
+            # Путь к Chromium в /usr/bin/
+            chrome_cmd = '/usr/bin/chromium-browser'
             
-            chrome_cmd = None
-            for path in chrome_paths:
-                try:
-                    result = subprocess.run(['which', path], capture_output=True)
-                    if result.returncode == 0:
-                        chrome_cmd = path
+            # Проверяем наличие
+            if not os.path.exists(chrome_cmd):
+                # Альтернативные пути
+                alternatives = [
+                    '/usr/bin/chromium',
+                    '/usr/bin/chrome',
+                    '/usr/bin/google-chrome',
+                    '/usr/bin/google-chrome-stable'
+                ]
+                for alt in alternatives:
+                    if os.path.exists(alt):
+                        chrome_cmd = alt
                         break
-                except:
-                    continue
-            
-            if not chrome_cmd:
-                # Для Windows
-                if os.name == 'nt':
-                    chrome_cmd = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
-                    if not os.path.exists(chrome_cmd):
-                        chrome_cmd = 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'
-                
-                if not chrome_cmd or not os.path.exists(chrome_cmd):
+                else:
                     self.is_launching = False
-                    return False, "❌ Chrome не найден"
+                    return False, "❌ Chromium не найден в /usr/bin/"
             
             # Запускаем
             cmd = [
@@ -113,8 +98,7 @@ class CDPClient:
             self.chrome_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                shell=os.name == 'nt'
+                stderr=subprocess.DEVNULL
             )
             
             # Ждем запуска
@@ -123,10 +107,10 @@ class CDPClient:
                 ws_url = self.get_first_tab_ws()
                 if ws_url:
                     self.is_launching = False
-                    return True, f"✅ Chrome запущен"
+                    return True, f"✅ Chromium запущен"
             
             self.is_launching = False
-            return False, "❌ Не удалось запустить Chrome"
+            return False, "❌ Не удалось запустить Chromium"
             
         except Exception as e:
             self.is_launching = False
@@ -142,12 +126,10 @@ class CDPClient:
             self.ws = await websockets.connect(ws_url)
             self.ws_url = ws_url
             
-            # Включаем домены
             await self.send_command("Page.enable")
             await self.send_command("DOM.enable")
             await self.send_command("Runtime.enable")
             
-            # Устанавливаем размер
             await self.send_command("Emulation.setDeviceMetricsOverride", {
                 "width": 1280,
                 "height": 720,
@@ -196,18 +178,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 CDP Client\n\n"
         "Команды:\n"
-        "/screenshot - скриншот (автозапуск Chrome)\n"
+        "/screenshot - скриншот\n"
         "/evaluate <js> - выполнить JS\n"
         "/navigate <url> - перейти\n"
         "/tabs - список вкладок\n"
-        "/status - статус подключения"
+        "/status - статус"
     )
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await update.message.reply_text("🔄 Запускаю Chrome и делаю скриншот...")
+        await update.message.reply_text("🔄 Делаю скриншот...")
         
-        # Автоматически запускаем Chrome если нужно
         success, msg = await cdp.ensure_chrome()
         if not success:
             await update.message.reply_text(f"❌ {msg}")
@@ -227,7 +208,6 @@ async def evaluate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ /evaluate document.title")
             return
         
-        # Автозапуск Chrome
         success, msg = await cdp.ensure_chrome()
         if not success:
             await update.message.reply_text(f"❌ {msg}")
@@ -250,7 +230,6 @@ async def navigate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ /navigate https://example.com")
             return
         
-        # Автозапуск Chrome
         success, msg = await cdp.ensure_chrome()
         if not success:
             await update.message.reply_text(f"❌ {msg}")
@@ -264,7 +243,6 @@ async def navigate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def list_tabs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Автозапуск Chrome
         success, msg = await cdp.ensure_chrome()
         if not success:
             await update.message.reply_text(f"❌ {msg}")
@@ -289,6 +267,7 @@ async def list_tabs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = "📊 Статус:\n"
     status_msg += f"Подключен: {'✅ Да' if cdp.ws else '❌ Нет'}\n"
+    status_msg += f"Chromium: /usr/bin/chromium-browser\n"
     
     try:
         ws_url = cdp.get_first_tab_ws()
@@ -313,7 +292,7 @@ def main():
     app.add_handler(CommandHandler("status", status))
     
     print("🤖 CDP Client Bot запущен")
-    print("💡 Chrome запускается автоматически при первом запросе")
+    print("📁 Chromium: /usr/bin/chromium-browser")
     app.run_polling()
 
 if __name__ == "__main__":
