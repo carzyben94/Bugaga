@@ -91,7 +91,8 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tab = await browser.start()
         logger.debug("Браузер запущен")
         
-        # JS-скрипт для маскировки
+        # ===== ВНЕДРЯЕМ JS-СКРИПТЫ =====
+        # Создаём JS-скрипт для маскировки
         js_script = """
             // ===== NAVIGATOR =====
             Object.defineProperty(navigator, 'userAgent', {
@@ -217,29 +218,29 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             };
         """
         
-        # Правильный вызов execute_command
-        await tab._connection_handler.execute_command(
+        # Внедряем JS-скрипт
+        result = await tab._connection_handler.execute_command(
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': js_script
             }
         )
-        logger.debug("JS-скрипты внедрены")
+        logger.debug(f"JS-скрипт внедрён: {result}")
         
-        # Переходим на страницу
+        # ===== ПЕРЕХОДИМ НА СТРАНИЦУ =====
         await tab.go_to('https://example.com')
         await asyncio.sleep(2)
         
-        # Скролл
+        # ===== СКРОЛЛ =====
         await tab.scroll.to_bottom(humanize=True)
         await asyncio.sleep(1)
         await tab.scroll.to_top(humanize=True)
         await asyncio.sleep(0.5)
         
-        # Получаем информацию
+        # ===== ПОЛУЧАЕМ ИНФОРМАЦИЮ =====
         title = await tab.title
         
-        # Используем правильный метод для выполнения JS
+        # Выполняем JS для получения информации
         user_agent_result = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.userAgent'}
@@ -255,12 +256,19 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {'expression': 'navigator.language'}
         )
         
+        plugins_result = await tab._connection_handler.execute_command(
+            'Runtime.evaluate',
+            {'expression': 'navigator.plugins.length'}
+        )
+        
         await browser.close()
         
+        # Отправляем результат
         await update.message.reply_text(
             f"✅ Заголовок: {title}\n"
             f"🛡️ WebDriver скрыт: {webdriver_result['result']['value']}\n"
             f"🌐 Язык: {language_result['result']['value']}\n"
+            f"🔌 Плагинов: {plugins_result['result']['value']}\n"
             f"📱 User-Agent: {user_agent_result['result']['value'][:50]}...\n"
             f"🎭 Headless New: Активен"
         )
