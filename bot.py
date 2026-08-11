@@ -46,7 +46,8 @@ def create_full_stealth_options() -> ChromiumOptions:
     options.add_argument('--no-zygote')
     options.add_argument('--single-process')
     
-    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ПРАВИЛЬНАЯ ВЛОЖЕННАЯ СТРУКТУРА) =====
+    # ===== 2. НАСТРОЙКИ БРАУЗЕРА (ВЛОЖЕННЫЙ СЛОВАРЬ) =====
+    # ВАЖНО: browser_preferences должен быть словарём, а не строкой!
     options.browser_preferences = {
         'profile': {
             'default_content_setting_values': {
@@ -82,7 +83,6 @@ async def human_delay(min_seconds: float = 0.5, max_seconds: float = 2.0):
     await asyncio.sleep(random.uniform(min_seconds, max_seconds))
 
 async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Получаем URL из сообщения (если есть)
     args = context.args
     url = args[0] if args else 'https://whoer.net'
     
@@ -98,7 +98,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'Page.addScriptToEvaluateOnNewDocument',
             {
                 'source': """
-                    // ===== NAVIGATOR =====
                     Object.defineProperty(navigator, 'userAgent', {
                         get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
                     });
@@ -120,7 +119,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
                     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 16 });
                     
-                    // ===== WebGL =====
                     (() => {
                         const patchWebGL = (proto) => {
                             const oldGetParameter = proto.getParameter;
@@ -139,7 +137,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     })();
                     
-                    // ===== Canvas =====
                     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
                     HTMLCanvasElement.prototype.toDataURL = function(type) {
                         if (type === 'image/png' || !type) {
@@ -155,7 +152,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         return originalToDataURL.call(this, type);
                     };
                     
-                    // ===== Audio =====
                     if (window.OfflineAudioContext) {
                         const originalCreateBuffer = OfflineAudioContext.prototype.createBuffer;
                         OfflineAudioContext.prototype.createBuffer = function() {
@@ -172,7 +168,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         };
                     }
                     
-                    // ===== Plugins =====
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => {
                             const plugins = [
@@ -188,7 +183,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         }
                     });
                     
-                    // ===== Screen =====
                     Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
                     Object.defineProperty(screen, 'availHeight', { get: () => 1080 });
                     Object.defineProperty(screen, 'width', { get: () => 1920 });
@@ -196,7 +190,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
                     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     
-                    // ===== Window =====
                     Object.defineProperty(window, 'outerWidth', { get: () => 1920 });
                     Object.defineProperty(window, 'outerHeight', { get: () => 1080 });
                     Object.defineProperty(window, 'innerWidth', { get: () => 1920 });
@@ -204,7 +197,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     Object.defineProperty(window, 'screenX', { get: () => 0 });
                     Object.defineProperty(window, 'screenY', { get: () => 0 });
                     
-                    // ===== Performance =====
                     Object.defineProperty(performance, 'memory', {
                         get: () => ({
                             jsHeapSizeLimit: 2172649472,
@@ -213,7 +205,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         })
                     });
                     
-                    // ===== Chrome object =====
                     window.chrome = {
                         runtime: {},
                         loadTimes: function() {},
@@ -226,19 +217,16 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ===== 4. ОСНОВНАЯ ЛОГИКА =====
         await tab.go_to(url)
-        await human_delay(2.0, 4.0)  # Ждём загрузку
+        await human_delay(2.0, 4.0)
         
-        # Скролл с эмуляцией
         await tab.scroll.to_bottom(humanize=True)
         await human_delay(1.0, 2.0)
         await tab.scroll.to_top(humanize=True)
         await human_delay(0.5, 1.5)
         
-        # Получаем информацию
         title = await tab.title
         current_url = await tab.current_url
         
-        # Проверяем маскировку
         webdriver_check = await tab._connection_handler.execute_command(
             'Runtime.evaluate',
             {'expression': 'navigator.webdriver === undefined'}
@@ -249,12 +237,10 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             {'expression': 'navigator.userAgent'}
         )
         
-        # Делаем скриншот
         screenshot = await tab.screenshot()
         
         await browser.close()
         
-        # Отправляем результат
         await update.message.reply_text(
             f"✅ Страница загружена!\n"
             f"📌 Заголовок: {title}\n"
@@ -264,7 +250,6 @@ async def parse(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎭 Маскировка: 100%"
         )
         
-        # Отправляем скриншот
         await update.message.reply_photo(
             photo=screenshot,
             caption=f"📸 Скриншот {url}"
