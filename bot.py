@@ -1,4 +1,4 @@
-# bot.py - Cloud Browser + DSPy (без Browser Harness)
+# bot.py - Cloud Browser Use с правильными API v2/v3
 import os
 import sys
 import asyncio
@@ -33,18 +33,7 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
-# 3. ИМПОРТ КУК
-# ============================================================
-
-try:
-    from cookies import COOKIES
-    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
-except ImportError:
-    logger.warning("⚠️ cookies.py не найден, куки не загружены")
-    COOKIES = []
-
-# ============================================================
-# 4. ТОКЕНЫ
+# 3. ТОКЕНЫ
 # ============================================================
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -55,91 +44,12 @@ BROWSER_USE_API_KEY = os.environ.get("BROWSER_USE_API_KEY")
 if not BROWSER_USE_API_KEY:
     raise ValueError("❌ BROWSER_USE_API_KEY не задан!")
 
-AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-if not AGNES_API_KEY:
-    logger.warning("⚠️ AGNES_API_KEY не задан, DSPy отключен")
-
 # ============================================================
-# 5. DSPy ИНТЕГРАЦИЯ
-# ============================================================
-
-import warnings
-import dspy
-from dspy import Signature, InputField, OutputField, Module, settings, ReActV2, Tool
-
-warnings.filterwarnings("ignore")
-
-
-class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI"""
-    
-    def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
-        self.api_key = api_key or os.environ.get("AGNES_API_KEY")
-        self.model = model
-        
-        super().__init__(
-            model=model, 
-            model_type="chat",
-            temperature=kwargs.get("temperature", 0.3),
-            max_tokens=kwargs.get("max_tokens", 2000),
-            cache=False
-        )
-        
-        self.provider = "agnes-ai"
-        self.forward_contract = "legacy"
-    
-    def forward(self, prompt=None, messages=None, **kwargs):
-        if not self.api_key:
-            return ["Ошибка: API ключ не задан"]
-        
-        params = {**self.kwargs, **kwargs}
-        
-        if messages:
-            api_messages = messages
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": api_messages,
-            "temperature": params.get("temperature", 0.3),
-            "max_tokens": params.get("max_tokens", 2000)
-        }
-        
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(
-                    "https://apihub.agnes-ai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                if "choices" in data and len(data["choices"]) > 0:
-                    result = data["choices"][0]["message"]["content"]
-                    return [result]
-                return ["Ошибка: пустой ответ от API"]
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка Agnes API: {e}")
-            return [f"Ошибка: {str(e)}"]
-    
-    def __call__(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
-
-
-# ============================================================
-# 6. КЛАСС ДЛЯ РАБОТЫ С ОБЛАЧНЫМ БРАУЗЕРОМ (ПРАВИЛЬНЫЙ API)
+# 4. КЛАСС ДЛЯ РАБОТЫ С ОБЛАЧНЫМ БРАУЗЕРОМ (v3 API)
 # ============================================================
 
 class CloudBrowser:
-    """Клиент для облачного браузера Browser Use"""
+    """Клиент для облачного браузера Browser Use (v3 API)"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -147,62 +57,82 @@ class CloudBrowser:
         self.browser_id = None
         self.cdp_id = 0
         self._connected = False
-        self.session_id = None
+        self.base_url = "https://api.browser-use.com"  # Правильный домен!
     
     async def create(self) -> dict:
-        """Создать браузер в облаке"""
-        logger.info("☁️ Создаю браузер в облаке Browser Use...")
+        """Создать браузер в облаке (v3 API)"""
+        logger.info("☁️ Создаю браузер в облаке Browser Use (v3)...")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Правильный эндпоинт для Browser Use Cloud
             response = await client.post(
-                "https://cloud.browser-use.com/api/v1/browser",
+                f"{self.base_url}/api/v3/browsers",  # Правильный эндпоинт
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "X-Browser-Use-API-Key": self.api_key,  # Правильный заголовок!
                     "Content-Type": "application/json"
                 },
                 json={
+                    "headless": True,
+                    "stealth": True,
+                    "proxy": True,
+                    "keep_alive": True
+                }
+            )
+            
+            if response.status_code == 401:
+                raise ValueError("❌ Неверный API ключ Browser Use")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            self.browser_id = data.get("id") or data.get("browser_id")
+            ws_url = data.get("ws_url") or data.get("webSocketDebuggerUrl")
+            
+            if not ws_url:
+                # Пробуем получить через отдельный эндпоинт
+                ws_response = await client.get(
+                    f"{self.base_url}/api/v3/browsers/{self.browser_id}/ws",
+                    headers={"X-Browser-Use-API-Key": self.api_key}
+                )
+                ws_data = ws_response.json()
+                ws_url = ws_data.get("ws_url")
+            
+            if not ws_url:
+                raise ValueError("Не получен WebSocket URL")
+            
+            logger.info(f"✅ Браузер создан: {self.browser_id}")
+            logger.info(f"🔗 WebSocket: {ws_url[:60]}...")
+            
+            await self._connect(ws_url)
+            
+            return {
+                "browser_id": self.browser_id,
+                "ws_url": ws_url
+            }
+    
+    async def create_task(self, task: str) -> dict:
+        """Создать задачу (v2 API) - альтернативный способ"""
+        logger.info(f"📝 Создаю задачу: {task[:50]}...")
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{self.base_url}/api/v2/tasks",
+                headers={
+                    "X-Browser-Use-API-Key": self.api_key,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "task": task,
                     "headless": True,
                     "stealth": True,
                     "proxy": True
                 }
             )
             
-            if response.status_code == 401:
-                raise ValueError("❌ Неверный API ключ Browser Use. Проверьте BROWSER_USE_API_KEY")
-            
             response.raise_for_status()
             data = response.json()
             
-            self.browser_id = data.get("id") or data.get("browser_id")
-            self.session_id = data.get("session_id")
-            
-            # Получаем WebSocket URL
-            ws_url = data.get("ws_url") or data.get("webSocketDebuggerUrl")
-            
-            if not ws_url:
-                # Пробуем получить через отдельный эндпоинт
-                ws_response = await client.get(
-                    f"https://cloud.browser-use.com/api/v1/browser/{self.browser_id}/ws",
-                    headers={"Authorization": f"Bearer {self.api_key}"}
-                )
-                ws_data = ws_response.json()
-                ws_url = ws_data.get("ws_url") or ws_data.get("webSocketDebuggerUrl")
-            
-            if not ws_url:
-                raise ValueError("Не получен WebSocket URL")
-            
-            logger.info(f"✅ Браузер создан: {self.browser_id}")
-            logger.info(f"🔗 WebSocket: {ws_url[:50]}...")
-            
-            # Подключаемся к WebSocket
-            await self._connect(ws_url)
-            
-            return {
-                "browser_id": self.browser_id,
-                "ws_url": ws_url,
-                "session_id": self.session_id
-            }
+            logger.info(f"✅ Задача создана: {data.get('id')}")
+            return data
     
     async def _connect(self, ws_url: str):
         """Подключиться к WebSocket"""
@@ -216,7 +146,7 @@ class CloudBrowser:
         self._connected = True
         logger.info("✅ WebSocket подключен")
         
-        # Включаем необходимые домены
+        # Включаем CDP домены
         await self.send_cdp("Page.enable")
         await self.send_cdp("Runtime.enable")
         await self.send_cdp("Network.enable")
@@ -235,7 +165,6 @@ class CloudBrowser:
         
         await self.ws.send(json.dumps(msg))
         
-        # Ждем ответ
         while True:
             try:
                 response = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
@@ -245,52 +174,41 @@ class CloudBrowser:
                         raise RuntimeError(f"CDP ошибка: {data['error']}")
                     return data.get("result", {})
             except asyncio.TimeoutError:
-                raise RuntimeError("Таймаут ожидания CDP ответа")
+                raise RuntimeError("Таймаут CDP")
     
     async def goto(self, url: str) -> dict:
         """Перейти на URL"""
         logger.info(f"🌐 Перехожу на {url}")
         
-        try:
-            result = await self.send_cdp("Page.navigate", {"url": url})
-            
-            # Ждем загрузки
-            await asyncio.sleep(2)
-            
-            # Ждем, пока загрузка завершится
-            for _ in range(10):
-                try:
-                    load_result = await self.send_cdp("Runtime.evaluate", {
-                        "expression": "document.readyState",
-                        "returnByValue": True
-                    })
-                    state = load_result.get("result", {}).get("value", "")
-                    if state == "complete":
-                        break
-                except:
-                    pass
-                await asyncio.sleep(0.5)
-            
-            logger.info(f"✅ Страница загружена: {url}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка перехода: {e}")
-            raise
+        result = await self.send_cdp("Page.navigate", {"url": url})
+        
+        # Ждем загрузки
+        for _ in range(20):
+            try:
+                load_result = await self.send_cdp("Runtime.evaluate", {
+                    "expression": "document.readyState",
+                    "returnByValue": True
+                })
+                state = load_result.get("result", {}).get("value", "")
+                if state == "complete":
+                    break
+            except:
+                pass
+            await asyncio.sleep(0.5)
+        
+        logger.info(f"✅ Страница загружена")
+        return result
     
     async def get_text(self) -> str:
-        """Получить текст страницы"""
+        """Получить текст"""
         try:
             result = await self.send_cdp("Runtime.evaluate", {
                 "expression": "document.body ? document.body.innerText : ''",
                 "returnByValue": True
             })
-            
-            if result and "result" in result and "result" in result["result"]:
-                return result["result"]["result"].get("value", "")
-            return ""
+            return result.get("result", {}).get("value", "")
         except Exception as e:
-            logger.error(f"❌ Ошибка получения текста: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return ""
     
     async def screenshot(self, path: str = None) -> bytes:
@@ -303,71 +221,56 @@ class CloudBrowser:
             
             if result and "data" in result:
                 data = base64.b64decode(result["data"])
-                
                 if path:
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     with open(path, "wb") as f:
                         f.write(data)
-                    logger.info(f"📸 Скриншот сохранён в {path}")
-                
+                    logger.info(f"📸 Скриншот: {path}")
                 return data
             return None
         except Exception as e:
-            logger.error(f"❌ Ошибка скриншота: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return None
     
     async def click(self, selector: str) -> bool:
-        """Кликнуть на элемент"""
+        """Кликнуть"""
         try:
-            # Находим координаты элемента
             result = await self.send_cdp("Runtime.evaluate", {
                 "expression": f"""
                     (function() {{
                         const el = document.querySelector('{selector}');
                         if (!el) return null;
                         const rect = el.getBoundingClientRect();
-                        return {{
-                            x: rect.left + rect.width/2,
-                            y: rect.top + rect.height/2
-                        }};
+                        return {{ x: rect.left + rect.width/2, y: rect.top + rect.height/2 }};
                     }})()
                 """,
                 "returnByValue": True
             })
             
-            if result and "result" in result and "result" in result["result"]:
-                pos = result["result"]["result"].get("value")
-                if pos:
-                    await self.send_cdp("Input.dispatchMouseEvent", {
-                        "type": "mousePressed",
-                        "x": pos["x"],
-                        "y": pos["y"],
-                        "button": "left",
-                        "clickCount": 1
-                    })
-                    await asyncio.sleep(0.1)
-                    await self.send_cdp("Input.dispatchMouseEvent", {
-                        "type": "mouseReleased",
-                        "x": pos["x"],
-                        "y": pos["y"],
-                        "button": "left",
-                        "clickCount": 1
-                    })
-                    logger.info(f"🖱️ Клик на {selector}")
-                    return True
-            
-            logger.warning(f"⚠️ Элемент {selector} не найден")
+            pos = result.get("result", {}).get("value")
+            if pos:
+                await self.send_cdp("Input.dispatchMouseEvent", {
+                    "type": "mousePressed",
+                    "x": pos["x"], "y": pos["y"],
+                    "button": "left", "clickCount": 1
+                })
+                await asyncio.sleep(0.1)
+                await self.send_cdp("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased",
+                    "x": pos["x"], "y": pos["y"],
+                    "button": "left", "clickCount": 1
+                })
+                logger.info(f"🖱️ Клик на {selector}")
+                return True
             return False
         except Exception as e:
-            logger.error(f"❌ Ошибка клика: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return False
     
     async def fill(self, selector: str, text: str) -> bool:
         """Заполнить поле"""
         try:
-            # Экранируем кавычки
             safe_text = text.replace("'", "\\'").replace('"', '\\"')
-            
             await self.send_cdp("Runtime.evaluate", {
                 "expression": f"""
                     const el = document.querySelector('{selector}');
@@ -375,42 +278,34 @@ class CloudBrowser:
                         el.focus();
                         el.value = '{safe_text}';
                         el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
                     }}
                 """
             })
-            logger.info(f"⌨️ Заполнено: {selector} -> {text[:30]}...")
+            logger.info(f"⌨️ Заполнено: {selector}")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка заполнения: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return False
     
     async def js(self, expression: str) -> any:
-        """Выполнить JavaScript"""
+        """Выполнить JS"""
         try:
             result = await self.send_cdp("Runtime.evaluate", {
                 "expression": expression,
                 "returnByValue": True
             })
-            
-            if result and "result" in result and "result" in result["result"]:
-                return result["result"]["result"].get("value")
-            return None
+            return result.get("result", {}).get("value")
         except Exception as e:
-            logger.error(f"❌ Ошибка JS: {e}")
+            logger.error(f"❌ Ошибка: {e}")
             return None
     
     async def get_page_info(self) -> dict:
         """Информация о странице"""
         try:
-            url_result = await self.js("document.URL")
-            title_result = await self.js("document.title")
-            return {
-                "url": url_result or "unknown",
-                "title": title_result or "unknown"
-            }
+            url = await self.js("document.URL")
+            title = await self.js("document.title")
+            return {"url": url or "unknown", "title": title or "unknown"}
         except Exception as e:
-            logger.error(f"❌ Ошибка получения информации: {e}")
             return {"url": "unknown", "title": "unknown"}
     
     async def close(self):
@@ -420,272 +315,91 @@ class CloudBrowser:
                 await self.ws.close()
             except:
                 pass
-            self.ws = None
         
         if self.browser_id:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     await client.delete(
-                        f"https://cloud.browser-use.com/api/v1/browser/{self.browser_id}",
-                        headers={"Authorization": f"Bearer {self.api_key}"}
+                        f"{self.base_url}/api/v3/browsers/{self.browser_id}",
+                        headers={"X-Browser-Use-API-Key": self.api_key}
                     )
                 logger.info(f"✅ Браузер {self.browser_id} закрыт")
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка закрытия браузера: {e}")
+                logger.warning(f"⚠️ Ошибка: {e}")
         
         self._connected = False
 
 
 # ============================================================
-# 7. ОСНОВНОЙ КЛАСС HarnessBot
+# 5. ОСНОВНОЙ КЛАСС БОТА
 # ============================================================
 
 class HarnessBot:
     def __init__(self):
         self.browser = None
         self.is_ready = False
-        self.dspy_agent = None
-        self.dspy_lm = None
     
     async def start(self):
-        """Запуск через облачный браузер Browser Use"""
+        """Запуск"""
         logger.info("☁️ Подключение к облачному браузеру Browser Use...")
         
-        # Создаем браузер
         self.browser = CloudBrowser(BROWSER_USE_API_KEY)
         await self.browser.create()
         
         # Переходим на страницу
         await self.browser.goto("https://example.com")
-        logger.info("✅ Страница загружена")
-        
-        # Инициализация DSPy
-        await self._init_dspy()
         
         self.is_ready = True
-        logger.info("✅ HarnessBot готов (облачный режим)!")
+        logger.info("✅ HarnessBot готов!")
         return self
     
-    async def _init_dspy(self):
-        """Инициализация DSPy с инструментами"""
-        if not AGNES_API_KEY:
-            logger.warning("⚠️ AGNES_API_KEY не задан, DSPy отключен")
-            return
+    async def ask(self, question: str) -> str:
+        """Выполнить задачу"""
+        if not self.browser:
+            return "❌ Браузер не готов"
+        
+        logger.info(f"🧠 Выполняю: {question}")
         
         try:
-            # Инструменты для DSPy
-            def tool_goto_url(url: str) -> str:
-                """Перейти на URL"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.goto(url),
-                        loop
-                    )
-                    future.result(timeout=30)
+            q_lower = question.lower()
+            
+            if "скриншот" in q_lower:
+                timestamp = int(time.time())
+                path = f"/app/screenshots/result_{timestamp}.png"
+                await self.browser.screenshot(path)
+                return f"✅ Скриншот: result_{timestamp}.png"
+            
+            if "перейти" in q_lower or "открыть" in q_lower:
+                import re
+                url_match = re.search(r'(https?://[^\s]+)', question)
+                if url_match:
+                    url = url_match.group(1)
+                    await self.browser.goto(url)
                     return f"✅ Перешел на {url}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
+                return "❌ URL не найден"
             
-            def tool_screenshot(filename: str = None) -> str:
-                """Сделать скриншот"""
-                try:
-                    if not filename:
-                        timestamp = int(time.time())
-                        filename = f"screenshot_{timestamp}.png"
-                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.screenshot(full_path),
-                        loop
-                    )
-                    future.result(timeout=30)
-                    return f"✅ Скриншот: {filename}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
+            if "текст" in q_lower:
+                text = await self.browser.get_text()
+                return f"📄 Текст:\n\n{text[:2000]}..." if text else "❌ Текст не найден"
             
-            def tool_page_info() -> str:
-                """Информация о странице"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.get_page_info(),
-                        loop
-                    )
-                    info = future.result(timeout=10)
-                    return f"URL: {info.get('url')}\nTitle: {info.get('title')}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
+            if "инфо" in q_lower or "информация" in q_lower:
+                info = await self.browser.get_page_info()
+                return f"URL: {info.get('url')}\nTitle: {info.get('title')}"
             
-            def tool_get_text() -> str:
-                """Получить текст страницы"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.get_text(),
-                        loop
-                    )
-                    text = future.result(timeout=10)
-                    if text and len(text) > 10:
-                        return text[:5000]
-                    return "❌ Текст не найден"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_click(selector: str) -> str:
-                """Кликнуть на элемент"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.click(selector),
-                        loop
-                    )
-                    result = future.result(timeout=10)
-                    return f"✅ Клик на {selector}" if result else f"❌ Элемент {selector} не найден"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_fill(selector: str, text: str) -> str:
-                """Заполнить поле"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.fill(selector, text),
-                        loop
-                    )
-                    result = future.result(timeout=10)
-                    return f"✅ Заполнено: {selector} -> {text}" if result else f"❌ Элемент {selector} не найден"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_js(expression: str) -> str:
-                """Выполнить JavaScript"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.js(expression),
-                        loop
-                    )
-                    result = future.result(timeout=10)
-                    return str(result) if result is not None else "✅ JS выполнен"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_links() -> str:
-                """Получить ссылки"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.js('Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)'),
-                        loop
-                    )
-                    result = future.result(timeout=10)
-                    if isinstance(result, list) and result:
-                        links = [str(item) for item in result if item]
-                        return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
-                    return "❌ Ссылок не найдено"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_buttons() -> str:
-                """Получить кнопки"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.js('Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())'),
-                        loop
-                    )
-                    result = future.result(timeout=10)
-                    if isinstance(result, list) and result:
-                        buttons = [str(item).strip() for item in result if item and str(item).strip()]
-                        return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
-                    return "❌ Кнопок не найдено"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_scroll(dx: int, dy: int) -> str:
-                """Прокрутить"""
-                try:
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.browser.js(f'window.scrollBy({dx}, {dy})'),
-                        loop
-                    )
-                    future.result(timeout=5)
-                    return f"✅ Прокрутка на ({dx}, {dy})"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            tools = [
-                Tool(tool_goto_url),
-                Tool(tool_screenshot),
-                Tool(tool_page_info),
-                Tool(tool_get_text),
-                Tool(tool_click),
-                Tool(tool_fill),
-                Tool(tool_js),
-                Tool(tool_get_links),
-                Tool(tool_get_buttons),
-                Tool(tool_scroll),
-            ]
-            
-            # Инициализация DSPy
-            lm = AgnesLM(api_key=AGNES_API_KEY, temperature=0.3, max_tokens=2000)
-            settings.configure(lm=lm)
-            logger.info("✅ DSPy настроен")
-            
-            # Создаем агента
-            try:
-                class BrowserSignature(Signature):
-                    """Агент с доступом к облачному браузеру"""
-                    question = InputField(desc="Задача пользователя")
-                    answer = OutputField(desc="Ответ на задачу")
-                
-                self.dspy_agent = ReActV2(
-                    signature=BrowserSignature,
-                    tools=tools,
-                    max_iters=8,
-                )
-                logger.info(f"✅ DSPy агент создан с {len(tools)} инструментами")
-            except Exception as e:
-                logger.error(f"❌ Ошибка создания агента: {e}")
-                self.dspy_agent = None
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации DSPy: {e}")
-            self.dspy_agent = None
-    
-    async def ask_dspy(self, question: str) -> str:
-        """Задать вопрос DSPy агенту"""
-        if not self.dspy_agent:
-            return "❌ DSPy агент не инициализирован"
-        
-        logger.info(f"🧠 DSPy запрос: {question}")
-        
-        try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.dspy_agent(question=question)
-            )
-            
-            if hasattr(result, 'answer'):
-                return result.answer
-            return str(result)
+            return "❌ Команды: скриншот, перейти <url>, текст, информация"
             
         except Exception as e:
-            logger.error(f"❌ DSPy ошибка: {e}")
-            return f"❌ Ошибка: {str(e)}"
+            logger.error(f"❌ Ошибка: {e}")
+            return f"❌ Ошибка: {str(e)[:200]}"
     
     async def close(self):
-        """Закрыть браузер"""
         if self.browser:
             await self.browser.close()
         self.is_ready = False
 
 
 # ============================================================
-# 8. TELEGRAM КОМАНДА
+# 6. TELEGRAM
 # ============================================================
 
 from telegram import Update
@@ -694,42 +408,30 @@ from telegram.helpers import escape_markdown
 
 bot = None
 
-async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /dspy"""
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update or not update.message:
         return
     
     if not context.args:
         await update.message.reply_text(
-            "🧠 **DSPy Agent**\n\n"
-            "Отправь задачу:\n"
-            "`/dspy открыть google.com и сделать скриншот`\n\n"
-            "**Примеры:**\n"
-            "`/dspy перейти на youtube.com и получить текст`\n"
-            "`/dspy нажать на кнопку login`",
+            "🤖 **Команды:**\n"
+            "`/ask перейти https://example.com`\n"
+            "`/ask скриншот`\n"
+            "`/ask текст`\n"
+            "`/ask информация`",
             parse_mode='Markdown'
         )
         return
     
     user_query = " ".join(context.args)
-    logger.info(f"👤 DSPy запрос: {user_query}")
-    
-    status_msg = await update.message.reply_text("🧠 Думаю...")
+    status_msg = await update.message.reply_text("🔄 Выполняю...")
     
     try:
         if not bot or not bot.is_ready:
-            await status_msg.edit_text("❌ Бот не готов. Попробуйте позже.")
+            await status_msg.edit_text("❌ Бот не готов")
             return
         
-        if not bot.dspy_agent:
-            await status_msg.edit_text("❌ DSPy агент не инициализирован. Проверьте AGNES_API_KEY")
-            return
-        
-        answer = await bot.ask_dspy(user_query)
-        
-        if not answer or not answer.strip():
-            await status_msg.edit_text("❌ Пустой ответ от агента")
-            return
+        answer = await bot.ask(user_query)
         
         if len(answer) > 4000:
             answer = answer[:4000] + "\n\n... (обрезано)"
@@ -740,12 +442,11 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 
 # ============================================================
-# 9. ЗАПУСК
+# 7. ЗАПУСК
 # ============================================================
 
 async def main():
@@ -755,11 +456,9 @@ async def main():
     await bot.start()
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("dspy", dspy_command))
+    app.add_handler(CommandHandler("ask", ask_command))
     
-    logger.info("🚀 Бот запущен! Команда: /dspy")
-    logger.info(f"🧠 DSPy: {'✅ Активен' if bot.dspy_agent else '❌ Отключен'}")
-    logger.info(f"☁️ Браузер: Облачный Browser Use")
+    logger.info("🚀 Бот запущен! Команда: /ask")
     
     await app.initialize()
     await app.start()
