@@ -792,6 +792,20 @@ class HarnessBot:
 
 
 # ============================================================
+# TELEGRAM КОМАНДА /start
+# ============================================================
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start - показывает меню"""
+    if not update or not update.message:
+        return
+    
+    menu_text = "/dspy - выполнить задачу в браузере"
+    
+    await update.message.reply_text(menu_text, parse_mode='Markdown')
+
+
+# ============================================================
 # TELEGRAM КОМАНДА /dspy
 # ============================================================
 
@@ -863,10 +877,11 @@ async def main():
     # Создаём Telegram приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Регистрируем команду /dspy
+    # Регистрируем команды
+    app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
-    logger.info("🚀 Бот запущен! Команда: /dspy")
+    logger.info("🚀 Бот запущен! Команды: /start, /dspy")
     logger.info(f"🧠 DSPy статус: {'✅ Активен' if bot.dspy_agent else '❌ Отключен'}")
     logger.info(f"🍪 Куки: {'✅ Загружены' if COOKIES else '❌ Нет'}")
     
