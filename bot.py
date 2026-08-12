@@ -1,63 +1,78 @@
-# test_websocket.py - проверка через WebSocket + CDP
+# bot_working.py - рабочий код без Browser Use API
+import os
+import sys
 import asyncio
-import websockets
-import json
-import httpx
+import logging
+import time
+
+# ============================================================
+# 1. НАСТРОЙКА
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 2. BROWSER HARNESS (без start_remote_daemon)
+# ============================================================
+
+sys.path.insert(0, "browser-harness/src")
+
+from browser_harness.helpers import (
+    new_tab,
+    goto_url,
+    wait_for_load,
+    capture_screenshot,
+    js,
+    page_info,
+)
+from browser_harness.admin import ensure_daemon
+
+# ============================================================
+# 3. CDP URL
+# ============================================================
 
 CDP_URL = "https://9d683906-74b6-44a1-a138-c33b957fb907.cdp.browser-use.com"
 
-async def test_cdp_websocket():
-    print(f"🔗 Подключение к CDP: {CDP_URL}")
+# ============================================================
+# 4. ОСНОВНОЙ КОД
+# ============================================================
+
+def main():
+    logger.info("🚀 Запуск Browser Harness...")
     
-    try:
-        # 1. Получаем WebSocket URL
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{CDP_URL}/json/version")
-            data = resp.json()
-            ws_url = data.get("webSocketDebuggerUrl")
-            
-            if not ws_url:
-                print("❌ WebSocket URL не найден")
-                return False
-            
-            # Конвертируем http -> ws
-            if ws_url.startswith("http://"):
-                ws_url = ws_url.replace("http://", "ws://")
-            elif ws_url.startswith("https://"):
-                ws_url = ws_url.replace("https://", "wss://")
-            
-            print(f"🔌 WebSocket: {ws_url}")
-        
-        # 2. Подключаемся
-        ws = await websockets.connect(ws_url)
-        print("✅ WebSocket подключен")
-        
-        # 3. Отправляем простую команду
-        msg_id = 1
-        await ws.send(json.dumps({
-            "id": msg_id,
-            "method": "Browser.getVersion",
-            "params": {}
-        }))
-        
-        # 4. Ждём ответ
-        response = await ws.recv()
-        data = json.loads(response)
-        
-        if data.get("id") == msg_id:
-            result = data.get("result", {})
-            print(f"✅ Браузер: {result.get('product', 'unknown')}")
-            print(f"   User-Agent: {result.get('userAgent', 'unknown')[:50]}...")
-            print("✅ Подключение работает!")
-            await ws.close()
-            return True
-        else:
-            print("❌ Неправильный ответ")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        return False
+    # ВАЖНО: Устанавливаем переменную ДО вызова ensure_daemon()
+    os.environ["BU_CDP_URL"] = CDP_URL
+    logger.info(f"🔗 BU_CDP_URL: {CDP_URL}")
+    
+    # ensure_daemon() подключится к существующему браузеру
+    ensure_daemon()
+    logger.info("✅ Демон подключен к браузеру")
+    
+    # Создаём вкладку
+    logger.info("🌐 Создаю вкладку...")
+    tab = new_tab("https://example.com")
+    wait_for_load()
+    logger.info(f"✅ Вкладка создана: {tab}")
+    
+    # Информация о странице
+    info = page_info()
+    logger.info(f"📄 URL: {info.get('url')}")
+    logger.info(f"📌 Title: {info.get('title')}")
+    
+    # Скриншот
+    path = f"/app/screenshots/test_{int(time.time())}.png"
+    capture_screenshot(path=path)
+    logger.info(f"📸 Скриншот: {path}")
+    
+    # Получаем текст
+    text = js('document.body.innerText')
+    logger.info(f"📝 Текст: {str(text)[:200]}...")
+    
+    logger.info("✅ Всё работает!")
 
 if __name__ == "__main__":
-    asyncio.run(test_cdp_websocket())
+    main()
