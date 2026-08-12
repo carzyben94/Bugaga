@@ -1,13 +1,9 @@
-# bot.py - подключается к браузеру через CDP URL + DSPy
+# bot.py - использует Browser Harness как библиотеку
 import os
 import sys
 import asyncio
 import logging
-import base64
-import json
 import time
-import httpx
-import websockets
 
 # ============================================================
 # 1. НАСТРОЙКА ЛОГГЕРА
@@ -15,694 +11,270 @@ import websockets
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/app/logs/bot.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 2. ПАПКИ
+# 2. ДОБАВЛЯЕМ ПУТЬ К BROWSER HARNESS
 # ============================================================
 
-SCREENSHOTS_DIR = '/app/screenshots'
-LOGS_DIR = '/app/logs'
-os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
-
-# ============================================================
-# 3. ИМПОРТ КУК
-# ============================================================
-
-try:
-    from cookies import COOKIES
-    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
-except ImportError:
-    logger.warning("⚠️ cookies.py не найден, куки не загружены")
-    COOKIES = []
-
-# ============================================================
-# 4. ПУТЬ К BROWSER HARNESS
-# ============================================================
-
+# Если папка browser-harness лежит рядом с bot.py
 sys.path.insert(0, "browser-harness/src")
 
+# Импорты из Browser Harness (библиотека)
 from browser_harness.helpers import (
     new_tab,
     goto_url,
     wait_for_load,
     close_tab,
     page_info,
-    current_tab,
     capture_screenshot,
     js,
-    list_tabs,
-    switch_tab,
     fill_input,
     click_at_xy,
-    type_text,
-    press_key,
     scroll,
 )
+# Админка для управления демоном
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# 5. TELEGRAM
+# 3. ИМПОРТЫ
 # ============================================================
 
+try:
+    from cookies import COOKIES
+    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
+except ImportError:
+    COOKIES = []
+
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler
 from telegram.helpers import escape_markdown
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# ============================================================
-# 6. CDP URL (из переменной или аргумента)
-# ============================================================
-
-CDP_URL = os.environ.get("CDP_URL", "http://localhost:9222")
+CDP_URL = os.environ.get("CDP_URL", "https://9d683906-74b6-44a1-a138-c33b957fb907.cdp.browser-use.com")
 
 # ============================================================
-# 7. DSPy ИНТЕГРАЦИЯ
+# 4. DSPy (упрощённо)
 # ============================================================
 
-import warnings
 import dspy
-from dspy import Signature, InputField, OutputField, Module, settings, ReActV2, Tool
-
-warnings.filterwarnings("ignore")
-
-
-class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI"""
-    
-    def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
-        self.api_key = api_key or os.environ.get("AGNES_API_KEY")
-        self.model = model
-        
-        super().__init__(
-            model=model, 
-            model_type="chat",
-            temperature=kwargs.get("temperature", 0.3),
-            max_tokens=kwargs.get("max_tokens", 2000),
-            cache=False
-        )
-        
-        self.provider = "agnes-ai"
-        self.forward_contract = "legacy"
-    
-    def forward(self, prompt=None, messages=None, **kwargs):
-        if not self.api_key:
-            return ["Ошибка: API ключ не задан"]
-        
-        params = {**self.kwargs, **kwargs}
-        
-        if messages:
-            api_messages = messages
-        else:
-            api_messages = [{"role": "user", "content": prompt or ""}]
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": api_messages,
-            "temperature": params.get("temperature", 0.3),
-            "max_tokens": params.get("max_tokens", 2000)
-        }
-        
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(
-                    "https://apihub.agnes-ai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                if "choices" in data and len(data["choices"]) > 0:
-                    result = data["choices"][0]["message"]["content"]
-                    return [result]
-                return ["Ошибка: пустой ответ от API"]
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка Agnes API: {e}")
-            return [f"Ошибка: {str(e)}"]
-    
-    def __call__(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
-    
-    async def aforward(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
-
+from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 
 class BrowserTask(Signature):
-    """Сигнатура для DSPy агента"""
     question = InputField(desc="Задача пользователя")
-    answer = OutputField(desc="Ответ на задачу с использованием Browser Harness")
+    answer = OutputField(desc="Ответ на задачу")
 
-
-def create_browser_agent(tools, max_iters=10):
-    """Создать ReActV2 агента"""
-    try:
-        agent = ReActV2(
-            signature=BrowserTask,
-            tools=tools,
-            max_iters=max_iters,
-        )
-        logger.info("✅ ReActV2 агент создан")
-        return agent
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания агента: {e}")
-        try:
-            from dspy import ChainOfThought
-            class SimpleAgent(Module):
-                def __init__(self):
-                    super().__init__()
-                    self.generate = ChainOfThought(BrowserTask)
-                def forward(self, question):
-                    return self.generate(question=question)
-            logger.info("⚠️ Использую ChainOfThought как fallback")
-            return SimpleAgent()
-        except Exception as e2:
-            logger.error(f"❌ Fallback не работает: {e2}")
-            return None
-
-
-def init_dspy(api_key=None, tools=None, max_iters=10):
-    """Инициализация DSPy"""
-    api_key = api_key or os.environ.get("AGNES_API_KEY")
+def init_dspy():
+    api_key = os.environ.get("AGNES_API_KEY")
     if not api_key:
-        logger.warning("⚠️ AGNES_API_KEY не задан")
-        return None, None
+        return None
     
-    try:
-        lm = AgnesLM(api_key=api_key, temperature=0.3, max_tokens=2000)
-        settings.configure(lm=lm)
-        logger.info("✅ DSPy настроен")
+    class SimpleLM(dspy.LM):
+        def __init__(self):
+            super().__init__(model="agnes")
+            self.api_key = api_key
         
-        if tools:
-            agent = create_browser_agent(tools, max_iters)
-        else:
-            agent = None
-        
-        return lm, agent
-    except Exception as e:
-        logger.error(f"❌ Ошибка DSPy: {e}")
-        return None, None
-
-
-def run_agent(agent, question: str) -> str:
-    """Запуск агента"""
-    if not agent:
-        return "❌ Агент не инициализирован"
-    try:
-        result = agent(question=question)
-        answer = getattr(result, 'answer', str(result))
-        return answer if answer and answer.strip() else "❌ Пустой ответ"
-    except Exception as e:
-        logger.error(f"❌ Ошибка выполнения: {e}")
-        return f"❌ Ошибка: {str(e)}"
+        def forward(self, prompt=None, messages=None, **kwargs):
+            import httpx
+            try:
+                with httpx.Client(timeout=60) as client:
+                    resp = client.post(
+                        "https://apihub.agnes-ai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json={
+                            "model": "agnes-2.0-flash",
+                            "messages": messages or [{"role": "user", "content": prompt}],
+                            "temperature": 0.3,
+                            "max_tokens": 2000
+                        }
+                    )
+                    data = resp.json()
+                    return [data["choices"][0]["message"]["content"]]
+            except Exception as e:
+                return [f"Ошибка: {e}"]
+    
+    lm = SimpleLM()
+    settings.configure(lm=lm)
+    
+    # Инструменты
+    def tool_goto(url: str) -> str:
+        try:
+            goto_url(url)
+            wait_for_load()
+            return f"✅ Перешел на {url}"
+        except Exception as e:
+            return f"❌ {e}"
+    
+    def tool_screenshot(name: str = None) -> str:
+        try:
+            if not name:
+                name = f"screenshot_{int(time.time())}.png"
+            path = f"/app/screenshots/{name}"
+            capture_screenshot(path=path)
+            return f"✅ Скриншот: {name}"
+        except Exception as e:
+            return f"❌ {e}"
+    
+    def tool_text() -> str:
+        try:
+            text = js('document.body.innerText')
+            return str(text)[:3000]
+        except Exception as e:
+            return f"❌ {e}"
+    
+    def tool_click(selector: str) -> str:
+        try:
+            result = js(f"""
+                (() => {{
+                    const el = document.querySelector('{selector}');
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    return {{x: r.left + r.width/2, y: r.top + r.height/2}};
+                }})()
+            """)
+            if result:
+                click_at_xy(int(result["x"]), int(result["y"]))
+                return f"✅ Клик на {selector}"
+            return f"❌ Элемент {selector} не найден"
+        except Exception as e:
+            return f"❌ {e}"
+    
+    tools = [
+        Tool(tool_goto),
+        Tool(tool_screenshot),
+        Tool(tool_text),
+        Tool(tool_click),
+    ]
+    
+    return ReActV2(signature=BrowserTask, tools=tools, max_iters=5)
 
 
 # ============================================================
-# 8. ОСНОВНОЙ КЛАСС HarnessBot (ПОДКЛЮЧЕНИЕ ПО CDP URL)
+# 5. ОСНОВНОЙ КЛАСС
 # ============================================================
 
 class HarnessBot:
-    def __init__(self, cdp_url=None):
-        self.cdp_url = cdp_url or CDP_URL
-        self.ws = None
+    def __init__(self):
         self.page = None
-        self.is_ready = False
-        self._id = 0
-        self.dspy_agent = None
-        self.dspy_lm = None
-        self.browser_info = None
+        self.agent = None
     
-    async def connect(self):
-        """Подключение к браузеру по CDP URL"""
-        logger.info(f"🔗 Подключение к CDP: {self.cdp_url}")
+    async def start(self):
+        """Запуск - всё просто!"""
+        logger.info("🚀 Запуск Browser Harness...")
         
-        # Получаем WebSocket URL
-        ws_url = await self._get_websocket_url()
-        if not ws_url:
-            raise Exception(f"Не удалось получить WebSocket URL из {self.cdp_url}")
+        # 1. ensure_daemon() сам запустит демон если нужно
+        ensure_daemon()
+        logger.info("✅ Демон запущен (или уже был запущен)")
         
-        logger.info(f"🔌 WebSocket URL: {ws_url}")
+        # 2. Устанавливаем CDP URL для подключения к браузеру
+        os.environ["BU_CDP_URL"] = CDP_URL
+        logger.info(f"🔗 Подключение к CDP: {CDP_URL}")
         
-        # Подключаемся
-        self.ws = await websockets.connect(ws_url)
-        logger.info("✅ WebSocket подключен")
+        # 3. Создаём вкладку (первый раз через new_tab)
+        logger.info("🌐 Создаю вкладку...")
+        self.page = new_tab("https://example.com")
+        wait_for_load()
+        logger.info(f"✅ Вкладка создана: {self.page}")
         
-        # Получаем информацию о браузере
-        await self._get_browser_info()
+        # 4. Устанавливаем куки
+        if COOKIES:
+            for cookie in COOKIES:
+                try:
+                    js(f"document.cookie = '{cookie['name']}={cookie['value']}; domain={cookie.get('domain', '')}; path=/'")
+                except:
+                    pass
+            logger.info(f"🍪 Установлено {len(COOKIES)} кук")
         
-        # Устанавливаем куки
-        await self._set_cookies()
-        
-        # Создаём вкладку
-        await self._create_tab()
-        
-        # Настраиваем Browser Harness
-        os.environ["BU_CDP_URL"] = self.cdp_url
-        self.daemon = ensure_daemon()
-        logger.info("✅ Daemon запущен")
-        
-        # Инициализируем DSPy
-        await self._init_dspy()
+        # 5. Инициализируем DSPy
+        self.agent = init_dspy()
+        if self.agent:
+            logger.info("🧠 DSPy готов")
+        else:
+            logger.warning("⚠️ DSPy не инициализирован")
         
         self.is_ready = True
         logger.info("✅ HarnessBot готов!")
         return self
     
-    async def _get_websocket_url(self) -> str:
-        """Получить WebSocket URL из CDP HTTP endpoint"""
+    async def ask(self, question: str) -> str:
+        """Задать вопрос агенту"""
+        if not self.agent:
+            return "❌ DSPy не инициализирован"
         try:
-            async with httpx.AsyncClient() as client:
-                # Пробуем /json/version
-                response = await client.get(f"{self.cdp_url}/json/version")
-                if response.status_code == 200:
-                    data = response.json()
-                    if "webSocketDebuggerUrl" in data:
-                        ws_url = data["webSocketDebuggerUrl"]
-                        # Для HTTPS заменяем на WSS
-                        if ws_url.startswith("http://"):
-                            ws_url = ws_url.replace("http://", "ws://")
-                        elif ws_url.startswith("https://"):
-                            ws_url = ws_url.replace("https://", "wss://")
-                        logger.info(f"✅ Получен WS URL: {ws_url}")
-                        return ws_url
-                
-                # Пробуем /json
-                response = await client.get(f"{self.cdp_url}/json")
-                if response.status_code == 200:
-                    data = response.json()
-                    if data and len(data) > 0:
-                        ws_url = data[0].get("webSocketDebuggerUrl")
-                        if ws_url:
-                            if ws_url.startswith("http://"):
-                                ws_url = ws_url.replace("http://", "ws://")
-                            elif ws_url.startswith("https://"):
-                                ws_url = ws_url.replace("https://", "wss://")
-                            logger.info(f"✅ Получен WS URL: {ws_url}")
-                            return ws_url
-                
-                # Если не получилось - пробуем сконструировать сами
-                if self.cdp_url.startswith("http://"):
-                    ws_url = self.cdp_url.replace("http://", "ws://")
-                elif self.cdp_url.startswith("https://"):
-                    ws_url = self.cdp_url.replace("https://", "wss://")
-                else:
-                    ws_url = f"ws://{self.cdp_url}"
-                
-                ws_url += "/devtools/browser"
-                logger.info(f"ℹ️ Пробуем WS URL: {ws_url}")
-                return ws_url
-                
+            result = self.agent(question=question)
+            return getattr(result, 'answer', str(result))
         except Exception as e:
-            logger.error(f"❌ Ошибка получения WebSocket URL: {e}")
-            return None
-    
-    async def _get_browser_info(self):
-        """Получить информацию о браузере"""
-        try:
-            result = await self._cdp_send("Browser.getVersion")
-            if result and "result" in result:
-                self.browser_info = result["result"]
-                logger.info(f"🖥️ Браузер: {self.browser_info.get('product', 'unknown')}")
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось получить информацию: {e}")
-    
-    async def _create_tab(self):
-        """Создать новую вкладку"""
-        try:
-            # Создаём вкладку через CDP
-            result = await self._cdp_send("Target.createTarget", {
-                "url": "about:blank"
-            })
-            
-            if result and "result" and "targetId" in result["result"]:
-                target_id = result["result"]["targetId"]
-                logger.info(f"✅ Создана вкладка: {target_id}")
-                
-                # Переходим на страницу через Browser Harness
-                self.page = new_tab("https://example.com")
-                wait_for_load()
-                logger.info("✅ Страница загружена")
-                return
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка создания вкладки: {e}")
-            # Fallback
-            self.page = new_tab("https://example.com")
-            wait_for_load()
-            logger.info("✅ Страница загружена (fallback)")
-    
-    async def _set_cookies(self):
-        """Установить куки"""
-        if not COOKIES:
-            logger.info("ℹ️ Нет кук")
-            return
-        
-        try:
-            cookies_list = []
-            for cookie in COOKIES:
-                cookie_data = {
-                    "name": cookie.get("name"),
-                    "value": cookie.get("value"),
-                    "domain": cookie.get("domain", ""),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                }
-                if "sameSite" in cookie:
-                    cookie_data["sameSite"] = cookie["sameSite"]
-                if "expires" in cookie:
-                    cookie_data["expires"] = cookie["expires"]
-                cookies_list.append(cookie_data)
-            
-            await self._cdp_send("Network.setCookies", {
-                "cookies": cookies_list
-            })
-            logger.info(f"✅ Установлено {len(cookies_list)} кук")
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
-    
-    async def _init_dspy(self):
-        """Инициализация DSPy"""
-        AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-        if not AGNES_API_KEY:
-            logger.warning("⚠️ AGNES_API_KEY не задан")
-            return
-        
-        try:
-            # Инструменты Browser Harness
-            def tool_new_tab() -> str:
-                try:
-                    new_tab()
-                    return "✅ Новая вкладка открыта"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_goto_url(url: str) -> str:
-                try:
-                    goto_url(url)
-                    wait_for_load()
-                    return f"✅ Перешел на {url}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_wait_for_load() -> str:
-                try:
-                    wait_for_load()
-                    return "✅ Страница загружена"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_js(expression: str) -> str:
-                try:
-                    result = js(expression)
-                    if isinstance(result, dict):
-                        return str(result.get('result', result))
-                    return str(result) if result is not None else "✅ JS выполнен"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_capture_screenshot(filename: str = None) -> str:
-                try:
-                    if not filename:
-                        filename = f"screenshot_{int(time.time())}.png"
-                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
-                    capture_screenshot(path=full_path)
-                    return f"✅ Скриншот: {filename}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_page_info() -> str:
-                try:
-                    info = page_info()
-                    return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_text() -> str:
-                try:
-                    result = js('() => document.body.innerText')
-                    text = str(result.get('result', result)) if isinstance(result, dict) else str(result)
-                    return text[:5000] if text and len(text) > 10 else "❌ Текст не найден"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_links() -> str:
-                try:
-                    result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
-                    links = [str(item) for item in result if item] if isinstance(result, list) else []
-                    return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_buttons() -> str:
-                try:
-                    result = js('() => Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())')
-                    buttons = [str(item).strip() for item in result if item and str(item).strip()] if isinstance(result, list) else []
-                    return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_headings() -> str:
-                try:
-                    result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
-                    headings = [str(item).strip() for item in result if item and str(item).strip()] if isinstance(result, list) else []
-                    return f"Заголовки:\n" + "\n".join(headings) if headings else "❌ Заголовков нет"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_list_tabs() -> str:
-                try:
-                    tabs = list_tabs()
-                    return f"Вкладки: {tabs}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_current_tab() -> str:
-                try:
-                    tab = current_tab()
-                    return f"Текущая вкладка: {tab}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_switch_tab(tab_id: int) -> str:
-                try:
-                    switch_tab(tab_id)
-                    return f"✅ Переключился на {tab_id}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_close_tab() -> str:
-                try:
-                    close_tab()
-                    return "✅ Вкладка закрыта"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_fill_input(selector: str, text: str) -> str:
-                try:
-                    fill_input(selector, text)
-                    return f"✅ Заполнено: {selector} -> {text}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_click_at_xy(x: int, y: int) -> str:
-                try:
-                    click_at_xy(x, y)
-                    return f"✅ Клик по ({x}, {y})"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_type_text(text: str) -> str:
-                try:
-                    type_text(text)
-                    return f"✅ Введено: {text}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_press_key(key: str) -> str:
-                try:
-                    press_key(key)
-                    return f"✅ Нажата: {key}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_scroll(dx: int, dy: int) -> str:
-                try:
-                    scroll(dx, dy)
-                    return f"✅ Прокрутка на ({dx}, {dy})"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            tools = [
-                Tool(tool_new_tab),
-                Tool(tool_goto_url),
-                Tool(tool_wait_for_load),
-                Tool(tool_js),
-                Tool(tool_capture_screenshot),
-                Tool(tool_page_info),
-                Tool(tool_get_text),
-                Tool(tool_get_links),
-                Tool(tool_get_buttons),
-                Tool(tool_get_headings),
-                Tool(tool_list_tabs),
-                Tool(tool_current_tab),
-                Tool(tool_switch_tab),
-                Tool(tool_close_tab),
-                Tool(tool_fill_input),
-                Tool(tool_click_at_xy),
-                Tool(tool_type_text),
-                Tool(tool_press_key),
-                Tool(tool_scroll),
-            ]
-            
-            self.dspy_lm, self.dspy_agent = init_dspy(
-                api_key=AGNES_API_KEY,
-                tools=tools,
-                max_iters=10
-            )
-            
-            if self.dspy_agent:
-                logger.info(f"✅ DSPy агент инициализирован с {len(tools)} инструментами")
-            else:
-                logger.warning("⚠️ Не удалось создать DSPy агента")
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка DSPy: {e}")
-            self.dspy_agent = None
-    
-    async def _cdp_send(self, method: str, params: dict = None) -> dict:
-        """Отправка CDP команды"""
-        self._id += 1
-        msg = {
-            "id": self._id,
-            "method": method,
-            "params": params or {}
-        }
-        await self.ws.send(json.dumps(msg))
-        response = await self.ws.recv()
-        return json.loads(response)
-    
-    async def ask_dspy(self, question: str) -> str:
-        """Задать вопрос DSPy агенту"""
-        if not self.dspy_agent:
-            return "❌ DSPy агент не инициализирован"
-        
-        logger.info(f"🧠 DSPy запрос: {question}")
-        try:
-            loop = asyncio.get_running_loop()
-            answer = await loop.run_in_executor(None, run_agent, self.dspy_agent, question)
-            return answer
-        except Exception as e:
-            logger.error(f"❌ DSPy ошибка: {e}")
-            return f"❌ Ошибка: {str(e)}"
+            return f"❌ Ошибка: {e}"
     
     async def close(self):
-        """Закрыть подключение"""
-        logger.info("🔚 Закрываю...")
-        if self.ws:
+        """Закрыть"""
+        if self.page:
             try:
-                await self.ws.close()
-                logger.info("✅ WebSocket закрыт")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка: {e}")
-        self.is_ready = False
+                close_tab(self.page)
+            except:
+                pass
+        logger.info("✅ Закрыто")
 
 
 # ============================================================
-# 9. TELEGRAM КОМАНДА
+# 6. TELEGRAM
 # ============================================================
 
 bot = None
 
-async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /dspy"""
-    if not update or not update.message:
-        return
-    
+async def dspy_command(update, context):
     if not context.args:
         await update.message.reply_text(
             "🧠 **DSPy Agent**\n\n"
-            "Отправь задачу:\n"
-            "`/dspy открыть google.com и сделать скриншот`",
+            "Примеры:\n"
+            "`/dspy открыть google.com`\n"
+            "`/dspy сделать скриншот`\n"
+            "`/dspy получить текст страницы`",
             parse_mode='Markdown'
         )
         return
     
-    user_query = " ".join(context.args)
-    username = update.effective_user.username or "unknown"
-    logger.info(f"👤 {username}: {user_query}")
-    
-    status_msg = await update.message.reply_text("🧠 Думаю...")
+    query = " ".join(context.args)
+    msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
-        if not bot or not bot.dspy_agent:
-            await status_msg.edit_text("❌ DSPy агент не инициализирован")
-            return
-        
-        answer = await bot.ask_dspy(user_query)
-        
-        if not answer or not answer.strip():
-            await status_msg.edit_text("❌ Пустой ответ")
-            return
-        
+        answer = await bot.ask(query)
         if len(answer) > 4000:
-            answer = answer[:4000] + "\n\n... (обрезано)"
-        
-        await status_msg.edit_text(
+            answer = answer[:4000] + "..."
+        await msg.edit_text(
             f"✅ **Результат:**\n\n{escape_markdown(answer, version=2)}",
             parse_mode='MarkdownV2'
         )
-        
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
+        await msg.edit_text(f"❌ {e}")
 
 
 # ============================================================
-# 10. ЗАПУСК
+# 7. ЗАПУСК
 # ============================================================
 
 async def main():
     global bot
     
-    # Создаём бота с CDP URL
-    bot = HarnessBot(cdp_url=CDP_URL)
-    await bot.connect()
+    bot = HarnessBot()
+    await bot.start()
     
-    # Telegram
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("dspy", dspy_command))
-    
-    logger.info("🚀 Бот запущен!")
-    logger.info(f"🔗 CDP URL: {CDP_URL}")
-    logger.info(f"🧠 DSPy: {'✅' if bot.dspy_agent else '❌'}")
-    logger.info(f"🍪 Куки: {'✅' if COOKIES else '❌'}")
     
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     
+    logger.info("🚀 Бот запущен! Используй /dspy")
+    
     while True:
         await asyncio.sleep(60)
-        logger.info("💓 Bot alive")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
