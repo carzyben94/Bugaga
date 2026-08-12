@@ -1,4 +1,4 @@
-# bot.py - bsw запускает браузер с маскировкой, работа через CDP + DSPy
+# bot.py - bsw запускает браузер с маскировкой, работа через CDP + DSPy 
 import os
 import sys
 import asyncio
