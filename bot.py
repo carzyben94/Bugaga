@@ -8,7 +8,14 @@ import json
 import time
 
 # ============================================================
-# 1. НАСТРОЙКА ЛОГГЕРА (ДО ВСЕГО ОСТАЛЬНОГО)
+# 1. НАСТРОЙКА ТАЙМАУТОВ ДЛЯ BROWSER HARNESS
+# ============================================================
+
+os.environ["BU_TIMEOUT"] = "60000"
+os.environ["BU_NAVIGATION_TIMEOUT"] = "60000"
+
+# ============================================================
+# 2. НАСТРОЙКА ЛОГГЕРА (ДО ВСЕГО ОСТАЛЬНОГО)
 # ============================================================
 
 logging.basicConfig(
@@ -22,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 2. ПАПКИ
+# 3. ПАПКИ
 # ============================================================
 
 SCREENSHOTS_DIR = '/app/screenshots'
@@ -31,7 +38,7 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
-# 3. ИМПОРТ КУК (ПОСЛЕ СОЗДАНИЯ ЛОГГЕРА)
+# 4. ИМПОРТ КУК (ПОСЛЕ СОЗДАНИЯ ЛОГГЕРА)
 # ============================================================
 
 try:
@@ -42,7 +49,7 @@ except ImportError:
     COOKIES = []
 
 # ============================================================
-# 4. ДОБАВЛЯЕМ ПУТЬ К BROWSER HARNESS
+# 5. ДОБАВЛЯЕМ ПУТЬ К BROWSER HARNESS
 # ============================================================
 
 sys.path.insert(0, "browser-harness/src")
@@ -161,54 +168,45 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# СИГНАТУРА С DOM SNAPSHOT
+# СИГНАТУРА С ОПТИМИЗИРОВАННЫМИ ИНСТРУМЕНТАМИ
 # ============================================================
 
 class BrowserTask(Signature):
     """
-    Ты агент с доступом к браузеру через Browser Harness.
+    Ты агент с доступом к браузеру.
     
-    ДОСТУПНЫЕ ИНСТРУМЕНТЫ BROWSER HARNESS:
+    ИНСТРУМЕНТЫ:
     
-    1. Навигация:
-       - tool_goto_url(url) - перейти на сайт
-       - tool_wait_for_load() - дождаться загрузки
-       - tool_new_tab() - открыть новую вкладку
-       - tool_close_tab() - закрыть вкладку
-       - tool_switch_tab(tab_id) - переключить вкладку
-       - tool_list_tabs() - список всех вкладок
-       - tool_current_tab() - текущая вкладка
+    НАВИГАЦИЯ:
+    - tool_goto_url(url) - перейти на сайт
+    - tool_new_tab() - открыть новую вкладку
+    - tool_close_tab() - закрыть вкладку
     
-    2. Информация о странице:
-       - tool_page_info() - URL и заголовок
-       - tool_get_text() - весь текст на странице
-       - tool_get_links() - все ссылки
-       - tool_get_buttons() - все кнопки
-       - tool_get_headings() - все заголовки (h1-h6)
-       - tool_get_dom_snapshot() - СТРУКТУРИРОВАННЫЙ СНИМОК с ID элементов
+    ПОИСК ЭЛЕМЕНТОВ (ОСНОВНОЙ):
+    - tool_get_ax_tree() - получить все кнопки/поля/ссылки (рекомендовано)
     
-    3. Взаимодействие со страницей:
-       - tool_js(expression) - выполнить JavaScript
-       - tool_fill_input(selector, text) - заполнить поле ввода
-       - tool_click_at_xy(x, y) - кликнуть по координатам
-       - tool_type_text(text) - ввести текст
-       - tool_press_key(key) - нажать клавишу
-       - tool_scroll(x, y) - прокрутить страницу
+    ЧТЕНИЕ КОНТЕНТА:
+    - tool_get_text() - прочитать текст на странице (статьи, новости)
+    - tool_page_info() - URL и заголовок
     
-    4. Скриншоты:
-       - tool_capture_screenshot(filename) - сделать скриншот
+    ДЕЙСТВИЯ:
+    - tool_fill_input(selector, text) - заполнить поле
+    - tool_click_at_xy(x, y) - кликнуть по координатам
+    - tool_press_key(key) - нажать клавишу
     
-    ПРАВИЛА:
-    - Для навигации используй tool_goto_url
-    - Для поиска элементов используй tool_get_dom_snapshot() - он даёт ID и координаты
-    - Для кликов используй tool_click_at_xy с координатами из snapshot
-    - Для заполнения форм используй tool_fill_input с CSS селектором
-    - Для получения текста используй tool_get_text()
-    - Если нужно выполнить сложные действия - используй tool_js
+    ДОПОЛНИТЕЛЬНО:
+    - tool_js(expression) - выполнить JavaScript
+    - tool_capture_screenshot() - сделать скриншот
+    
+    АЛГОРИТМ РАБОТЫ:
+    1. tool_goto_url() → перейти на сайт
+    2. tool_get_ax_tree() → найти элементы
+    3. tool_fill_input() или tool_click_at_xy() → взаимодействовать
+    4. tool_get_text() → прочитать результат
     """
     
     question = InputField(desc="Задача пользователя")
-    answer = OutputField(desc="Ответ на задачу с использованием Browser Harness")
+    answer = OutputField(desc="Ответ")
 
 
 # ============================================================
@@ -398,7 +396,7 @@ class HarnessBot:
             logger.error(f"❌ Ошибка установки кук: {e}")
     
     async def _init_dspy(self):
-        """Инициализация DSPy агента с инструментами Browser Harness"""
+        """Инициализация DSPy агента с оптимизированными инструментами"""
         AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
         
         if not AGNES_API_KEY:
@@ -407,19 +405,13 @@ class HarnessBot:
         
         try:
             # ============================================================
-            # ВСЕ ИНСТРУМЕНТЫ BROWSER HARNESS ДЛЯ DSPy
+            # ИНСТРУМЕНТЫ ДЛЯ DSPy (ОПТИМИЗИРОВАННЫЙ СПИСОК)
             # ============================================================
             
-            def tool_new_tab() -> str:
-                """Открыть новую вкладку"""
-                try:
-                    new_tab()
-                    return "✅ Новая вкладка открыта"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
+            # ---- НАВИГАЦИЯ (4 инструмента) ----
             
             def tool_goto_url(url: str) -> str:
-                """Перейти на URL и дождаться загрузки"""
+                """Перейти на URL"""
                 try:
                     goto_url(url)
                     wait_for_load()
@@ -435,104 +427,11 @@ class HarnessBot:
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
-            def tool_js(expression: str) -> str:
-                """Выполнить JavaScript на странице"""
+            def tool_new_tab() -> str:
+                """Открыть новую вкладку"""
                 try:
-                    result = js(expression)
-                    if isinstance(result, dict):
-                        return str(result.get('result', result))
-                    return str(result) if result is not None else "✅ JavaScript выполнен (нет результата)"
-                except Exception as e:
-                    return f"❌ Ошибка JavaScript: {e}"
-            
-            def tool_capture_screenshot(filename: str = None) -> str:
-                """Сделать скриншот страницы"""
-                try:
-                    if not filename:
-                        timestamp = int(time.time())
-                        filename = f"screenshot_{timestamp}.png"
-                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
-                    capture_screenshot(path=full_path)
-                    return f"✅ Скриншот сохранен: {filename}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_page_info() -> str:
-                """Получить информацию о странице (URL, Title)"""
-                try:
-                    info = page_info()
-                    return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_text() -> str:
-                """Получить весь текст на странице"""
-                try:
-                    result = js('() => document.body.innerText')
-                    if isinstance(result, dict):
-                        text = result.get('result', str(result))
-                    else:
-                        text = str(result)
-                    if text and len(text) > 10:
-                        return text[:5000]
-                    return "❌ Текст не найден или страница пуста"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_links() -> str:
-                """Получить все ссылки на странице"""
-                try:
-                    result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
-                    if isinstance(result, list) and result:
-                        links = [str(item) for item in result if item]
-                        return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
-                    return "❌ Ссылок не найдено"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_buttons() -> str:
-                """Получить все кнопки на странице"""
-                try:
-                    result = js('() => Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())')
-                    if isinstance(result, list) and result:
-                        buttons = [str(item).strip() for item in result if item and str(item).strip()]
-                        return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
-                    return "❌ Кнопок не найдено"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_get_headings() -> str:
-                """Получить все заголовки на странице (h1-h6)"""
-                try:
-                    result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
-                    if isinstance(result, list) and result:
-                        headings = [str(item).strip() for item in result if item and str(item).strip()]
-                        return f"Заголовки:\n" + "\n".join(headings)
-                    return "❌ Заголовков не найдено"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_list_tabs() -> str:
-                """Список всех открытых вкладок"""
-                try:
-                    tabs = list_tabs()
-                    return f"Вкладки: {tabs}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_current_tab() -> str:
-                """ID текущей вкладки"""
-                try:
-                    tab = current_tab()
-                    return f"Текущая вкладка: {tab}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
-            def tool_switch_tab(tab_id: int) -> str:
-                """Переключиться на вкладку по ID"""
-                try:
-                    switch_tab(tab_id)
-                    return f"✅ Переключился на вкладку {tab_id}"
+                    new_tab()
+                    return "✅ Новая вкладка открыта"
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
@@ -544,8 +443,44 @@ class HarnessBot:
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
+            # ---- ИНФОРМАЦИЯ О СТРАНИЦЕ (3 инструмента) ----
+            
+            def tool_get_ax_tree() -> str:
+                """
+                Получить интерактивные элементы через Accessibility Tree.
+                Используй для поиска кнопок, полей, ссылок.
+                """
+                try:
+                    loop = asyncio.get_event_loop()
+                    result = loop.run_until_complete(bot.get_ax_tree())
+                    return result
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_get_text() -> str:
+                """
+                Получить весь текст со страницы.
+                Используй для чтения контента (статьи, новости).
+                """
+                try:
+                    loop = asyncio.get_event_loop()
+                    result = loop.run_until_complete(bot.get_text_cdp())
+                    return result
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_page_info() -> str:
+                """Получить URL и заголовок страницы"""
+                try:
+                    info = page_info()
+                    return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            # ---- ВЗАИМОДЕЙСТВИЕ (3 инструмента) ----
+            
             def tool_fill_input(selector: str, text: str) -> str:
-                """Заполнить поле ввода по CSS селектору"""
+                """Заполнить поле ввода (по CSS селектору)"""
                 try:
                     fill_input(selector, text)
                     return f"✅ Заполнено: {selector} -> {text}"
@@ -553,98 +488,66 @@ class HarnessBot:
                     return f"❌ Ошибка: {e}"
             
             def tool_click_at_xy(x: int, y: int) -> str:
-                """Кликнуть по координатам"""
+                """Кликнуть по координатам (получи из AX Tree)"""
                 try:
                     click_at_xy(x, y)
                     return f"✅ Клик по ({x}, {y})"
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
-            def tool_type_text(text: str) -> str:
-                """Ввести текст"""
-                try:
-                    type_text(text)
-                    return f"✅ Введено: {text}"
-                except Exception as e:
-                    return f"❌ Ошибка: {e}"
-            
             def tool_press_key(key: str) -> str:
-                """Нажать клавишу"""
+                """Нажать клавишу (Enter, Escape, Tab и др.)"""
                 try:
                     press_key(key)
                     return f"✅ Нажата клавиша: {key}"
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
-            def tool_scroll(dx: int, dy: int) -> str:
-                """Прокрутить страницу"""
+            # ---- ДОПОЛНИТЕЛЬНО (2 инструмента) ----
+            
+            def tool_js(expression: str) -> str:
+                """Выполнить JavaScript (для сложных действий)"""
                 try:
-                    scroll(dx, dy)
-                    return f"✅ Прокрутка на ({dx}, {dy})"
+                    result = js(expression)
+                    return str(result) if result is not None else "✅ JavaScript выполнен"
+                except Exception as e:
+                    return f"❌ Ошибка: {e}"
+            
+            def tool_capture_screenshot(filename: str = None) -> str:
+                """Сделать скриншот страницы"""
+                try:
+                    if not filename:
+                        filename = f"screenshot_{int(time.time())}.png"
+                    full_path = os.path.join(SCREENSHOTS_DIR, filename)
+                    capture_screenshot(path=full_path)
+                    return f"✅ Скриншот: {filename}"
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
             # ============================================================
-            # НОВЫЙ ИНСТРУМЕНТ: DOM SNAPSHOT
-            # ============================================================
-            
-            def tool_get_dom_snapshot() -> str:
-                """Получить структурированный снимок страницы с ID элементов и координатами"""
-                try:
-                    loop = asyncio.get_event_loop()
-                    snapshot = loop.run_until_complete(bot.get_dom_snapshot())
-                    
-                    if not snapshot or not snapshot.get('elements'):
-                        return "❌ На странице нет интерактивных элементов"
-                    
-                    text = f"📄 {snapshot.get('title', 'No title')}\n"
-                    text += f"🔗 {snapshot.get('url', 'No URL')}\n\n"
-                    text += f"📋 Доступно {snapshot.get('total', 0)} элементов (показано {len(snapshot.get('elements', []))}):\n\n"
-                    
-                    visible_count = 0
-                    for el in snapshot.get('elements', []):
-                        if el.get('visible'):
-                            visible_count += 1
-                            text += f"  • `{el['id']}` [{el['tag']}] "
-                            if el['text']:
-                                text += f"\"{el['text'][:30]}\" "
-                            if el['href']:
-                                text += f"→ {el['href'][:40]} "
-                            text += f"(x:{el.get('x', 0)}, y:{el.get('y', 0)})\n"
-                    
-                    if visible_count == 0:
-                        text += "\n⚠️ Нет видимых интерактивных элементов"
-                    
-                    return text
-                    
-                except Exception as e:
-                    return f"❌ Ошибка DOM snapshot: {e}"
-            
-            # ============================================================
-            # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ В СПИСОК
+            # СОБИРАЕМ ОПТИМИЗИРОВАННЫЙ СПИСОК (12 ИНСТРУМЕНТОВ)
             # ============================================================
             
             tools = [
-                Tool(tool_new_tab),
+                # Навигация
                 Tool(tool_goto_url),
                 Tool(tool_wait_for_load),
-                Tool(tool_js),
-                Tool(tool_capture_screenshot),
-                Tool(tool_page_info),
-                Tool(tool_get_text),
-                Tool(tool_get_links),
-                Tool(tool_get_buttons),
-                Tool(tool_get_headings),
-                Tool(tool_list_tabs),
-                Tool(tool_current_tab),
-                Tool(tool_switch_tab),
+                Tool(tool_new_tab),
                 Tool(tool_close_tab),
+                
+                # Информация
+                Tool(tool_get_ax_tree),    # ОСНОВНОЙ для поиска элементов
+                Tool(tool_get_text),       # ОСНОВНОЙ для чтения контента
+                Tool(tool_page_info),
+                
+                # Взаимодействие
                 Tool(tool_fill_input),
                 Tool(tool_click_at_xy),
-                Tool(tool_type_text),
                 Tool(tool_press_key),
-                Tool(tool_scroll),
-                Tool(tool_get_dom_snapshot),  # <-- НОВЫЙ ИНСТРУМЕНТ
+                
+                # Дополнительно
+                Tool(tool_js),
+                Tool(tool_capture_screenshot),
             ]
             
             # Инициализируем DSPy с инструментами
@@ -686,19 +589,83 @@ class HarnessBot:
         wait_for_load()
         logger.info(f"✅ Страница {url} загружена")
     
-    async def get_text(self, selector: str = "body") -> str:
-        """Получение текста через CDP"""
+    async def get_text_cdp(self) -> str:
+        """Получение текста через прямой CDP (надёжнее)"""
         try:
+            # Ждём загрузки через CDP
+            for _ in range(30):
+                state_result = await self._cdp_send("Runtime.evaluate", {
+                    "expression": "document.readyState",
+                    "returnByValue": True
+                })
+                state = state_result.get("result", {}).get("result", {}).get("value", "")
+                if state == "complete":
+                    break
+                await asyncio.sleep(0.5)
+            
+            # Получаем текст
             result = await self._cdp_send("Runtime.evaluate", {
-                "expression": f"document.querySelector('{selector}')?.textContent || ''",
+                "expression": "document.body.innerText || document.documentElement.innerText",
                 "returnByValue": True
             })
-            if result and "result" in result and "result" in result["result"]:
-                return result["result"]["result"].get("value", "")
-            return ""
+            
+            text = result.get("result", {}).get("result", {}).get("value", "")
+            if text and len(text) > 10:
+                return text[:10000]
+            return "❌ Текст не найден"
         except Exception as e:
-            logger.error(f"❌ Ошибка получения текста: {e}")
-            return ""
+            return f"❌ Ошибка: {e}"
+    
+    async def get_ax_tree(self) -> str:
+        """Получить интерактивные элементы через Accessibility Tree (рекомендовано browser-harness)"""
+        try:
+            # Получаем AX дерево через CDP
+            result = await self._cdp_send("Accessibility.getFullAXTree")
+            
+            if not result or "result" not in result:
+                return "❌ Не удалось получить Accessibility Tree"
+            
+            nodes = result.get("result", {}).get("nodes", [])
+            
+            if not nodes:
+                return "❌ Нет узлов в Accessibility Tree"
+            
+            # Фильтруем интерактивные элементы
+            interactive = []
+            for node in nodes:
+                role = node.get("role", {}).get("value", "")
+                name = node.get("name", {}).get("value", "")
+                
+                # Интерактивные роли
+                interactive_roles = {
+                    "button", "link", "textbox", "checkbox", "radio",
+                    "combobox", "listbox", "menuitem", "tab", "treeitem",
+                    "slider", "spinbutton", "switch", "searchbox"
+                }
+                
+                if role in interactive_roles and name:
+                    interactive.append({
+                        "role": role,
+                        "name": name[:50]
+                    })
+            
+            if not interactive:
+                return "ℹ️ Нет интерактивных элементов на странице"
+            
+            # Форматируем для агента
+            info = page_info()
+            result_text = f"📄 {info.get('title', 'No title')}\n"
+            result_text += f"🔗 {info.get('url', 'No URL')}\n\n"
+            result_text += f"📋 Найдено {len(interactive)} интерактивных элементов:\n\n"
+            
+            for idx, el in enumerate(interactive[:30], 1):
+                result_text += f"  {idx}. [{el['role']}] {el['name']}\n"
+            
+            return result_text
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка AX Tree: {e}")
+            return f"❌ Ошибка: {str(e)}"
     
     async def screenshot(self, path: str = None) -> bytes:
         """Скриншот через CDP"""
@@ -794,64 +761,6 @@ class HarnessBot:
         """Информация о странице"""
         return page_info()
     
-    # ========== НОВЫЙ МЕТОД: DOM SNAPSHOT ==========
-    
-    async def get_dom_snapshot(self) -> dict:
-        """Получить структурированный снимок страницы как в DOM Engine"""
-        try:
-            result = await self._cdp_send("Runtime.evaluate", {
-                "expression": """
-                    (function() {
-                        const elements = [];
-                        const selectors = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"]';
-                        
-                        document.querySelectorAll(selectors).forEach((el, index) => {
-                            const id = `el_${index + 1}`;
-                            el.dataset.agenticId = id;
-                            
-                            const rect = el.getBoundingClientRect();
-                            const isVisible = el.offsetParent !== null && rect.width > 0 && rect.height > 0;
-                            
-                            elements.push({
-                                id: id,
-                                tag: el.tagName.toLowerCase(),
-                                text: (el.innerText || el.value || '').trim().slice(0, 50),
-                                href: el.href || '',
-                                type: el.type || '',
-                                visible: isVisible,
-                                x: Math.round(rect.left + rect.width/2),
-                                y: Math.round(rect.top + rect.height/2),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height)
-                            });
-                        });
-                        
-                        // Сортируем по видимости и позиции
-                        elements.sort((a, b) => {
-                            if (a.visible && !b.visible) return -1;
-                            if (!a.visible && b.visible) return 1;
-                            return a.y - b.y || a.x - b.x;
-                        });
-                        
-                        return {
-                            elements: elements.slice(0, 50), // максимум 50
-                            total: elements.length,
-                            url: window.location.href,
-                            title: document.title
-                        };
-                    })()
-                """,
-                "returnByValue": True
-            })
-            
-            if result and "result" in result:
-                return result["result"]["result"].get("value", {})
-            return {}
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка DOM snapshot: {e}")
-            return {}
-    
     async def ask_dspy(self, question: str) -> str:
         """Задать вопрос DSPy агенту"""
         if not self.dspy_agent:
@@ -910,7 +819,6 @@ bot = None  # Глобальный экземпляр
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /dspy"""
-    # Проверка на None
     if not update or not update.message:
         logger.warning("⚠️ update.message is None")
         return
@@ -967,14 +875,11 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global bot
     
-    # Запускаем HarnessBot
     bot = HarnessBot()
     await bot.start()
     
-    # Создаём Telegram приложение
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Регистрируем команды
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
@@ -982,12 +887,10 @@ async def main():
     logger.info(f"🧠 DSPy статус: {'✅ Активен' if bot.dspy_agent else '❌ Отключен'}")
     logger.info(f"🍪 Куки: {'✅ Загружены' if COOKIES else '❌ Нет'}")
     
-    # Запускаем polling
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
     
-    # Бесконечное ожидание
     while True:
         await asyncio.sleep(60)
         logger.info("💓 Bot alive")
