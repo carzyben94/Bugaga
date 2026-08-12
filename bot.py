@@ -374,7 +374,7 @@ class HarnessBot:
         return self
     
     async def _set_cookies(self):
-        """Установить куки через CDP одной командой"""
+        """Установить куки через CDP с проверкой"""
         if not COOKIES:
             logger.info("ℹ️ Нет кук для установки")
             return
@@ -385,21 +385,51 @@ class HarnessBot:
                 cookie_data = {
                     "name": cookie.get("name"),
                     "value": cookie.get("value"),
-                    "domain": cookie.get("domain", ""),
                     "path": cookie.get("path", "/"),
                     "secure": cookie.get("secure", False),
                     "httpOnly": cookie.get("httpOnly", False),
                 }
+                
+                # ⚠️ КРИТИЧНО: убираем точку в начале domain для CDP
+                domain = cookie.get("domain", "")
+                if domain.startswith("."):
+                    domain = domain[1:]  # ".x.com" → "x.com"
+                cookie_data["domain"] = domain
+                
                 if "sameSite" in cookie:
                     cookie_data["sameSite"] = cookie["sameSite"]
                 if "expires" in cookie:
                     cookie_data["expires"] = cookie["expires"]
+                
                 cookies_list.append(cookie_data)
+                logger.info(f"🍪 Устанавливаю: {cookie_data['name']} = {cookie_data['value'][:20]}...")
             
+            # Отправляем куки
             await self._cdp_send("Network.setCookies", {
                 "cookies": cookies_list
             })
-            logger.info(f"✅ Установлено {len(cookies_list)} кук")
+            
+            # ✅ ПРОВЕРЯЕМ: запрашиваем все куки обратно
+            result = await self._cdp_send("Network.getCookies", {})
+            cookies = result.get("result", {}).get("cookies", [])
+            
+            # Считаем, сколько наших кук реально установилось
+            installed = 0
+            for cookie in cookies_list:
+                for installed_cookie in cookies:
+                    if installed_cookie.get("name") == cookie.get("name"):
+                        installed += 1
+                        break
+            
+            logger.info(f"✅ Установлено {installed} из {len(cookies_list)} кук")
+            
+            # Проверяем ключевую куку auth_token
+            for cookie in cookies:
+                if cookie.get("name") == "auth_token":
+                    logger.info(f"🔑 auth_token установлен: {cookie.get('value')[:20]}...")
+                    break
+            else:
+                logger.warning("⚠️ auth_token НЕ найден среди установленных кук")
             
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
