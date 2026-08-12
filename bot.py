@@ -80,6 +80,7 @@ from browser_harness.helpers import (
     type_text,
     press_key,
     scroll,
+    set_cookies,  # <-- ДОБАВЛЯЕМ!
 )
 from browser_harness.admin import ensure_daemon
 
@@ -354,7 +355,7 @@ class HarnessBot:
         self.daemon = ensure_daemon()
         logger.info("✅ Daemon запущен")
         
-        # 4. Устанавливаем куки ДО создания вкладки
+        # 4. Устанавливаем куки ДО создания вкладки (через Browser Harness)
         await self._set_cookies()
         
         # 5. Создаём вкладку через Harness
@@ -374,7 +375,7 @@ class HarnessBot:
         return self
     
     async def _set_cookies(self):
-        """Установить куки через Network.setCookies (правильный метод CDP)"""
+        """Установить куки через встроенный метод Browser Harness"""
         if not COOKIES:
             logger.info("ℹ️ Нет кук для установки")
             return
@@ -385,7 +386,7 @@ class HarnessBot:
                 cookie_data = {
                     "name": cookie.get("name"),
                     "value": cookie.get("value"),
-                    "domain": cookie.get("domain", "").lstrip("."),  # убираем точку
+                    "domain": cookie.get("domain", "").lstrip("."),
                     "path": cookie.get("path", "/"),
                     "secure": cookie.get("secure", False),
                     "httpOnly": cookie.get("httpOnly", False),
@@ -400,31 +401,17 @@ class HarnessBot:
                         same_site = "Lax"
                     cookie_data["sameSite"] = same_site
                 
-                # Для sameSite=None нужно secure=True
-                if cookie_data.get("sameSite") == "None" and not cookie_data.get("secure"):
-                    cookie_data["secure"] = True
-                
                 cookies_list.append(cookie_data)
-                logger.info(f"🍪 Подготовлена: {cookie_data['name']} = {cookie_data['value'][:20]}...")
+                logger.info(f"🍪 Подготовлена: {cookie_data['name']}")
             
-            # Отправляем ВСЕ куки одной командой Network.setCookies
-            logger.info(f"📤 Отправка {len(cookies_list)} кук через Network.setCookies...")
+            # Используем встроенный метод Browser Harness
+            result = set_cookies(cookies_list)
+            logger.info(f"✅ Установлено {len(cookies_list)} кук через Browser Harness")
             
-            result = await self._cdp_send("Network.setCookies", {
-                "cookies": cookies_list
-            })
-            
-            # Проверяем успешность
-            if result and "result" in result:
-                logger.info("✅ Network.setCookies выполнен успешно")
-            else:
-                logger.warning(f"⚠️ Network.setCookies ответ: {result}")
-            
-            # Проверяем установку через Network.getCookies
+            # Проверяем установку
             result = await self._cdp_send("Network.getCookies", {})
             cookies = result.get("result", {}).get("cookies", [])
             
-            # Считаем установленные куки
             installed = 0
             for cookie in cookies_list:
                 for installed_cookie in cookies:
@@ -432,15 +419,15 @@ class HarnessBot:
                         installed += 1
                         break
             
-            logger.info(f"✅ Установлено {installed} из {len(cookies_list)} кук")
+            logger.info(f"✅ Подтверждено: {installed} из {len(cookies_list)} кук")
             
-            # Проверяем ключевую куку auth_token
+            # Проверяем auth_token
             for cookie in cookies:
                 if cookie.get("name") == "auth_token":
                     logger.info(f"🔑 auth_token установлен: {cookie.get('value')[:20]}...")
                     break
             else:
-                logger.warning("⚠️ auth_token НЕ найден среди установленных кук")
+                logger.warning("⚠️ auth_token НЕ найден")
             
         except Exception as e:
             logger.error(f"❌ Ошибка установки кук: {e}")
