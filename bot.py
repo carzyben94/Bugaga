@@ -38,15 +38,24 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
-# 4. ИМПОРТ КУК (ПОСЛЕ СОЗДАНИЯ ЛОГГЕРА)
+# 4. КУКИ ДЛЯ X (TWITTER) - ВСТРОЕНЫ
 # ============================================================
 
-try:
-    from cookies import COOKIES
-    logger.info(f"🍪 Загружено {len(COOKIES)} кук")
-except ImportError:
-    logger.warning("⚠️ cookies.py не найден, куки не загружены")
-    COOKIES = []
+COOKIES = [
+    {"name": "guest_id", "value": "v1%3A178649311604923115", "domain": ".x.com"},
+    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com"},
+    {"name": "guest_id_marketing", "value": "v1%3A178649311604923115", "domain": ".x.com"},
+    {"name": "guest_id_ads", "value": "v1%3A178649311604923115", "domain": ".x.com"},
+    {"name": "personalization_id", "value": '"v1_VL5PDSWqcwv7LNBV75SiLA=="', "domain": ".x.com"},
+    {"name": "g_state", "value": '{"i_l":0,"i_ll":1786493441069,"i_b":"GK5KqYSRaGCT7CvSxBv3wqY6m7ne53iSPqkYW+ROGIo","i_e":{"enable_itp_optimization":24},"i_et":1786493441069}', "domain": ".x.com"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com"},
+    {"name": "auth_token", "value": "cb1c77feeb34ba956e9a11395f16e2c40a8296b3", "domain": ".x.com"},
+    {"name": "lang", "value": "ru", "domain": ".x.com"},
+    {"name": "ct0", "value": "e769b9ab9eeae9ac8db6093626dbfea52ce3a5a0010cb4effe135bf6726b25ae60168ef75632bc6968843bee52b09ff318927e35a461014f564edebf8bb7199436c548cca8333728e28b98d882763b56", "domain": ".x.com"},
+    {"name": "__cf_bm", "value": "Y9l527iFi1HAutYEKxXObf7bRJa3qqpt48sAaRzTtyc-1786543451.1712544-1.0.1.1-uJJMPTLttfwkWrNTfu.HApA_CYjzdljOh1V4055YOP8nx.mrfbrEaKJYayDn76O_dDcliL0lWVnuNta8KaNcTq8k_SxDUZ1FOaFxs7bILY.Rfh0Z0YW_iCjMoEQh4huX", "domain": ".x.com"}
+]
+
+logger.info(f"🍪 Загружено {len(COOKIES)} кук для X")
 
 # ============================================================
 # 5. ДОБАВЛЯЕМ ПУТЬ К BROWSER HARNESS
