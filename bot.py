@@ -38,22 +38,21 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
-# 4. КУКИ ДЛЯ X (TWITTER) - СВЕЖИЕ
+# 4. КУКИ ДЛЯ X (TWITTER) - АДАПТИРОВАНЫ ДЛЯ CDP
 # ============================================================
 
 COOKIES = [
-    {"name": "guest_id_marketing", "value": "v1%3A178654552534341036", "domain": ".x.com", "secure": True},
-    {"name": "guest_id_ads", "value": "v1%3A178654552534341036", "domain": ".x.com", "secure": True},
-    {"name": "gt", "value": "2087549353716060518", "domain": ".x.com", "secure": True},
-    {"name": "personalization_id", "value": "\"v1_vCSISZBfJDpEFaPx5Fz5Rg==\"", "domain": ".x.com", "secure": True},
-    {"name": "guest_id", "value": "v1%3A178654552534341036", "domain": ".x.com", "secure": True},
-    {"name": "__cf_bm", "value": "1AZjyWxPTsT9yp118lGNxdxwspOOmp02pvTAKXHHPSs-1786545531.8033626-1.0.1.1-gPnOIQcB5LfC97fnfXQCmSjvcer27iZdK0Z408kXQCpTnC8gkbHPVJpwK4aioZPCelpt0WAlEjxowuYIqYzmjn2HJEurDVUWXR6wlJIvez2Sp4jygCyAV9mCl42IflEh", "domain": ".x.com", "secure": True},
-    {"name": "__cuid", "value": "74718293-b3ec-48aa-9a90-1476c17a8557", "domain": ".x.com"},
-    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "secure": True},
-    {"name": "auth_token", "value": "2a1332f5dada664d8d8dfa10c76857590b52ae35", "domain": ".x.com", "secure": True},
-    {"name": "ct0", "value": "75c731cf498eb30416712d1aaf4159c21ab67c11f63157e728023bb1d584f8ec94ccf03a899f02e1f04e6eee9c9f94531a1800d7f94f3871bfd787e001ed62a3ff5a11bc1178d39310a57035b762b1f1", "domain": ".x.com", "secure": True},
-    {"name": "lang", "value": "ru", "domain": ".x.com"},
-    {"name": "g_state", "value": "{\"i_l\":2,\"i_ll\":1786545535935,\"i_b\":\"Kj2ZJFn05wJXEtImAaj5lwEgjKzmmXBcu1prDcy9Iks\",\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786545535935,\"i_p\":1786631938453}", "domain": ".x.com"}
+    {"name": "auth_token", "value": "2a1332f5dada664d8d8dfa10c76857590b52ae35", "domain": "x.com", "path": "/", "secure": True, "httpOnly": True, "sameSite": "Lax"},
+    {"name": "ct0", "value": "75c731cf498eb30416712d1aaf4159c21ab67c11f63157e728023bb1d584f8ec94ccf03a899f02e1f04e6eee9c9f94531a1800d7f94f3871bfd787e001ed62a3ff5a11bc1178d39310a57035b762b1f1", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "guest_id", "value": "v1%3A178654552534341036", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "guest_id_marketing", "value": "v1%3A178654552534341036", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "guest_id_ads", "value": "v1%3A178654552534341036", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "personalization_id", "value": "\"v1_vCSISZBfJDpEFaPx5Fz5Rg==\"", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "lang", "value": "ru", "domain": "x.com", "path": "/"},
+    {"name": "gt", "value": "2087549353716060518", "domain": "x.com", "path": "/", "secure": True, "sameSite": "Lax"},
+    {"name": "__cuid", "value": "74718293-b3ec-48aa-9a90-1476c17a8557", "domain": "x.com", "path": "/"},
+    {"name": "g_state", "value": "{\"i_l\":2,\"i_ll\":1786545535935,\"i_b\":\"Kj2ZJFn05wJXEtImAaj5lwEgjKzmmXBcu1prDcy9Iks\",\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786545535935,\"i_p\":1786631938453}", "domain": "x.com", "path": "/"}
 ]
 
 logger.info(f"🍪 Загружено {len(COOKIES)} кук для X")
@@ -355,7 +354,7 @@ class HarnessBot:
         self.daemon = ensure_daemon()
         logger.info("✅ Daemon запущен")
         
-        # 4. Устанавливаем куки ДО создания вкладки
+        # 4. Устанавливаем куки ДО создания вкладки (ПОШТУЧНО!)
         await self._set_cookies()
         
         # 5. Создаём вкладку через Harness
@@ -375,65 +374,63 @@ class HarnessBot:
         return self
     
     async def _set_cookies(self):
-        """Установить куки через CDP с проверкой"""
+        """Установить куки по одной для диагностики"""
         if not COOKIES:
             logger.info("ℹ️ Нет кук для установки")
             return
         
-        try:
-            cookies_list = []
-            for cookie in COOKIES:
-                cookie_data = {
-                    "name": cookie.get("name"),
-                    "value": cookie.get("value"),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                }
-                
-                # ⚠️ КРИТИЧНО: убираем точку в начале domain для CDP
-                domain = cookie.get("domain", "")
-                if domain.startswith("."):
-                    domain = domain[1:]  # ".x.com" → "x.com"
-                cookie_data["domain"] = domain
-                
-                if "sameSite" in cookie:
-                    cookie_data["sameSite"] = cookie["sameSite"]
-                if "expires" in cookie:
-                    cookie_data["expires"] = cookie["expires"]
-                
-                cookies_list.append(cookie_data)
-                logger.info(f"🍪 Устанавливаю: {cookie_data['name']} = {cookie_data['value'][:20]}...")
+        installed = 0
+        logger.info("🍪 Начинаю установку кук по одной...")
+        
+        for cookie in COOKIES:
+            # Собираем данные для куки
+            cookie_data = {
+                "name": cookie.get("name"),
+                "value": cookie.get("value"),
+                "domain": cookie.get("domain", "").lstrip("."),  # убираем точку
+                "path": cookie.get("path", "/"),
+                "secure": cookie.get("secure", False),
+                "httpOnly": cookie.get("httpOnly", False),
+            }
             
-            # Отправляем куки
-            await self._cdp_send("Network.setCookies", {
-                "cookies": cookies_list
-            })
+            # Преобразуем sameSite для CDP
+            if "sameSite" in cookie:
+                same_site = cookie["sameSite"]
+                if same_site == "no_restriction":
+                    same_site = "None"
+                elif same_site == "unspecified":
+                    same_site = "Lax"
+                cookie_data["sameSite"] = same_site
             
-            # ✅ ПРОВЕРЯЕМ: запрашиваем все куки обратно
-            result = await self._cdp_send("Network.getCookies", {})
-            cookies = result.get("result", {}).get("cookies", [])
+            # Если sameSite=None, нужно secure=True
+            if cookie_data.get("sameSite") == "None" and not cookie_data.get("secure"):
+                cookie_data["secure"] = True
             
-            # Считаем, сколько наших кук реально установилось
-            installed = 0
-            for cookie in cookies_list:
-                for installed_cookie in cookies:
-                    if installed_cookie.get("name") == cookie.get("name"):
-                        installed += 1
-                        break
-            
-            logger.info(f"✅ Установлено {installed} из {len(cookies_list)} кук")
-            
-            # Проверяем ключевую куку auth_token
-            for cookie in cookies:
-                if cookie.get("name") == "auth_token":
-                    logger.info(f"🔑 auth_token установлен: {cookie.get('value')[:20]}...")
-                    break
-            else:
-                logger.warning("⚠️ auth_token НЕ найден среди установленных кук")
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
+            # Отправляем КАЖДУЮ куку отдельно через Network.setCookie
+            try:
+                result = await self._cdp_send("Network.setCookie", cookie_data)
+                success = result.get("result", {}).get("success", False)
+                if success:
+                    installed += 1
+                    logger.info(f"✅ Установлена: {cookie_data['name']}")
+                else:
+                    logger.warning(f"❌ Не удалась: {cookie_data['name']} - {result}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка установки {cookie_data['name']}: {e}")
+        
+        logger.info(f"📊 Установлено {installed} из {len(COOKIES)} кук")
+        
+        # Проверяем итоговый список кук
+        result = await self._cdp_send("Network.getCookies", {})
+        cookies = result.get("result", {}).get("cookies", [])
+        
+        # Ищем ключевую куку auth_token
+        for cookie in cookies:
+            if cookie.get("name") == "auth_token":
+                logger.info(f"🔑 auth_token установлен: {cookie.get('value')[:20]}...")
+                break
+        else:
+            logger.warning("⚠️ auth_token НЕ найден среди установленных кук")
     
     async def _init_dspy(self):
         """Инициализация DSPy агента с оптимизированными инструментами"""
