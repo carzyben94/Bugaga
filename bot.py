@@ -1,10 +1,10 @@
-# bot.py - полный рабочий бот с DSPy промтом 
+# bot.py - полностью автоматический бот с Browser Use Cloud API
 import os
 import sys
 import asyncio
 import logging
 import time
-import base64
+from datetime import datetime, timedelta
 
 # ============================================================
 # 1. НАСТРОЙКА ЛОГГЕРА
@@ -30,7 +30,13 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
-# 3. BROWSER HARNESS
+# 3. SDK BROWSER USE
+# ============================================================
+
+from browser_use_sdk.v3 import AsyncBrowserUse
+
+# ============================================================
+# 4. BROWSER HARNESS
 # ============================================================
 
 sys.path.insert(0, "browser-harness/src")
@@ -48,13 +54,11 @@ from browser_harness.helpers import (
     scroll,
     list_tabs,
     switch_tab,
-    type_text,
-    press_key,
 )
 from browser_harness.admin import ensure_daemon
 
 # ============================================================
-# 4. КУКИ
+# 5. КУКИ
 # ============================================================
 
 try:
@@ -65,7 +69,7 @@ except ImportError:
     logger.warning("⚠️ cookies.py не найден")
 
 # ============================================================
-# 5. TELEGRAM
+# 6. TELEGRAM
 # ============================================================
 
 from telegram import Update
@@ -77,13 +81,7 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 # ============================================================
-# 6. CDP URL
-# ============================================================
-
-CDP_URL = os.environ.get("CDP_URL", "https://9d683906-74b6-44a1-a138-c33b957fb907.cdp.browser-use.com")
-
-# ============================================================
-# 7. DSPy С ПОЛНЫМ ПРОМТОМ
+# 7. DSPy
 # ============================================================
 
 DSPY_ENABLED = os.environ.get("AGNES_API_KEY") is not None
@@ -91,10 +89,6 @@ DSPY_ENABLED = os.environ.get("AGNES_API_KEY") is not None
 if DSPY_ENABLED:
     import dspy
     from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
-    
-    # ============================================================
-    # ПОЛНАЯ СИГНАТУРА С ПРОМТОМ
-    # ============================================================
     
     class BrowserTask(Signature):
         """
@@ -121,8 +115,6 @@ if DSPY_ENABLED:
            - tool_js(expression) - выполнить JavaScript
            - tool_fill_input(selector, text) - заполнить поле ввода
            - tool_click_at_xy(x, y) - кликнуть по координатам
-           - tool_type_text(text) - ввести текст
-           - tool_press_key(key) - нажать клавишу
            - tool_scroll(x, y) - прокрутить страницу
         
         4. Скриншоты:
@@ -135,15 +127,10 @@ if DSPY_ENABLED:
         - Для заполнения форм используй tool_fill_input
         - Если нужно выполнить сложные действия - используй tool_js
         - Всегда проверяй результат выполнения действия
-        - Если инструмент вернул ошибку - попробуй другой подход
         """
         
         question = InputField(desc="Задача пользователя на русском языке")
         answer = OutputField(desc="Подробный ответ с результатами выполнения задачи")
-    
-    # ============================================================
-    # АДАПТЕР ДЛЯ AGNES AI
-    # ============================================================
     
     class AgnesLM(dspy.LM):
         def __init__(self):
@@ -176,177 +163,138 @@ if DSPY_ENABLED:
         def __call__(self, prompt=None, messages=None, **kwargs):
             return self.forward(prompt=prompt, messages=messages, **kwargs)
     
-    # ============================================================
-    # ВСЕ ИНСТРУМЕНТЫ BROWSER HARNESS ДЛЯ DSPy
-    # ============================================================
-    
-    def tool_new_tab() -> str:
-        """Открыть новую вкладку"""
-        try:
-            new_tab()
-            return "✅ Новая вкладка открыта"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_goto_url(url: str) -> str:
-        """Перейти на URL и дождаться загрузки"""
-        try:
-            goto_url(url)
-            wait_for_load()
-            return f"✅ Перешел на {url}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_wait_for_load() -> str:
-        """Дождаться загрузки страницы"""
-        try:
-            wait_for_load()
-            return "✅ Страница загружена"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_js(expression: str) -> str:
-        """Выполнить JavaScript на странице"""
-        try:
-            result = js(expression)
-            return str(result) if result is not None else "✅ JavaScript выполнен"
-        except Exception as e:
-            return f"❌ Ошибка JavaScript: {e}"
-    
-    def tool_capture_screenshot(filename: str = None) -> str:
-        """Сделать скриншот страницы"""
-        try:
-            if not filename:
-                filename = f"screenshot_{int(time.time())}.png"
-            full_path = os.path.join(SCREENSHOTS_DIR, filename)
-            capture_screenshot(path=full_path)
-            return f"✅ Скриншот сохранен: {filename}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_page_info() -> str:
-        """Получить информацию о странице (URL, Title)"""
-        try:
-            info = page_info()
-            return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_get_text() -> str:
-        """Получить весь текст на странице"""
-        try:
-            result = js('document.body.innerText')
-            text = str(result)
-            if text and len(text) > 10:
-                return text[:5000]
-            return "❌ Текст не найден или страница пуста"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_get_links() -> str:
-        """Получить все ссылки на странице"""
-        try:
-            result = js('Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
-            if isinstance(result, list) and result:
-                links = [str(item) for item in result if item]
-                return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
-            return "❌ Ссылок не найдено"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_get_buttons() -> str:
-        """Получить все кнопки на странице"""
-        try:
-            result = js('Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())')
-            if isinstance(result, list) and result:
-                buttons = [str(item).strip() for item in result if item and str(item).strip()]
-                return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
-            return "❌ Кнопок не найдено"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_get_headings() -> str:
-        """Получить все заголовки на странице (h1-h6)"""
-        try:
-            result = js('Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
-            if isinstance(result, list) and result:
-                headings = [str(item).strip() for item in result if item and str(item).strip()]
-                return f"Заголовки:\n" + "\n".join(headings)
-            return "❌ Заголовков не найдено"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_list_tabs() -> str:
-        """Список всех открытых вкладок"""
-        try:
-            tabs = list_tabs()
-            return f"Вкладки: {tabs}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_switch_tab(tab_id: int) -> str:
-        """Переключиться на вкладку по ID"""
-        try:
-            switch_tab(tab_id)
-            return f"✅ Переключился на вкладку {tab_id}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_close_tab() -> str:
-        """Закрыть текущую вкладку"""
-        try:
-            close_tab()
-            return "✅ Вкладка закрыта"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_fill_input(selector: str, text: str) -> str:
-        """Заполнить поле ввода по CSS селектору"""
-        try:
-            fill_input(selector, text)
-            return f"✅ Заполнено: {selector} -> {text}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_click_at_xy(x: int, y: int) -> str:
-        """Кликнуть по координатам"""
-        try:
-            click_at_xy(x, y)
-            return f"✅ Клик по ({x}, {y})"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_type_text(text: str) -> str:
-        """Ввести текст"""
-        try:
-            type_text(text)
-            return f"✅ Введено: {text}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_press_key(key: str) -> str:
-        """Нажать клавишу"""
-        try:
-            press_key(key)
-            return f"✅ Нажата клавиша: {key}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    def tool_scroll(dx: int, dy: int) -> str:
-        """Прокрутить страницу"""
-        try:
-            scroll(dx, dy)
-            return f"✅ Прокрутка на ({dx}, {dy})"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    
-    # ============================================================
-    # СОЗДАНИЕ АГЕНТА
-    # ============================================================
-    
     def init_dspy():
         lm = AgnesLM()
         settings.configure(lm=lm)
+        
+        # Инструменты
+        def tool_new_tab() -> str:
+            try:
+                new_tab()
+                return "✅ Новая вкладка открыта"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_goto_url(url: str) -> str:
+            try:
+                goto_url(url)
+                wait_for_load()
+                return f"✅ Перешел на {url}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_wait_for_load() -> str:
+            try:
+                wait_for_load()
+                return "✅ Страница загружена"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_js(expression: str) -> str:
+            try:
+                result = js(expression)
+                return str(result) if result is not None else "✅ JavaScript выполнен"
+            except Exception as e:
+                return f"❌ Ошибка JavaScript: {e}"
+        
+        def tool_capture_screenshot(filename: str = None) -> str:
+            try:
+                if not filename:
+                    filename = f"screenshot_{int(time.time())}.png"
+                full_path = os.path.join(SCREENSHOTS_DIR, filename)
+                capture_screenshot(path=full_path)
+                return f"✅ Скриншот сохранен: {filename}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_page_info() -> str:
+            try:
+                info = page_info()
+                return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_get_text() -> str:
+            try:
+                result = js('document.body.innerText')
+                text = str(result)
+                if text and len(text) > 10:
+                    return text[:5000]
+                return "❌ Текст не найден или страница пуста"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_get_links() -> str:
+            try:
+                result = js('Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
+                if isinstance(result, list) and result:
+                    links = [str(item) for item in result if item]
+                    return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
+                return "❌ Ссылок не найдено"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_get_buttons() -> str:
+            try:
+                result = js('Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())')
+                if isinstance(result, list) and result:
+                    buttons = [str(item).strip() for item in result if item and str(item).strip()]
+                    return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
+                return "❌ Кнопок не найдено"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_get_headings() -> str:
+            try:
+                result = js('Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
+                if isinstance(result, list) and result:
+                    headings = [str(item).strip() for item in result if item and str(item).strip()]
+                    return f"Заголовки:\n" + "\n".join(headings)
+                return "❌ Заголовков не найдено"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_list_tabs() -> str:
+            try:
+                tabs = list_tabs()
+                return f"Вкладки: {tabs}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_switch_tab(tab_id: int) -> str:
+            try:
+                switch_tab(tab_id)
+                return f"✅ Переключился на вкладку {tab_id}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_close_tab() -> str:
+            try:
+                close_tab()
+                return "✅ Вкладка закрыта"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_fill_input(selector: str, text: str) -> str:
+            try:
+                fill_input(selector, text)
+                return f"✅ Заполнено: {selector} -> {text}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_click_at_xy(x: int, y: int) -> str:
+            try:
+                click_at_xy(x, y)
+                return f"✅ Клик по ({x}, {y})"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_scroll(dx: int, dy: int) -> str:
+            try:
+                scroll(dx, dy)
+                return f"✅ Прокрутка на ({dx}, {dy})"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
         
         tools = [
             Tool(tool_new_tab),
@@ -364,8 +312,6 @@ if DSPY_ENABLED:
             Tool(tool_close_tab),
             Tool(tool_fill_input),
             Tool(tool_click_at_xy),
-            Tool(tool_type_text),
-            Tool(tool_press_key),
             Tool(tool_scroll),
         ]
         
@@ -373,7 +319,7 @@ if DSPY_ENABLED:
             agent = ReActV2(
                 signature=BrowserTask,
                 tools=tools,
-                max_iters=10,
+                max_iters=15,
             )
             logger.info(f"✅ ReActV2 агент создан с {len(tools)} инструментами")
             return agent
@@ -387,30 +333,171 @@ else:
     dspy_agent = None
     logger.info("ℹ️ DSPy отключён (AGNES_API_KEY не задан)")
 
+
 # ============================================================
-# 8. ОСНОВНОЙ КЛАСС
+# 8. УПРАВЛЕНИЕ СЕССИЯМИ BROWSER USE
+# ============================================================
+
+class BrowserSessionManager:
+    """Автоматическое управление сессиями Browser Use Cloud"""
+    
+    def __init__(self):
+        self.client = None
+        self.current_cdp_url = None
+        self.session_created_at = None
+        self.session_lifetime = 14  # минут (пересоздаём за 1 минуту до истечения)
+        self.is_running = False
+        self.renew_task = None
+    
+    async def start(self):
+        """Запустить менеджер"""
+        self.client = AsyncBrowserUse()
+        self.is_running = True
+        
+        # Создаём первую сессию
+        await self._create_session()
+        
+        # Запускаем фоновое обновление
+        self.renew_task = asyncio.create_task(self._auto_renew())
+        
+        logger.info("✅ BrowserSessionManager запущен")
+        return self
+    
+    async def _create_session(self):
+        """Создать новую сессию"""
+        logger.info("🚀 Создаю новую сессию в Browser Use Cloud...")
+        
+        try:
+            # Создаём браузер через SDK
+            result = await self.client.create_browser(
+                timeout=15,  # минут
+                headless=True
+            )
+            
+            # Получаем CDP URL
+            self.current_cdp_url = result.cdp_url
+            self.session_created_at = datetime.now()
+            
+            logger.info(f"✅ Сессия создана: {self.current_cdp_url}")
+            logger.info(f"⏱️ Сессия активна до: {self.session_created_at + timedelta(minutes=15)}")
+            
+            return self.current_cdp_url
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания сессии: {e}")
+            # Пробуем через HTTP напрямую
+            return await self._create_session_http()
+    
+    async def _create_session_http(self):
+        """Создать сессию через HTTP API (если SDK не работает)"""
+        import httpx
+        
+        api_key = os.environ.get("BROWSER_USE_API_KEY")
+        if not api_key:
+            raise ValueError("BROWSER_USE_API_KEY не задан!")
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.browser-use.com/api/v3/browsers",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"timeout": 15}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            self.current_cdp_url = data["cdp_url"]
+            self.session_created_at = datetime.now()
+            
+            logger.info(f"✅ Сессия создана (HTTP): {self.current_cdp_url}")
+            return self.current_cdp_url
+    
+    async def _auto_renew(self):
+        """Фоновое обновление сессии"""
+        while self.is_running:
+            # Проверяем, не пора ли обновить
+            if self.session_created_at:
+                elapsed = (datetime.now() - self.session_created_at).total_seconds() / 60
+                
+                if elapsed >= self.session_lifetime:
+                    logger.info(f"⏰ Сессии {elapsed:.1f} минут - обновляю...")
+                    await self.renew_session()
+            
+            # Проверяем каждые 30 секунд
+            await asyncio.sleep(30)
+    
+    async def renew_session(self):
+        """Принудительное обновление сессии"""
+        logger.info("🔄 Пересоздаю сессию...")
+        
+        # Закрываем старую сессию
+        try:
+            await self.client.close_browser()
+        except:
+            pass
+        
+        # Создаём новую
+        await self._create_session()
+        
+        # Обновляем переменную окружения для Browser Harness
+        os.environ["BU_CDP_URL"] = self.current_cdp_url
+        
+        logger.info("✅ Сессия обновлена")
+        return self.current_cdp_url
+    
+    async def get_cdp_url(self):
+        """Получить текущий CDP URL"""
+        if not self.current_cdp_url:
+            await self._create_session()
+        return self.current_cdp_url
+    
+    async def stop(self):
+        """Остановить менеджер"""
+        self.is_running = False
+        
+        if self.renew_task:
+            self.renew_task.cancel()
+        
+        try:
+            await self.client.close_browser()
+            logger.info("✅ Сессия закрыта")
+        except:
+            pass
+
+
+# ============================================================
+# 9. ОСНОВНОЙ КЛАСС БОТА
 # ============================================================
 
 class HarnessBot:
     def __init__(self):
         self.tab = None
         self.is_ready = False
+        self.session_manager = None
+        self.cdp_url = None
     
     async def start(self):
-        """Запуск"""
-        logger.info("🚀 Запуск Browser Harness...")
+        """Запуск с автоматическим управлением сессиями"""
+        logger.info("🚀 Запуск Browser Harness с Auto-Renew...")
         
-        os.environ["BU_CDP_URL"] = CDP_URL
-        logger.info(f"🔗 BU_CDP_URL: {CDP_URL}")
+        # 1. Создаём менеджер сессий
+        self.session_manager = BrowserSessionManager()
+        await self.session_manager.start()
         
+        # 2. Получаем CDP URL
+        self.cdp_url = await self.session_manager.get_cdp_url()
+        
+        # 3. Настраиваем Browser Harness
+        os.environ["BU_CDP_URL"] = self.cdp_url
         ensure_daemon()
         logger.info("✅ Демон подключен к браузеру")
         
+        # 4. Создаём вкладку
         logger.info("🌐 Создаю вкладку...")
         self.tab = new_tab("https://example.com")
         wait_for_load()
         logger.info(f"✅ Вкладка создана: {self.tab}")
         
+        # 5. Устанавливаем куки
         if COOKIES:
             for cookie in COOKIES:
                 try:
@@ -421,12 +508,35 @@ class HarnessBot:
         
         self.is_ready = True
         logger.info("✅ HarnessBot готов!")
+        logger.info(f"⏱️ Сессия будет автоматически обновляться каждые 14 минут")
         return self
+    
+    async def ensure_session(self):
+        """Проверить и обновить сессию если нужно"""
+        if self.session_manager:
+            # Если сессия обновилась - переподключаем Browser Harness
+            new_url = await self.session_manager.get_cdp_url()
+            if new_url != self.cdp_url:
+                logger.info("🔄 Сессия обновилась, переподключаю...")
+                self.cdp_url = new_url
+                os.environ["BU_CDP_URL"] = self.cdp_url
+                # Пересоздаём вкладку
+                if self.tab:
+                    try:
+                        close_tab(self.tab)
+                    except:
+                        pass
+                self.tab = new_tab("https://example.com")
+                wait_for_load()
+                logger.info("✅ Переподключено")
     
     async def ask_dspy(self, question):
         """Задать вопрос DSPy агенту"""
         if not dspy_agent:
             return "❌ DSPy отключён. Установите AGNES_API_KEY"
+        
+        # Проверяем сессию перед выполнением
+        await self.ensure_session()
         
         logger.info(f"🧠 DSPy запрос: {question}")
         try:
@@ -444,28 +554,30 @@ class HarnessBot:
                 close_tab(self.tab)
             except:
                 pass
+        
+        if self.session_manager:
+            await self.session_manager.stop()
+        
         self.is_ready = False
+        logger.info("✅ Закрыто")
 
 
 # ============================================================
-# 9. TELEGRAM КОМАНДЫ
+# 10. TELEGRAM КОМАНДЫ
 # ============================================================
 
 bot = None
 
 async def start_command(update, context):
     await update.message.reply_text(
-        "🤖 **Browser Bot**\n\n"
+        "🤖 **Browser Bot (Auto-Renew)**\n\n"
         "Команды:\n"
         "`/go <url>` - перейти на сайт\n"
         "`/screenshot` - сделать скриншот\n"
         "`/text` - получить текст страницы\n"
         "`/info` - информация о странице\n"
         "`/dspy <задача>` - задать вопрос AI-агенту\n\n"
-        "Примеры /dspy:\n"
-        "• открыть google.com и сделать скриншот\n"
-        "• найти все ссылки на странице\n"
-        "• заполнить форму логина",
+        "⚡ Сессия автоматически обновляется каждые 14 минут",
         parse_mode='Markdown'
     )
 
@@ -478,6 +590,7 @@ async def go_command(update, context):
     msg = await update.message.reply_text(f"🌐 Перехожу на {url}...")
     
     try:
+        await bot.ensure_session()
         goto_url(url)
         wait_for_load()
         info = page_info()
@@ -493,6 +606,7 @@ async def screenshot_command(update, context):
     msg = await update.message.reply_text("📸 Делаю скриншот...")
     
     try:
+        await bot.ensure_session()
         filename = f"screenshot_{int(time.time())}.png"
         path = os.path.join(SCREENSHOTS_DIR, filename)
         capture_screenshot(path=path)
@@ -506,6 +620,7 @@ async def text_command(update, context):
     msg = await update.message.reply_text("📖 Получаю текст...")
     
     try:
+        await bot.ensure_session()
         text = js('document.body.innerText')
         text = str(text)
         if len(text) > 4000:
@@ -516,6 +631,7 @@ async def text_command(update, context):
 
 async def info_command(update, context):
     try:
+        await bot.ensure_session()
         info = page_info()
         await update.message.reply_text(
             f"📄 **Информация**\n"
@@ -565,11 +681,16 @@ async def dspy_command(update, context):
 
 
 # ============================================================
-# 10. ЗАПУСК
+# 11. ЗАПУСК
 # ============================================================
 
 async def main():
     global bot
+    
+    # Проверяем API ключи
+    if not os.environ.get("BROWSER_USE_API_KEY"):
+        logger.error("❌ BROWSER_USE_API_KEY не задан!")
+        return
     
     bot = HarnessBot()
     await bot.start()
@@ -588,9 +709,10 @@ async def main():
     await app.updater.start_polling()
     
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🔗 CDP: {CDP_URL}")
+    logger.info(f"🔗 CDP: {bot.cdp_url}")
     logger.info(f"🧠 DSPy: {'✅' if dspy_agent else '❌'}")
     logger.info(f"🍪 Куки: {'✅' if COOKIES else '❌'}")
+    logger.info("⏱️ Сессия автоматически обновляется каждые 14 минут")
     
     try:
         while True:
