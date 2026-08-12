@@ -38,21 +38,22 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # ============================================================
-# 4. КУКИ ДЛЯ X (TWITTER) - ВСТРОЕНЫ
+# 4. КУКИ ДЛЯ X (TWITTER) - СВЕЖИЕ
 # ============================================================
 
 COOKIES = [
-    {"name": "guest_id", "value": "v1%3A178649311604923115", "domain": ".x.com"},
-    {"name": "__cuid", "value": "55d2d7c5-4888-430a-b024-dd785da46ef4", "domain": ".x.com"},
-    {"name": "guest_id_marketing", "value": "v1%3A178649311604923115", "domain": ".x.com"},
-    {"name": "guest_id_ads", "value": "v1%3A178649311604923115", "domain": ".x.com"},
-    {"name": "personalization_id", "value": '"v1_VL5PDSWqcwv7LNBV75SiLA=="', "domain": ".x.com"},
-    {"name": "g_state", "value": '{"i_l":0,"i_ll":1786493441069,"i_b":"GK5KqYSRaGCT7CvSxBv3wqY6m7ne53iSPqkYW+ROGIo","i_e":{"enable_itp_optimization":24},"i_et":1786493441069}', "domain": ".x.com"},
-    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com"},
-    {"name": "auth_token", "value": "cb1c77feeb34ba956e9a11395f16e2c40a8296b3", "domain": ".x.com"},
+    {"name": "guest_id_marketing", "value": "v1%3A178654552534341036", "domain": ".x.com", "secure": True},
+    {"name": "guest_id_ads", "value": "v1%3A178654552534341036", "domain": ".x.com", "secure": True},
+    {"name": "gt", "value": "2087549353716060518", "domain": ".x.com", "secure": True},
+    {"name": "personalization_id", "value": "\"v1_vCSISZBfJDpEFaPx5Fz5Rg==\"", "domain": ".x.com", "secure": True},
+    {"name": "guest_id", "value": "v1%3A178654552534341036", "domain": ".x.com", "secure": True},
+    {"name": "__cf_bm", "value": "1AZjyWxPTsT9yp118lGNxdxwspOOmp02pvTAKXHHPSs-1786545531.8033626-1.0.1.1-gPnOIQcB5LfC97fnfXQCmSjvcer27iZdK0Z408kXQCpTnC8gkbHPVJpwK4aioZPCelpt0WAlEjxowuYIqYzmjn2HJEurDVUWXR6wlJIvez2Sp4jygCyAV9mCl42IflEh", "domain": ".x.com", "secure": True},
+    {"name": "__cuid", "value": "74718293-b3ec-48aa-9a90-1476c17a8557", "domain": ".x.com"},
+    {"name": "twid", "value": "u%3D2067347503503052800", "domain": ".x.com", "secure": True},
+    {"name": "auth_token", "value": "2a1332f5dada664d8d8dfa10c76857590b52ae35", "domain": ".x.com", "secure": True},
+    {"name": "ct0", "value": "75c731cf498eb30416712d1aaf4159c21ab67c11f63157e728023bb1d584f8ec94ccf03a899f02e1f04e6eee9c9f94531a1800d7f94f3871bfd787e001ed62a3ff5a11bc1178d39310a57035b762b1f1", "domain": ".x.com", "secure": True},
     {"name": "lang", "value": "ru", "domain": ".x.com"},
-    {"name": "ct0", "value": "e769b9ab9eeae9ac8db6093626dbfea52ce3a5a0010cb4effe135bf6726b25ae60168ef75632bc6968843bee52b09ff318927e35a461014f564edebf8bb7199436c548cca8333728e28b98d882763b56", "domain": ".x.com"},
-    {"name": "__cf_bm", "value": "Y9l527iFi1HAutYEKxXObf7bRJa3qqpt48sAaRzTtyc-1786543451.1712544-1.0.1.1-uJJMPTLttfwkWrNTfu.HApA_CYjzdljOh1V4055YOP8nx.mrfbrEaKJYayDn76O_dDcliL0lWVnuNta8KaNcTq8k_SxDUZ1FOaFxs7bILY.Rfh0Z0YW_iCjMoEQh4huX", "domain": ".x.com"}
+    {"name": "g_state", "value": "{\"i_l\":2,\"i_ll\":1786545535935,\"i_b\":\"Kj2ZJFn05wJXEtImAaj5lwEgjKzmmXBcu1prDcy9Iks\",\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786545535935,\"i_p\":1786631938453}", "domain": ".x.com"}
 ]
 
 logger.info(f"🍪 Загружено {len(COOKIES)} кук для X")
