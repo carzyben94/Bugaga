@@ -1,4 +1,4 @@
-# bot.py - Browser Harness + DSPy через облачный браузер Browser Use
+# bot.py - Cloud Browser + DSPy (без Browser Harness)
 import os
 import sys
 import asyncio
@@ -132,13 +132,10 @@ class AgnesLM(dspy.LM):
     
     def __call__(self, prompt=None, messages=None, **kwargs):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
-    
-    async def aforward(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 
 # ============================================================
-# 6. КЛАСС ДЛЯ РАБОТЫ С ОБЛАЧНЫМ БРАУЗЕРОМ
+# 6. КЛАСС ДЛЯ РАБОТЫ С ОБЛАЧНЫМ БРАУЗЕРОМ (ПРАВИЛЬНЫЙ API)
 # ============================================================
 
 class CloudBrowser:
@@ -149,16 +146,17 @@ class CloudBrowser:
         self.ws = None
         self.browser_id = None
         self.cdp_id = 0
-        self.target_id = None
         self._connected = False
+        self.session_id = None
     
     async def create(self) -> dict:
         """Создать браузер в облаке"""
         logger.info("☁️ Создаю браузер в облаке Browser Use...")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # Правильный эндпоинт для Browser Use Cloud
             response = await client.post(
-                "https://cloud.browser-use.com/api/v1/browser/create",
+                "https://cloud.browser-use.com/api/v1/browser",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json"
@@ -166,22 +164,36 @@ class CloudBrowser:
                 json={
                     "headless": True,
                     "stealth": True,
-                    "proxy": True,
-                    "keep_alive": True
+                    "proxy": True
                 }
             )
+            
+            if response.status_code == 401:
+                raise ValueError("❌ Неверный API ключ Browser Use. Проверьте BROWSER_USE_API_KEY")
+            
             response.raise_for_status()
             data = response.json()
             
-            self.browser_id = data.get("browser_id")
-            cdp_url = data.get("cdp_url")
-            ws_url = data.get("ws_url")
+            self.browser_id = data.get("id") or data.get("browser_id")
+            self.session_id = data.get("session_id")
+            
+            # Получаем WebSocket URL
+            ws_url = data.get("ws_url") or data.get("webSocketDebuggerUrl")
             
             if not ws_url:
-                raise ValueError("Не получен ws_url от API")
+                # Пробуем получить через отдельный эндпоинт
+                ws_response = await client.get(
+                    f"https://cloud.browser-use.com/api/v1/browser/{self.browser_id}/ws",
+                    headers={"Authorization": f"Bearer {self.api_key}"}
+                )
+                ws_data = ws_response.json()
+                ws_url = ws_data.get("ws_url") or ws_data.get("webSocketDebuggerUrl")
+            
+            if not ws_url:
+                raise ValueError("Не получен WebSocket URL")
             
             logger.info(f"✅ Браузер создан: {self.browser_id}")
-            logger.info(f"🔗 WebSocket: {ws_url}")
+            logger.info(f"🔗 WebSocket: {ws_url[:50]}...")
             
             # Подключаемся к WebSocket
             await self._connect(ws_url)
@@ -189,7 +201,7 @@ class CloudBrowser:
             return {
                 "browser_id": self.browser_id,
                 "ws_url": ws_url,
-                "cdp_url": cdp_url
+                "session_id": self.session_id
             }
     
     async def _connect(self, ws_url: str):
@@ -197,10 +209,17 @@ class CloudBrowser:
         logger.info("🔗 Подключаюсь к WebSocket...")
         self.ws = await websockets.connect(
             ws_url,
-            max_size=100 * 1024 * 1024  # 100MB
+            max_size=100 * 1024 * 1024,
+            ping_interval=20,
+            ping_timeout=60
         )
         self._connected = True
         logger.info("✅ WebSocket подключен")
+        
+        # Включаем необходимые домены
+        await self.send_cdp("Page.enable")
+        await self.send_cdp("Runtime.enable")
+        await self.send_cdp("Network.enable")
     
     async def send_cdp(self, method: str, params: dict = None) -> dict:
         """Отправить CDP команду"""
@@ -218,54 +237,43 @@ class CloudBrowser:
         
         # Ждем ответ
         while True:
-            response = await self.ws.recv()
-            data = json.loads(response)
-            if data.get("id") == self.cdp_id:
-                if "error" in data:
-                    raise RuntimeError(f"CDP ошибка: {data['error']}")
-                return data.get("result", {})
-    
-    async def set_cookies(self, cookies: list):
-        """Установить куки"""
-        if not cookies:
-            return
-        
-        try:
-            cookies_list = []
-            for cookie in cookies:
-                cookie_data = {
-                    "name": cookie.get("name"),
-                    "value": cookie.get("value"),
-                    "domain": cookie.get("domain", ""),
-                    "path": cookie.get("path", "/"),
-                    "secure": cookie.get("secure", False),
-                    "httpOnly": cookie.get("httpOnly", False),
-                }
-                if "sameSite" in cookie:
-                    cookie_data["sameSite"] = cookie["sameSite"]
-                if "expires" in cookie:
-                    cookie_data["expires"] = cookie["expires"]
-                cookies_list.append(cookie_data)
-            
-            await self.send_cdp("Network.setCookies", {"cookies": cookies_list})
-            logger.info(f"✅ Установлено {len(cookies_list)} кук")
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
+            try:
+                response = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+                data = json.loads(response)
+                if data.get("id") == self.cdp_id:
+                    if "error" in data:
+                        raise RuntimeError(f"CDP ошибка: {data['error']}")
+                    return data.get("result", {})
+            except asyncio.TimeoutError:
+                raise RuntimeError("Таймаут ожидания CDP ответа")
     
     async def goto(self, url: str) -> dict:
         """Перейти на URL"""
+        logger.info(f"🌐 Перехожу на {url}")
+        
         try:
-            await self.send_cdp("Page.enable")
-            await self.send_cdp("Runtime.enable")
-            await self.send_cdp("Network.enable")
-            
             result = await self.send_cdp("Page.navigate", {"url": url})
             
             # Ждем загрузки
-            await asyncio.sleep(3)
+            await asyncio.sleep(2)
             
+            # Ждем, пока загрузка завершится
+            for _ in range(10):
+                try:
+                    load_result = await self.send_cdp("Runtime.evaluate", {
+                        "expression": "document.readyState",
+                        "returnByValue": True
+                    })
+                    state = load_result.get("result", {}).get("value", "")
+                    if state == "complete":
+                        break
+                except:
+                    pass
+                await asyncio.sleep(0.5)
+            
+            logger.info(f"✅ Страница загружена: {url}")
             return result
+            
         except Exception as e:
             logger.error(f"❌ Ошибка перехода: {e}")
             raise
@@ -274,7 +282,7 @@ class CloudBrowser:
         """Получить текст страницы"""
         try:
             result = await self.send_cdp("Runtime.evaluate", {
-                "expression": "document.body.innerText",
+                "expression": "document.body ? document.body.innerText : ''",
                 "returnByValue": True
             })
             
@@ -357,18 +365,21 @@ class CloudBrowser:
     async def fill(self, selector: str, text: str) -> bool:
         """Заполнить поле"""
         try:
+            # Экранируем кавычки
+            safe_text = text.replace("'", "\\'").replace('"', '\\"')
+            
             await self.send_cdp("Runtime.evaluate", {
                 "expression": f"""
                     const el = document.querySelector('{selector}');
                     if (el) {{
                         el.focus();
-                        el.value = '{text.replace("'", "\\'")}';
+                        el.value = '{safe_text}';
                         el.dispatchEvent(new Event('input', {{bubbles: true}}));
                         el.dispatchEvent(new Event('change', {{bubbles: true}}));
                     }}
                 """
             })
-            logger.info(f"⌨️ Заполнено: {selector} -> {text}")
+            logger.info(f"⌨️ Заполнено: {selector} -> {text[:30]}...")
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка заполнения: {e}")
@@ -414,8 +425,8 @@ class CloudBrowser:
         if self.browser_id:
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(
-                        f"https://cloud.browser-use.com/api/v1/browser/{self.browser_id}/close",
+                    await client.delete(
+                        f"https://cloud.browser-use.com/api/v1/browser/{self.browser_id}",
                         headers={"Authorization": f"Bearer {self.api_key}"}
                     )
                 logger.info(f"✅ Браузер {self.browser_id} закрыт")
@@ -426,7 +437,7 @@ class CloudBrowser:
 
 
 # ============================================================
-# 7. ОСНОВНОЙ КЛАСС HarnessBot (ОБЛАЧНАЯ ВЕРСИЯ)
+# 7. ОСНОВНОЙ КЛАСС HarnessBot
 # ============================================================
 
 class HarnessBot:
@@ -447,12 +458,6 @@ class HarnessBot:
         # Переходим на страницу
         await self.browser.goto("https://example.com")
         logger.info("✅ Страница загружена")
-        
-        # Устанавливаем куки
-        await self.browser.set_cookies(COOKIES)
-        
-        # Переходим на нужную страницу после установки кук
-        # await self.browser.goto("https://your-target-site.com")
         
         # Инициализация DSPy
         await self._init_dspy()
@@ -562,7 +567,7 @@ class HarnessBot:
                         loop
                     )
                     result = future.result(timeout=10)
-                    return str(result) if result is not None else "✅ JS выполнен (нет результата)"
+                    return str(result) if result is not None else "✅ JS выполнен"
                 except Exception as e:
                     return f"❌ Ошибка: {e}"
             
@@ -631,8 +636,6 @@ class HarnessBot:
             
             # Создаем агента
             try:
-                from dspy import ReActV2
-                
                 class BrowserSignature(Signature):
                     """Агент с доступом к облачному браузеру"""
                     question = InputField(desc="Задача пользователя")
@@ -652,18 +655,6 @@ class HarnessBot:
             logger.error(f"❌ Ошибка инициализации DSPy: {e}")
             self.dspy_agent = None
     
-    async def go_to(self, url: str):
-        """Переход на страницу"""
-        await self.browser.goto(url)
-    
-    async def get_text(self) -> str:
-        """Получить текст"""
-        return await self.browser.get_text()
-    
-    async def screenshot(self, path: str = None) -> bytes:
-        """Сделать скриншот"""
-        return await self.browser.screenshot(path)
-    
     async def ask_dspy(self, question: str) -> str:
         """Задать вопрос DSPy агенту"""
         if not self.dspy_agent:
@@ -672,7 +663,6 @@ class HarnessBot:
         logger.info(f"🧠 DSPy запрос: {question}")
         
         try:
-            # ReActV2 не поддерживает async напрямую
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
@@ -761,11 +751,9 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global bot
     
-    # Создаем и запускаем бота
     bot = HarnessBot()
     await bot.start()
     
-    # Telegram
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("dspy", dspy_command))
     
