@@ -1,4 +1,4 @@
-# bot.py - полный рабочий бот с DSPy промтом
+# bot.py - полный рабочий бот с DSPy промтом 
 import os
 import sys
 import asyncio
