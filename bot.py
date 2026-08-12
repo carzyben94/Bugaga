@@ -6,6 +6,7 @@ import logging
 import base64
 import json
 import time
+import websockets
 
 # ============================================================
 # 1. НАСТРОЙКА ТАЙМАУТОВ ДЛЯ BROWSER HARNESS
@@ -80,7 +81,6 @@ from browser_harness.helpers import (
     type_text,
     press_key,
     scroll,
-    set_cookies,  # <-- ДОБАВЛЯЕМ!
 )
 from browser_harness.admin import ensure_daemon
 
@@ -323,6 +323,7 @@ class HarnessBot:
         self.browser = None
         self.page = None
         self.ws = None
+        self.cdp_ws = None  # Отдельный WebSocket для CDP
         self.is_ready = False
         self._id = 0
         self.dspy_agent = None
@@ -344,6 +345,11 @@ class HarnessBot:
         self.ws = self.browser["ws"]
         self._id = self.browser["_id"]
         
+        # СОЗДАЁМ ОТДЕЛЬНЫЙ WEBSOCKET ДЛЯ CDP
+        logger.info("🔌 Создаю отдельный WebSocket для CDP...")
+        self.cdp_ws = await websockets.connect(self.ws)
+        logger.info("✅ Отдельный WebSocket создан")
+        
         await asyncio.sleep(2)
         
         logger.info("🔗 Шаг 2: Подключение Browser Harness...")
@@ -355,8 +361,8 @@ class HarnessBot:
         self.daemon = ensure_daemon()
         logger.info("✅ Daemon запущен")
         
-        # 4. Устанавливаем куки ДО создания вкладки (через Browser Harness)
-        await self._set_cookies()
+        # 4. Устанавливаем куки через отдельный CDP WebSocket
+        await self._set_cookies_via_cdp()
         
         # 5. Создаём вкладку через Harness
         self.page = new_tab("https://example.com")
@@ -374,13 +380,38 @@ class HarnessBot:
         logger.info("✅ HarnessBot готов!")
         return self
     
-    async def _set_cookies(self):
-        """Установить куки через встроенный метод Browser Harness"""
-        if not COOKIES:
+    async def _cdp_send_cdp(self, method: str, params: dict = None) -> dict:
+        """Отправка CDP команды через отдельный WebSocket"""
+        self._id += 1
+        msg = {
+            "id": self._id,
+            "method": method,
+            "params": params or {}
+        }
+        await self.cdp_ws.send(json.dumps(msg))
+        response = await self.cdp_ws.recv()
+        return json.loads(response)
+    
+    async def _set_cookies_via_cdp(self):
+        """Установка кук через отдельный CDP WebSocket"""
+        if not COOKIES or not self.cdp_ws:
             logger.info("ℹ️ Нет кук для установки")
             return
         
         try:
+            # Получаем список вкладок и активируем нужную
+            logger.info("📋 Получаю список вкладок...")
+            result = await self._cdp_send_cdp("Target.getTargets", {})
+            targets = result.get("result", {}).get("targetInfos", [])
+            
+            if targets:
+                target_id = targets[0]["targetId"]
+                logger.info(f"🎯 Активирую вкладку: {target_id}")
+                await self._cdp_send_cdp("Target.activateTarget", {"targetId": target_id})
+            else:
+                logger.warning("⚠️ Нет активных вкладок")
+            
+            # Формируем список кук
             cookies_list = []
             for cookie in COOKIES:
                 cookie_data = {
@@ -392,7 +423,6 @@ class HarnessBot:
                     "httpOnly": cookie.get("httpOnly", False),
                 }
                 
-                # Преобразуем sameSite для CDP
                 if "sameSite" in cookie:
                     same_site = cookie["sameSite"]
                     if same_site == "no_restriction":
@@ -404,12 +434,19 @@ class HarnessBot:
                 cookies_list.append(cookie_data)
                 logger.info(f"🍪 Подготовлена: {cookie_data['name']}")
             
-            # Используем встроенный метод Browser Harness
-            result = set_cookies(cookies_list)
-            logger.info(f"✅ Установлено {len(cookies_list)} кук через Browser Harness")
+            # Устанавливаем куки
+            logger.info(f"📤 Отправка {len(cookies_list)} кук через отдельный CDP...")
+            result = await self._cdp_send_cdp("Network.setCookies", {
+                "cookies": cookies_list
+            })
+            
+            if "error" in result:
+                logger.error(f"❌ Ошибка CDP: {result['error']}")
+            else:
+                logger.info(f"✅ Куки отправлены через CDP")
             
             # Проверяем установку
-            result = await self._cdp_send("Network.getCookies", {})
+            result = await self._cdp_send_cdp("Network.getCookies", {})
             cookies = result.get("result", {}).get("cookies", [])
             
             installed = 0
@@ -430,7 +467,7 @@ class HarnessBot:
                 logger.warning("⚠️ auth_token НЕ найден")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка установки кук: {e}")
+            logger.error(f"❌ Ошибка установки кук через CDP: {e}")
     
     async def _init_dspy(self):
         """Инициализация DSPy агента с оптимизированными инструментами"""
@@ -606,7 +643,7 @@ class HarnessBot:
     # ========== CDP МЕТОДЫ ==========
     
     async def _cdp_send(self, method: str, params: dict = None) -> dict:
-        """Асинхронная отправка CDP команды"""
+        """Асинхронная отправка CDP команды через основной WebSocket"""
         self._id += 1
         msg = {
             "id": self._id,
@@ -825,6 +862,13 @@ class HarnessBot:
                 logger.info("✅ Вкладка закрыта")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка закрытия вкладки: {e}")
+        
+        if self.cdp_ws:
+            try:
+                await self.cdp_ws.close()
+                logger.info("✅ CDP WebSocket закрыт")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка закрытия CDP WebSocket: {e}")
         
         if self.browser:
             await StealthBrowser.close(self.browser)
