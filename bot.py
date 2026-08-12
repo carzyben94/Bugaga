@@ -354,7 +354,7 @@ class HarnessBot:
         self.daemon = ensure_daemon()
         logger.info("✅ Daemon запущен")
         
-        # 4. Устанавливаем куки ДО создания вкладки (ПОШТУЧНО!)
+        # 4. Устанавливаем куки ДО создания вкладки
         await self._set_cookies()
         
         # 5. Создаём вкладку через Harness
@@ -374,63 +374,76 @@ class HarnessBot:
         return self
     
     async def _set_cookies(self):
-        """Установить куки по одной для диагностики"""
+        """Установить куки через Network.setCookies (правильный метод CDP)"""
         if not COOKIES:
             logger.info("ℹ️ Нет кук для установки")
             return
         
-        installed = 0
-        logger.info("🍪 Начинаю установку кук по одной...")
-        
-        for cookie in COOKIES:
-            # Собираем данные для куки
-            cookie_data = {
-                "name": cookie.get("name"),
-                "value": cookie.get("value"),
-                "domain": cookie.get("domain", "").lstrip("."),  # убираем точку
-                "path": cookie.get("path", "/"),
-                "secure": cookie.get("secure", False),
-                "httpOnly": cookie.get("httpOnly", False),
-            }
+        try:
+            cookies_list = []
+            for cookie in COOKIES:
+                cookie_data = {
+                    "name": cookie.get("name"),
+                    "value": cookie.get("value"),
+                    "domain": cookie.get("domain", "").lstrip("."),  # убираем точку
+                    "path": cookie.get("path", "/"),
+                    "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                }
+                
+                # Преобразуем sameSite для CDP
+                if "sameSite" in cookie:
+                    same_site = cookie["sameSite"]
+                    if same_site == "no_restriction":
+                        same_site = "None"
+                    elif same_site == "unspecified":
+                        same_site = "Lax"
+                    cookie_data["sameSite"] = same_site
+                
+                # Для sameSite=None нужно secure=True
+                if cookie_data.get("sameSite") == "None" and not cookie_data.get("secure"):
+                    cookie_data["secure"] = True
+                
+                cookies_list.append(cookie_data)
+                logger.info(f"🍪 Подготовлена: {cookie_data['name']} = {cookie_data['value'][:20]}...")
             
-            # Преобразуем sameSite для CDP
-            if "sameSite" in cookie:
-                same_site = cookie["sameSite"]
-                if same_site == "no_restriction":
-                    same_site = "None"
-                elif same_site == "unspecified":
-                    same_site = "Lax"
-                cookie_data["sameSite"] = same_site
+            # Отправляем ВСЕ куки одной командой Network.setCookies
+            logger.info(f"📤 Отправка {len(cookies_list)} кук через Network.setCookies...")
             
-            # Если sameSite=None, нужно secure=True
-            if cookie_data.get("sameSite") == "None" and not cookie_data.get("secure"):
-                cookie_data["secure"] = True
+            result = await self._cdp_send("Network.setCookies", {
+                "cookies": cookies_list
+            })
             
-            # Отправляем КАЖДУЮ куку отдельно через Network.setCookie
-            try:
-                result = await self._cdp_send("Network.setCookie", cookie_data)
-                success = result.get("result", {}).get("success", False)
-                if success:
-                    installed += 1
-                    logger.info(f"✅ Установлена: {cookie_data['name']}")
-                else:
-                    logger.warning(f"❌ Не удалась: {cookie_data['name']} - {result}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка установки {cookie_data['name']}: {e}")
-        
-        logger.info(f"📊 Установлено {installed} из {len(COOKIES)} кук")
-        
-        # Проверяем итоговый список кук
-        result = await self._cdp_send("Network.getCookies", {})
-        cookies = result.get("result", {}).get("cookies", [])
-        
-        # Ищем ключевую куку auth_token
-        for cookie in cookies:
-            if cookie.get("name") == "auth_token":
-                logger.info(f"🔑 auth_token установлен: {cookie.get('value')[:20]}...")
-                break
-        else:
-            logger.warning("⚠️ auth_token НЕ найден среди установленных кук")
+            # Проверяем успешность
+            if result and "result" in result:
+                logger.info("✅ Network.setCookies выполнен успешно")
+            else:
+                logger.warning(f"⚠️ Network.setCookies ответ: {result}")
+            
+            # Проверяем установку через Network.getCookies
+            result = await self._cdp_send("Network.getCookies", {})
+            cookies = result.get("result", {}).get("cookies", [])
+            
+            # Считаем установленные куки
+            installed = 0
+            for cookie in cookies_list:
+                for installed_cookie in cookies:
+                    if installed_cookie.get("name") == cookie.get("name"):
+                        installed += 1
+                        break
+            
+            logger.info(f"✅ Установлено {installed} из {len(cookies_list)} кук")
+            
+            # Проверяем ключевую куку auth_token
+            for cookie in cookies:
+                if cookie.get("name") == "auth_token":
+                    logger.info(f"🔑 auth_token установлен: {cookie.get('value')[:20]}...")
+                    break
+            else:
+                logger.warning("⚠️ auth_token НЕ найден среди установленных кук")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка установки кук: {e}")
     
     async def _init_dspy(self):
         """Инициализация DSPy агента с оптимизированными инструментами"""
