@@ -161,7 +161,7 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# СИГНАТУРА ТОЛЬКО С BROWSER HARNESS
+# СИГНАТУРА С DOM SNAPSHOT
 # ============================================================
 
 class BrowserTask(Signature):
@@ -185,6 +185,7 @@ class BrowserTask(Signature):
        - tool_get_links() - все ссылки
        - tool_get_buttons() - все кнопки
        - tool_get_headings() - все заголовки (h1-h6)
+       - tool_get_dom_snapshot() - СТРУКТУРИРОВАННЫЙ СНИМОК с ID элементов
     
     3. Взаимодействие со страницей:
        - tool_js(expression) - выполнить JavaScript
@@ -198,10 +199,11 @@ class BrowserTask(Signature):
        - tool_capture_screenshot(filename) - сделать скриншот
     
     ПРАВИЛА:
-    - Всегда используй инструменты Browser Harness
-    - Для получения текста со страницы используй tool_get_text
-    - Для кликов используй tool_click_at_xy
-    - Для заполнения форм используй tool_fill_input
+    - Для навигации используй tool_goto_url
+    - Для поиска элементов используй tool_get_dom_snapshot() - он даёт ID и координаты
+    - Для кликов используй tool_click_at_xy с координатами из snapshot
+    - Для заполнения форм используй tool_fill_input с CSS селектором
+    - Для получения текста используй tool_get_text()
     - Если нужно выполнить сложные действия - используй tool_js
     """
     
@@ -583,6 +585,42 @@ class HarnessBot:
                     return f"❌ Ошибка: {e}"
             
             # ============================================================
+            # НОВЫЙ ИНСТРУМЕНТ: DOM SNAPSHOT
+            # ============================================================
+            
+            def tool_get_dom_snapshot() -> str:
+                """Получить структурированный снимок страницы с ID элементов и координатами"""
+                try:
+                    loop = asyncio.get_event_loop()
+                    snapshot = loop.run_until_complete(bot.get_dom_snapshot())
+                    
+                    if not snapshot or not snapshot.get('elements'):
+                        return "❌ На странице нет интерактивных элементов"
+                    
+                    text = f"📄 {snapshot.get('title', 'No title')}\n"
+                    text += f"🔗 {snapshot.get('url', 'No URL')}\n\n"
+                    text += f"📋 Доступно {snapshot.get('total', 0)} элементов (показано {len(snapshot.get('elements', []))}):\n\n"
+                    
+                    visible_count = 0
+                    for el in snapshot.get('elements', []):
+                        if el.get('visible'):
+                            visible_count += 1
+                            text += f"  • `{el['id']}` [{el['tag']}] "
+                            if el['text']:
+                                text += f"\"{el['text'][:30]}\" "
+                            if el['href']:
+                                text += f"→ {el['href'][:40]} "
+                            text += f"(x:{el.get('x', 0)}, y:{el.get('y', 0)})\n"
+                    
+                    if visible_count == 0:
+                        text += "\n⚠️ Нет видимых интерактивных элементов"
+                    
+                    return text
+                    
+                except Exception as e:
+                    return f"❌ Ошибка DOM snapshot: {e}"
+            
+            # ============================================================
             # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ В СПИСОК
             # ============================================================
             
@@ -606,6 +644,7 @@ class HarnessBot:
                 Tool(tool_type_text),
                 Tool(tool_press_key),
                 Tool(tool_scroll),
+                Tool(tool_get_dom_snapshot),  # <-- НОВЫЙ ИНСТРУМЕНТ
             ]
             
             # Инициализируем DSPy с инструментами
@@ -754,6 +793,64 @@ class HarnessBot:
     async def get_page_info(self) -> dict:
         """Информация о странице"""
         return page_info()
+    
+    # ========== НОВЫЙ МЕТОД: DOM SNAPSHOT ==========
+    
+    async def get_dom_snapshot(self) -> dict:
+        """Получить структурированный снимок страницы как в DOM Engine"""
+        try:
+            result = await self._cdp_send("Runtime.evaluate", {
+                "expression": """
+                    (function() {
+                        const elements = [];
+                        const selectors = 'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="radio"]';
+                        
+                        document.querySelectorAll(selectors).forEach((el, index) => {
+                            const id = `el_${index + 1}`;
+                            el.dataset.agenticId = id;
+                            
+                            const rect = el.getBoundingClientRect();
+                            const isVisible = el.offsetParent !== null && rect.width > 0 && rect.height > 0;
+                            
+                            elements.push({
+                                id: id,
+                                tag: el.tagName.toLowerCase(),
+                                text: (el.innerText || el.value || '').trim().slice(0, 50),
+                                href: el.href || '',
+                                type: el.type || '',
+                                visible: isVisible,
+                                x: Math.round(rect.left + rect.width/2),
+                                y: Math.round(rect.top + rect.height/2),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height)
+                            });
+                        });
+                        
+                        // Сортируем по видимости и позиции
+                        elements.sort((a, b) => {
+                            if (a.visible && !b.visible) return -1;
+                            if (!a.visible && b.visible) return 1;
+                            return a.y - b.y || a.x - b.x;
+                        });
+                        
+                        return {
+                            elements: elements.slice(0, 50), // максимум 50
+                            total: elements.length,
+                            url: window.location.href,
+                            title: document.title
+                        };
+                    })()
+                """,
+                "returnByValue": True
+            })
+            
+            if result and "result" in result:
+                return result["result"]["result"].get("value", {})
+            return {}
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка DOM snapshot: {e}")
+            return {}
     
     async def ask_dspy(self, question: str) -> str:
         """Задать вопрос DSPy агенту"""
