@@ -1,4 +1,4 @@
-# bot.py - использует Browser Harness как библиотеку
+# bot.py - правильный способ для удалённого браузера
 import os
 import sys
 import asyncio
@@ -6,7 +6,7 @@ import logging
 import time
 
 # ============================================================
-# 1. НАСТРОЙКА ЛОГГЕРА
+# 1. НАСТРОЙКА
 # ============================================================
 
 logging.basicConfig(
@@ -16,13 +16,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 2. ДОБАВЛЯЕМ ПУТЬ К BROWSER HARNESS
+# 2. BROWSER HARNESS
 # ============================================================
 
-# Если папка browser-harness лежит рядом с bot.py
 sys.path.insert(0, "browser-harness/src")
 
-# Импорты из Browser Harness (библиотека)
 from browser_harness.helpers import (
     new_tab,
     goto_url,
@@ -35,8 +33,9 @@ from browser_harness.helpers import (
     click_at_xy,
     scroll,
 )
-# Админка для управления демоном
-from browser_harness.admin import ensure_daemon
+
+# ВАЖНО: импортируем start_remote_daemon
+from browser_harness.admin import start_remote_daemon, stop_remote_daemon
 
 # ============================================================
 # 3. ИМПОРТЫ
@@ -56,7 +55,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-CDP_URL = os.environ.get("CDP_URL", "https://9d683906-74b6-44a1-a138-c33b957fb907.cdp.browser-use.com")
+# Ваш CDP URL
+CDP_URL = "https://9d683906-74b6-44a1-a138-c33b957fb907.cdp.browser-use.com"
 
 # ============================================================
 # 4. DSPy (упрощённо)
@@ -162,26 +162,27 @@ class HarnessBot:
     def __init__(self):
         self.page = None
         self.agent = None
+        self.session_name = "my_browser_session"
     
     async def start(self):
-        """Запуск - всё просто!"""
-        logger.info("🚀 Запуск Browser Harness...")
+        """Запуск - подключаемся к удалённому браузеру"""
+        logger.info("🚀 Подключение к удалённому браузеру...")
         
-        # 1. ensure_daemon() сам запустит демон если нужно
-        ensure_daemon()
-        logger.info("✅ Демон запущен (или уже был запущен)")
+        # 1. Запускаем удалённый демон с CDP URL
+        # start_remote_daemon() принимает CDP URL и имя сессии
+        start_remote_daemon(self.session_name, cdp_url=CDP_URL)
+        logger.info(f"✅ Подключен к CDP: {CDP_URL}")
         
-        # 2. Устанавливаем CDP URL для подключения к браузеру
-        os.environ["BU_CDP_URL"] = CDP_URL
-        logger.info(f"🔗 Подключение к CDP: {CDP_URL}")
+        # Даём время на подключение
+        await asyncio.sleep(2)
         
-        # 3. Создаём вкладку (первый раз через new_tab)
+        # 2. Создаём вкладку
         logger.info("🌐 Создаю вкладку...")
         self.page = new_tab("https://example.com")
         wait_for_load()
         logger.info(f"✅ Вкладка создана: {self.page}")
         
-        # 4. Устанавливаем куки
+        # 3. Устанавливаем куки
         if COOKIES:
             for cookie in COOKIES:
                 try:
@@ -190,7 +191,7 @@ class HarnessBot:
                     pass
             logger.info(f"🍪 Установлено {len(COOKIES)} кук")
         
-        # 5. Инициализируем DSPy
+        # 4. Инициализируем DSPy
         self.agent = init_dspy()
         if self.agent:
             logger.info("🧠 DSPy готов")
@@ -218,6 +219,14 @@ class HarnessBot:
                 close_tab(self.page)
             except:
                 pass
+        
+        # Останавливаем удалённый демон
+        try:
+            stop_remote_daemon(self.session_name)
+            logger.info("✅ Удалённый демон остановлен")
+        except:
+            pass
+        
         logger.info("✅ Закрыто")
 
 
@@ -273,8 +282,12 @@ async def main():
     
     logger.info("🚀 Бот запущен! Используй /dspy")
     
-    while True:
-        await asyncio.sleep(60)
+    try:
+        while True:
+            await asyncio.sleep(60)
+            logger.info("💓 Bot alive")
+    except KeyboardInterrupt:
+        await bot.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
