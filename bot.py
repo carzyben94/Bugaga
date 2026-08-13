@@ -281,8 +281,41 @@ def get_text_from_ax_tree():
     return "\n".join(result) if result else "Нет текста в AX Tree"
 
 def set_cookies_via_cdp():
-    """Установить все куки через Network.setCookies"""
+    """Установить все куки через Network.setCookies с sessionId"""
     try:
+        # 1. Находим активную вкладку
+        targets = cdp("Target.getTargets")
+        target_id = None
+        if targets and "targetInfos" in targets:
+            for target in targets["targetInfos"]:
+                if target.get("type") == "page":
+                    target_id = target.get("targetId")
+                    break
+        
+        if not target_id:
+            logger.error("❌ Не найдена активная вкладка для установки кук")
+            # Если вкладки нет, просто создаем ее
+            new_tab("about:blank")
+            wait_for_load()
+            # Пробуем получить target_id еще раз
+            targets = cdp("Target.getTargets")
+            for target in targets.get("targetInfos", []):
+                if target.get("type") == "page":
+                    target_id = target.get("targetId")
+                    break
+            
+            if not target_id:
+                return False
+        
+        # 2. Подключаемся к вкладке, чтобы получить sessionId
+        session_info = cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+        session_id = session_info.get("sessionId")
+        
+        if not session_id:
+            logger.error("❌ Не удалось получить sessionId для установки кук")
+            return False
+        
+        # 3. Форматируем куки
         cookies_list = []
         for cookie in COOKIES:
             cookie_data = {
@@ -293,6 +326,7 @@ def set_cookies_via_cdp():
                 "secure": cookie.get("secure", False),
                 "httpOnly": cookie.get("httpOnly", False),
             }
+            # sameSite может быть 'Lax', 'Strict', 'None' или 'unspecified'
             same_site = cookie.get("sameSite", "unspecified")
             if same_site in ("Lax", "Strict", "None"):
                 cookie_data["sameSite"] = same_site
@@ -300,11 +334,20 @@ def set_cookies_via_cdp():
                 cookie_data["expires"] = cookie["expires"]
             cookies_list.append(cookie_data)
         
-        cdp("Network.setCookies", {"cookies": cookies_list})
-        logger.info(f"✅ Установлено {len(cookies_list)} кук")
+        # 4. Устанавливаем все куки одной командой
+        cdp("Network.setCookies", {
+            "cookies": cookies_list,
+            "sessionId": session_id
+        })
+        
+        # 5. Отключаемся от вкладки
+        cdp("Target.detachFromTarget", {"sessionId": session_id})
+        
+        logger.info(f"✅ Установлено {len(cookies_list)} кук через CDP (sessionId: {session_id[:8]}...)")
         return True
+        
     except Exception as e:
-        logger.error(f"❌ Ошибка установки кук: {e}")
+        logger.error(f"❌ Ошибка установки кук через CDP: {e}")
         return False
 
 # ============================================
