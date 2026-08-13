@@ -1,29 +1,351 @@
 import os
+import sys
 import asyncio
 import logging
-import httpx
+import time
+import subprocess
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown
 
-logging.basicConfig(level=logging.INFO)
+# ============================================================
+# 1. ЛОГГЕР
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# 2. ПУТЬ К BROWSER HARNESS
+# ============================================================
+
+sys.path.insert(0, "/app/browser-harness/src")
+
+# ============================================================
+# 3. ИМПОРТЫ
+# ============================================================
+
+import warnings
+import httpx
+import dspy
+from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
+
+# CAMOUFOX
+from camoufox.async_api import AsyncCamoufox
+
+# BROWSER HARNESS (используем CDP-функции)
+try:
+    from browser_harness.helpers import (
+        new_tab,
+        goto_url,
+        wait_for_load,
+        close_tab,
+        page_info,
+        current_tab,
+        capture_screenshot,
+        js,
+        list_tabs,
+        switch_tab,
+        fill_input,
+        click_at_xy,
+        type_text,
+        press_key,
+        scroll,
+    )
+    from browser_harness.admin import ensure_daemon
+    HARNESS_AVAILABLE = True
+    logger.info("✅ Browser Harness загружен")
+except ImportError as e:
+    logger.warning(f"⚠️ Browser Harness не найден: {e}")
+    HARNESS_AVAILABLE = False
+
+warnings.filterwarnings("ignore")
+
+# ============================================================
+# 4. НАСТРОЙКА
+# ============================================================
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
-# API браузера внутри контейнера
-BROWSER_API = os.environ.get("BROWSER_API", "http://localhost:8080")
+SCREENSHOTS_DIR = '/app/screenshots'
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
+browser_instance = None
+harness_ready = False
+dspy_agent_instance = None
+
+# ============================================================
+# 5. AGNES LM АДАПТЕР ДЛЯ DSPy
+# ============================================================
+
+class AgnesLM(dspy.LM):
+    def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
+        self.api_key = api_key or os.environ.get("AGNES_API_KEY")
+        self.model = model
+        super().__init__(
+            model=model,
+            model_type="chat",
+            temperature=kwargs.get("temperature", 0.3),
+            max_tokens=kwargs.get("max_tokens", 2000),
+            cache=False
+        )
+        self.provider = "agnes-ai"
+        self.forward_contract = "legacy"
+    
+    def forward(self, prompt=None, messages=None, **kwargs):
+        if not self.api_key:
+            return ["Ошибка: API ключ не задан"]
+        
+        params = {**self.kwargs, **kwargs}
+        api_messages = messages or [{"role": "user", "content": prompt or ""}]
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": api_messages,
+            "temperature": params.get("temperature", 0.3),
+            "max_tokens": params.get("max_tokens", 2000)
+        }
+        
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(
+                    "https://apihub.agnes-ai.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                data = response.json()
+                if "choices" in data and len(data["choices"]) > 0:
+                    return [data["choices"][0]["message"]["content"]]
+                return ["Ошибка: пустой ответ"]
+        except Exception as e:
+            logger.error(f"❌ Agnes API: {e}")
+            return [f"Ошибка: {str(e)}"]
+    
+    def __call__(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
+
+# ============================================================
+# 6. DSPy СИГНАТУРА
+# ============================================================
+
+class BrowserTask(Signature):
+    """
+    Ты агент с доступом к браузеру Camoufox через Browser Harness.
+    
+    ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
+    - tool_goto_url(url) - перейти на сайт
+    - tool_page_info() - информация о странице
+    - tool_get_text() - весь текст на странице
+    - tool_get_links() - все ссылки
+    - tool_screenshot() - сделать скриншот
+    - tool_js(expression) - выполнить JavaScript
+    - tool_fill(selector, text) - заполнить поле
+    - tool_click(selector) - кликнуть по элементу
+    
+    ПРАВИЛА:
+    - Всегда используй инструменты
+    - Сначала открывай страницу через tool_goto_url
+    - Отвечай на русском языке
+    """
+    question = InputField(desc="Задача пользователя")
+    answer = OutputField(desc="Результат выполнения задачи")
+
+# ============================================================
+# 7. ЗАПУСК CAMOUFOX И HARNESS
+# ============================================================
+
+async def init_browser_and_harness():
+    """Запустить Camoufox и Browser Harness"""
+    global browser_instance, harness_ready
+    
+    logger.info("🚀 Запускаем Camoufox...")
+    
+    try:
+        # Запускаем Camoufox
+        browser_instance = await AsyncCamoufox(
+            headless=True,
+            humanize=True,
+            fingerprint=True
+        ).start()
+        
+        logger.info("✅ Camoufox запущен")
+        await asyncio.sleep(2)
+        
+        # Подключаем Browser Harness
+        if HARNESS_AVAILABLE:
+            logger.info("🔗 Подключаем Browser Harness...")
+            ensure_daemon()
+            
+            # Создаём вкладку через Harness
+            new_tab("about:blank")
+            wait_for_load()
+            harness_ready = True
+            logger.info("✅ Browser Harness готов")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска: {e}")
+        return False
+
+# ============================================================
+# 8. СОЗДАНИЕ ИНСТРУМЕНТОВ ДЛЯ DSPy
+# ============================================================
+
+def create_harness_tools():
+    """Создать инструменты для DSPy агента"""
+    tools = []
+    
+    def tool_goto_url(url: str) -> str:
+        """Перейти на URL"""
+        try:
+            goto_url(url)
+            wait_for_load()
+            return f"✅ Перешел на {url}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_goto_url))
+    
+    def tool_page_info() -> str:
+        """Информация о странице"""
+        try:
+            info = page_info()
+            return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_page_info))
+    
+    def tool_get_text() -> str:
+        """Получить текст страницы"""
+        try:
+            result = js('() => document.body.innerText')
+            text = str(result.get('result', result)) if isinstance(result, dict) else str(result)
+            return text[:5000] if text and len(text) > 10 else "❌ Текст не найден"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_text))
+    
+    def tool_get_links() -> str:
+        """Получить все ссылки"""
+        try:
+            result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
+            if isinstance(result, list) and result:
+                links = [str(item) for item in result if item]
+                return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
+            return "❌ Ссылок не найдено"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_links))
+    
+    def tool_screenshot() -> str:
+        """Сделать скриншот"""
+        try:
+            timestamp = int(time.time())
+            filename = f"screenshot_{timestamp}.png"
+            full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            capture_screenshot(path=full_path)
+            return f"✅ Скриншот сохранен: {filename}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_screenshot))
+    
+    def tool_js(expression: str) -> str:
+        """Выполнить JavaScript"""
+        try:
+            result = js(expression)
+            return str(result.get('result', result)) if isinstance(result, dict) else str(result)
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_js))
+    
+    def tool_fill(selector: str, text: str) -> str:
+        """Заполнить поле"""
+        try:
+            fill_input(selector, text)
+            return f"✅ Заполнено: {selector} -> {text}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_fill))
+    
+    def tool_click(selector: str) -> str:
+        """Кликнуть по элементу"""
+        try:
+            click_at_xy(int(selector.split()[0]), int(selector.split()[1])) if selector.isdigit() else None
+            return f"✅ Клик по {selector}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_click))
+    
+    return tools
+
+# ============================================================
+# 9. ИНИЦИАЛИЗАЦИЯ DSPy
+# ============================================================
+
+def init_dspy():
+    """Инициализировать DSPy агента"""
+    global dspy_agent_instance
+    
+    api_key = os.environ.get("AGNES_API_KEY")
+    if not api_key:
+        logger.warning("⚠️ AGNES_API_KEY не задан")
+        return False
+    
+    try:
+        lm = AgnesLM(api_key=api_key, temperature=0.3, max_tokens=2000)
+        settings.configure(lm=lm)
+        
+        tools = create_harness_tools()
+        
+        dspy_agent_instance = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=10,
+        )
+        
+        logger.info(f"✅ DSPy агент создан с {len(tools)} инструментами")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка DSPy: {e}")
+        return False
+
+def run_agent(question: str) -> str:
+    """Запустить DSPy агента"""
+    if not dspy_agent_instance:
+        return "❌ DSPy агент не инициализирован"
+    try:
+        result = dspy_agent_instance(question=question)
+        answer = getattr(result, 'answer', str(result))
+        return answer if answer and answer.strip() else "❌ Пустой ответ"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+# ============================================================
+# 10. TELEGRAM КОМАНДЫ
+# ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет!\n\n"
+        "🦊 **Camoufox + Browser Harness + DSPy**\n\n"
         "Команды:\n"
-        "/check <url> - открыть сайт через Camoufox\n"
-        "/screenshot - сделать скриншот текущей страницы\n"
-        "/status - статус браузера\n"
-        "/dspy <запрос> - задать вопрос DSPy (через API)"
+        "/check <url> - открыть сайт\n"
+        "/dspy <запрос> - DSPy агент\n"
+        "/status - статус системы\n"
+        "/screenshot - сделать скриншот",
+        parse_mode='Markdown'
     )
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -35,112 +357,96 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Открываю через Camoufox...")
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Переходим на URL
-            resp = await client.post(
-                f"{BROWSER_API}/",
-                json={"action": "goto", "url": url}
-            )
+        # Используем Camoufox напрямую
+        async with AsyncCamoufox(headless=True, humanize=True, fingerprint=True) as browser:
+            page = await browser.new_page()
+            await page.goto(url, wait_until="networkidle")
+            title = await page.title()
+            content = await page.content()
             
-            if resp.status_code != 200:
-                await msg.edit_text(f"❌ Ошибка API: {resp.status_code}")
-                return
-            
-            # Получаем информацию о странице
-            info = await client.post(
-                f"{BROWSER_API}/",
-                json={"action": "get_info"}
-            )
-            data = info.json()
-            
-            title = data.get("title", "Без названия")
-            current_url = data.get("url", url)
-            
-            await msg.edit_text(f"✅ **{title}**\n\n{current_url}", parse_mode='Markdown')
-            
+        await msg.edit_text(f"✅ {title}\n\n{content[:500]}")
+        
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📸 Делаю скриншот...")
+    msg = await update.message.reply_text("📸 Делаю скриншот через Camoufox...")
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{BROWSER_API}/screenshot/browser?whLargest=1024")
+        async with AsyncCamoufox(headless=True, humanize=True) as browser:
+            page = await browser.new_page()
+            await page.goto("https://example.com")
+            screenshot_bytes = await page.screenshot()
             
-            if resp.status_code != 200:
-                await msg.edit_text(f"❌ Ошибка: {resp.status_code}")
-                return
-            
-            # Отправляем фото
-            await update.message.reply_photo(
-                photo=resp.content,
-                caption="📸 Скриншот через Camoufox"
-            )
-            await msg.delete()
-            
+        await update.message.reply_photo(
+            photo=screenshot_bytes,
+            caption="📸 Скриншот через Camoufox"
+        )
+        await msg.delete()
+        
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{BROWSER_API}/")
-            
-            await update.message.reply_text(
-                f"📦 **Статус**\n"
-                f"• Браузер: ✅ Работает\n"
-                f"• API: {BROWSER_API}\n"
-                f"• Статус: {resp.status_code}\n"
-                f"• Движок: Camoufox (Firefox)",
-                parse_mode='Markdown'
-            )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Браузер не отвечает: {str(e)[:100]}")
+    status_text = (
+        f"📦 **Статус системы**\n\n"
+        f"🦊 Camoufox: {'✅ Запущен' if browser_instance else '❌ Не запущен'}\n"
+        f"🔧 Browser Harness: {'✅ Готов' if harness_ready else '❌ Не готов'}\n"
+        f"🧠 DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}\n"
+        f"📁 Скриншоты: {os.listdir(SCREENSHOTS_DIR)[:5]}"
+    )
+    await update.message.reply_text(status_text, parse_mode='Markdown')
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправка запроса к DSPy через MCP-сервер"""
     if not context.args:
         await update.message.reply_text(
             "🧠 **DSPy Agent**\n\n"
             "Примеры:\n"
             "`/dspy открой google.com и покажи заголовок`\n"
             "`/dspy найди все ссылки на python.org`\n"
-            "`/dspy сделай скриншот`",
+            "`/dspy сделай скриншот`\n\n"
+            "Агент использует Camoufox через Browser Harness!",
             parse_mode='Markdown'
         )
         return
     
-    query = " ".join(context.args)
-    msg = await update.message.reply_text("🧠 Думаю...")
+    if not dspy_agent_instance:
+        await update.message.reply_text("❌ DSPy агент не инициализирован. Проверьте AGNES_API_KEY")
+        return
+    
+    user_query = " ".join(context.args)
+    msg = await update.message.reply_text("🧠 Думаю и управляю браузером...")
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            # Отправляем запрос к MCP-серверу
-            resp = await client.post(
-                f"{BROWSER_API}/mcp",
-                json={"query": query}
-            )
-            
-            if resp.status_code != 200:
-                await msg.edit_text(f"❌ Ошибка MCP: {resp.status_code}")
-                return
-            
-            data = resp.json()
-            answer = data.get("result", data.get("answer", "❌ Пустой ответ"))
-            
-            if len(answer) > 4000:
-                answer = answer[:4000] + "\n\n... (обрезано)"
-            
-            await msg.edit_text(
-                f"✅ **Результат:**\n\n{escape_markdown(answer, version=2)}",
-                parse_mode='MarkdownV2'
-            )
-            
+        loop = asyncio.get_running_loop()
+        answer = await loop.run_in_executor(None, run_agent, user_query)
+        
+        if len(answer) > 4000:
+            answer = answer[:4000] + "\n\n... (обрезано)"
+        
+        await msg.edit_text(
+            f"✅ **Результат:**\n\n{escape_markdown(answer, version=2)}",
+            parse_mode='MarkdownV2'
+        )
+        
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-def main():
+# ============================================================
+# 11. ЗАПУСК
+# ============================================================
+
+async def main():
+    global browser_instance
+    
+    # Запускаем Camoufox и Browser Harness
+    logger.info("🚀 Инициализация...")
+    await init_browser_and_harness()
+    
+    # Инициализируем DSPy
+    init_dspy()
+    
+    # Создаём бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -150,10 +456,18 @@ def main():
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     logger.info("🚀 Бот запущен!")
-    logger.info(f"📋 Команды: /start, /check, /screenshot, /status, /dspy")
-    logger.info(f"🌐 Browser API: {BROWSER_API}")
+    logger.info(f"🦊 Camoufox: {'✅' if browser_instance else '❌'}")
+    logger.info(f"🔧 Harness: {'✅' if harness_ready else '❌'}")
+    logger.info(f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}")
+    logger.info("📋 Команды: /start, /check, /screenshot, /status, /dspy")
     
-    app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    
+    while True:
+        await asyncio.sleep(60)
+        logger.info("💓 Bot alive")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
