@@ -46,9 +46,6 @@ WORKDIR /app
 
 RUN mkdir -p /app/logs /app/screenshots /app/browser-harness/agent-workspace
 
-# После установки banana-browser
-RUN npm install -g patchright-adapter
-
 # Устанавливаем browser-harness
 RUN pip install --no-cache-dir browser-harness
 
