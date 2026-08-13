@@ -112,163 +112,176 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Результат выполнения задачи")
 
 # ============================================================
-# 5. СОЗДАНИЕ DSPy АГЕНТА С РЕАЛЬНЫМ БРАУЗЕРОМ
+# 5. ГЛОБАЛЬНЫЙ ЭКЗЕМПЛЯР БРАУЗЕРА
 # ============================================================
 
-class BrowserAgent:
-    def __init__(self):
-        self.browser = None
-        self.page = None
-        self.dspy_agent = None
-        self.loop = None
+browser_instance = None
+page_instance = None
+dspy_agent_instance = None
+loop_for_browser = None
+
+# ============================================================
+# 6. СОЗДАНИЕ DSPy АГЕНТА С РЕАЛЬНЫМ БРАУЗЕРОМ
+# ============================================================
+
+def get_or_create_loop():
+    """Получить или создать event loop"""
+    global loop_for_browser
+    try:
+        loop = asyncio.get_running_loop()
+        return loop
+    except RuntimeError:
+        if loop_for_browser is None or loop_for_browser.is_closed():
+            loop_for_browser = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop_for_browser)
+        return loop_for_browser
+
+def run_async(coro):
+    """Выполнить асинхронную функцию в синхронном контексте"""
+    loop = get_or_create_loop()
+    if loop.is_running():
+        # Если loop уже запущен, создаём новый для этого вызова
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            return new_loop.run_until_complete(coro)
+        finally:
+            new_loop.close()
+            # Восстанавливаем старый loop
+            asyncio.set_event_loop(loop)
+    else:
+        return loop.run_until_complete(coro)
+
+async def init_browser_async():
+    """Асинхронная инициализация браузера"""
+    global browser_instance, page_instance, dspy_agent_instance
     
-    async def init_browser(self):
-        """Запустить браузер"""
-        self.browser = await launch_async(
+    try:
+        # Запускаем браузер
+        browser_instance = await launch_async(
             headless=True,
             args=["--fingerprint"]
         )
-        self.page = await self.browser.new_page()
+        page_instance = await browser_instance.new_page()
         logger.info("✅ CloakBrowser запущен")
-        return self.page
-    
-    def _run_async(self, coro):
-        """Выполнить асинхронную функцию в синхронном контексте"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
         
-        if loop.is_running():
-            # Если цикл уже запущен (Telegram), создаём новый
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            return new_loop.run_until_complete(coro)
-        else:
-            return loop.run_until_complete(coro)
-    
-    def create_tools(self):
-        """Создать инструменты с реальным браузером"""
-        page = self.page
-        if not page:
-            raise RuntimeError("Браузер не инициализирован")
+        # Создаём инструменты
+        tools = create_tools()
         
-        def tool_goto_url(url: str) -> str:
-            """Перейти на URL"""
-            try:
-                self._run_async(page.goto(url, wait_until="networkidle"))
-                return f"✅ Перешел на {url}"
-            except Exception as e:
-                return f"❌ Ошибка перехода: {e}"
-        
-        def tool_screenshot() -> str:
-            """Сделать скриншот"""
-            try:
-                screenshot = self._run_async(page.screenshot())
-                # Сохраняем в файл
-                import time
-                filename = f"/app/screenshots/dspy_{int(time.time())}.png"
-                os.makedirs("/app/screenshots", exist_ok=True)
-                with open(filename, "wb") as f:
-                    f.write(screenshot)
-                return f"✅ Скриншот сохранён: {filename}"
-            except Exception as e:
-                return f"❌ Ошибка скриншота: {e}"
-        
-        def tool_get_text() -> str:
-            """Получить весь текст страницы"""
-            try:
-                text = self._run_async(page.content())
-                # Извлекаем только текст из HTML
-                import re
-                clean_text = re.sub(r'<[^>]+>', ' ', text)
-                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-                if len(clean_text) > 3000:
-                    clean_text = clean_text[:3000] + "..."
-                return f"✅ Текст страницы:\n{clean_text}" if clean_text else "❌ Текст не найден"
-            except Exception as e:
-                return f"❌ Ошибка получения текста: {e}"
-        
-        def tool_get_title() -> str:
-            """Получить заголовок страницы"""
-            try:
-                title = self._run_async(page.title())
-                return f"✅ Заголовок: {title}" if title else "❌ Заголовок не найден"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
-        def tool_js(expression: str) -> str:
-            """Выполнить JavaScript на странице"""
-            try:
-                result = self._run_async(page.evaluate(expression))
-                return f"✅ JS выполнен: {result}" if result is not None else "✅ JS выполнен (нет результата)"
-            except Exception as e:
-                return f"❌ Ошибка JS: {e}"
-        
-        return [
-            Tool(tool_goto_url),
-            Tool(tool_screenshot),
-            Tool(tool_get_text),
-            Tool(tool_get_title),
-            Tool(tool_js),
-        ]
-    
-    def init_dspy(self, max_iters=10):
-        """Инициализировать DSPy агента"""
+        # Инициализируем DSPy
         api_key = os.environ.get("AGNES_API_KEY")
-        if not api_key:
-            logger.warning("⚠️ AGNES_API_KEY не задан")
-            return None
-        
-        try:
+        if api_key:
             lm = AgnesLM(api_key=api_key, temperature=0.3, max_tokens=2000)
             settings.configure(lm=lm)
             
-            tools = self.create_tools()
-            
-            self.dspy_agent = ReActV2(
+            dspy_agent_instance = ReActV2(
                 signature=BrowserTask,
                 tools=tools,
-                max_iters=max_iters,
+                max_iters=10,
             )
-            
             logger.info(f"✅ DSPy агент создан с {len(tools)} инструментами")
-            return self.dspy_agent
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка DSPy: {e}")
-            return None
-    
-    def run(self, question: str) -> str:
-        """Выполнить задачу"""
-        if not self.dspy_agent:
-            return "❌ DSPy агент не инициализирован"
+        else:
+            logger.warning("⚠️ AGNES_API_KEY не задан")
         
-        try:
-            result = self.dspy_agent(question=question)
-            answer = getattr(result, 'answer', str(result))
-            return answer if answer and answer.strip() else "❌ Пустой ответ"
-        except Exception as e:
-            logger.error(f"❌ Ошибка выполнения: {e}")
-            return f"❌ Ошибка: {str(e)}"
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации браузера: {e}")
+        return False
+
+def init_browser():
+    """Синхронная обёртка для инициализации браузера"""
+    loop = get_or_create_loop()
+    if loop.is_running():
+        # Если loop запущен, создаём задачу
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, init_browser_async())
+            return future.result()
+    else:
+        return loop.run_until_complete(init_browser_async())
+
+def create_tools():
+    """Создать инструменты с реальным браузером"""
+    tools = []
     
-    async def close(self):
-        """Закрыть браузер"""
-        if self.browser:
-            await self.browser.close()
-            logger.info("✅ Браузер закрыт")
+    def tool_goto_url(url: str) -> str:
+        """Перейти на URL"""
+        try:
+            result = run_async(page_instance.goto(url, wait_until="networkidle"))
+            return f"✅ Перешел на {url}"
+        except Exception as e:
+            return f"❌ Ошибка перехода: {e}"
+    tools.append(Tool(tool_goto_url))
+    
+    def tool_screenshot() -> str:
+        """Сделать скриншот"""
+        try:
+            screenshot = run_async(page_instance.screenshot())
+            import time
+            filename = f"/app/screenshots/dspy_{int(time.time())}.png"
+            os.makedirs("/app/screenshots", exist_ok=True)
+            with open(filename, "wb") as f:
+                f.write(screenshot)
+            return f"✅ Скриншот сохранён: {filename}"
+        except Exception as e:
+            return f"❌ Ошибка скриншота: {e}"
+    tools.append(Tool(tool_screenshot))
+    
+    def tool_get_text() -> str:
+        """Получить весь текст страницы"""
+        try:
+            text = run_async(page_instance.content())
+            import re
+            clean_text = re.sub(r'<[^>]+>', ' ', text)
+            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+            if len(clean_text) > 3000:
+                clean_text = clean_text[:3000] + "..."
+            return f"✅ Текст страницы:\n{clean_text}" if clean_text else "❌ Текст не найден"
+        except Exception as e:
+            return f"❌ Ошибка получения текста: {e}"
+    tools.append(Tool(tool_get_text))
+    
+    def tool_get_title() -> str:
+        """Получить заголовок страницы"""
+        try:
+            title = run_async(page_instance.title())
+            return f"✅ Заголовок: {title}" if title else "❌ Заголовок не найден"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_title))
+    
+    def tool_js(expression: str) -> str:
+        """Выполнить JavaScript на странице"""
+        try:
+            result = run_async(page_instance.evaluate(expression))
+            return f"✅ JS выполнен: {result}" if result is not None else "✅ JS выполнен (нет результата)"
+        except Exception as e:
+            return f"❌ Ошибка JS: {e}"
+    tools.append(Tool(tool_js))
+    
+    return tools
+
+def run_dspy_agent(question: str) -> str:
+    """Запустить DSPy агента"""
+    if not dspy_agent_instance:
+        return "❌ DSPy агент не инициализирован"
+    
+    try:
+        result = dspy_agent_instance(question=question)
+        answer = getattr(result, 'answer', str(result))
+        return answer if answer and answer.strip() else "❌ Пустой ответ"
+    except Exception as e:
+        logger.error(f"❌ Ошибка выполнения: {e}")
+        return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# 6. ТЕЛЕГРАМ БОТ
+# 7. ТЕЛЕГРАМ БОТ
 # ============================================================
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
-
-# Глобальный экземпляр
-browser_agent = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -324,7 +337,7 @@ async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик /dspy с реальным браузером"""
-    global browser_agent
+    global dspy_agent_instance
     
     if not context.args:
         await update.message.reply_text(
@@ -338,7 +351,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if not browser_agent or not browser_agent.dspy_agent:
+    if not dspy_agent_instance:
         await update.message.reply_text(
             "❌ **DSPy агент не инициализирован.**\n"
             "Проверьте переменную `AGNES_API_KEY`."
@@ -352,10 +365,10 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🧠 Думаю и открываю браузер...")
     
     try:
-        # Выполняем задачу через DSPy агента
+        # Выполняем задачу через DSPy агента в отдельном потоке
         loop = asyncio.get_running_loop()
         answer = await loop.run_in_executor(
-            None, browser_agent.run, user_query
+            None, run_dspy_agent, user_query
         )
         
         if not answer or answer.strip() == "":
@@ -377,45 +390,13 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 7. ИНИЦИАЛИЗАЦИЯ
-# ============================================================
-
-async def init_browser_agent():
-    """Инициализировать браузер и DSPy агента"""
-    global browser_agent
-    
-    try:
-        browser_agent = BrowserAgent()
-        
-        # Запускаем браузер
-        await browser_agent.init_browser()
-        
-        # Инициализируем DSPy
-        browser_agent.init_dspy()
-        
-        if browser_agent.dspy_agent:
-            logger.info("✅ DSPy агент готов к работе")
-        else:
-            logger.warning("⚠️ DSPy агент не создан")
-            
-        return browser_agent
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка инициализации: {e}")
-        return None
-
-# ============================================================
 # 8. ЗАПУСК
 # ============================================================
 
 def main():
-    global browser_agent
-    
-    # Инициализируем браузер и DSPy (в синхронном контексте)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    browser_agent = loop.run_until_complete(init_browser_agent())
-    loop.close()
+    # Инициализируем браузер и DSPy (синхронно)
+    logger.info("🚀 Инициализация браузера и DSPy...")
+    init_browser()
     
     # Создаём Telegram бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -426,9 +407,10 @@ def main():
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен' if browser_agent and browser_agent.dspy_agent else '❌ Отключен'}")
-    logger.info(f"🌐 CloakBrowser: {'✅ Запущен' if browser_agent and browser_agent.browser else '❌ Не запущен'}")
+    logger.info(f"🧠 DSPy статус: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}")
+    logger.info(f"🌐 CloakBrowser: {'✅ Запущен' if browser_instance else '❌ Не запущен'}")
     
+    # Запускаем бота (он сам создаст свой event loop)
     app.run_polling()
 
 if __name__ == "__main__":
