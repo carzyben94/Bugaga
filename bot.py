@@ -1,6 +1,6 @@
 import os
 import sys
-import asyncio 
+import asyncio
 import logging
 import subprocess
 import time
@@ -8,10 +8,8 @@ import json
 import base64
 import io
 import random
-import math
-from contextlib import redirect_stdout, asynccontextmanager
+from contextlib import redirect_stdout
 from datetime import datetime
-from typing import Optional, Union, List, Dict, Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -206,167 +204,6 @@ VEIL_OK, VEIL_VER = check_veil()
 CHROME_PATH = check_chrome()
 
 # ============================================
-# УМНОЕ ОЖИДАНИЕ (АДАПТИРОВАНО ИЗ PYDoll)
-# ============================================
-
-class SmartWait:
-    """Умное ожидание с несколькими стратегиями"""
-    
-    DEFAULT_TIMEOUT = 30  # секунд
-    RETRY_INTERVAL = 0.5   # секунд
-    
-    @staticmethod
-    async def wait_for_load(timeout: int = DEFAULT_TIMEOUT):
-        """Ожидание document.readyState === 'complete'"""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                state = js("document.readyState")
-                if state == "complete":
-                    logger.info(f"✅ Страница загружена (readyState: complete)")
-                    return True
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при проверке readyState: {e}")
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-        
-        logger.warning(f"⏰ Таймаут загрузки страницы ({timeout}с)")
-        return False
-    
-    @staticmethod
-    async def wait_for_network_idle(timeout: int = DEFAULT_TIMEOUT, idle_time: float = 1.0):
-        """Ожидание завершения сетевой активности"""
-        start = time.time()
-        active_requests = 0
-        
-        while time.time() - start < timeout:
-            try:
-                # Получаем количество активных запросов через CDP
-                result = cdp("Network.getActiveRequests")
-                if result and result.get("count", 0) == 0:
-                    # Проверяем, что запросов нет в течение idle_time
-                    await asyncio.sleep(idle_time)
-                    result = cdp("Network.getActiveRequests")
-                    if result and result.get("count", 0) == 0:
-                        logger.info(f"✅ Сеть проста ({idle_time}с без запросов)")
-                        return True
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при проверке сети: {e}")
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-        
-        logger.warning(f"⏰ Таймаут ожидания сети ({timeout}с)")
-        return False
-    
-    @staticmethod
-    async def wait_for_selector(selector: str, timeout: int = DEFAULT_TIMEOUT):
-        """Ожидание появления элемента по CSS-селектору"""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                exists = js(f"!!document.querySelector('{selector}')")
-                if exists:
-                    logger.info(f"✅ Элемент найден: {selector}")
-                    return True
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при поиске {selector}: {e}")
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-        
-        logger.warning(f"⏰ Таймаут ожидания элемента {selector} ({timeout}с)")
-        return False
-    
-    @staticmethod
-    async def wait_for_text(text: str, timeout: int = DEFAULT_TIMEOUT):
-        """Ожидание появления текста на странице"""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                body = js("document.body.innerText")
-                if text in body:
-                    logger.info(f"✅ Текст найден: {text[:50]}...")
-                    return True
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при поиске текста: {e}")
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-        
-        logger.warning(f"⏰ Таймаут ожидания текста ({timeout}с)")
-        return False
-    
-    @staticmethod
-    async def wait_for_condition(condition: str, timeout: int = DEFAULT_TIMEOUT):
-        """Ожидание выполнения JavaScript условия"""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                result = js(condition)
-                if result:
-                    logger.info(f"✅ Условие выполнено: {condition[:50]}...")
-                    return True
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при проверке условия: {e}")
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-        
-        logger.warning(f"⏰ Таймаут ожидания условия ({timeout}с)")
-        return False
-    
-    @staticmethod
-    async def wait_for_visible(selector: str, timeout: int = DEFAULT_TIMEOUT):
-        """Ожидание видимости элемента"""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                visible = js(f"""
-                    (() => {{
-                        const el = document.querySelector('{selector}');
-                        if (!el) return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 0 && rect.height > 0;
-                    }})()
-                """)
-                if visible:
-                    logger.info(f"✅ Элемент видим: {selector}")
-                    return True
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при проверке видимости: {e}")
-                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
-        
-        logger.warning(f"⏰ Таймаут ожидания видимости {selector} ({timeout}с)")
-        return False
-
-class Retry:
-    """Декоратор для повторных попыток"""
-    
-    def __init__(self, max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
-        self.max_retries = max_retries
-        self.delay = delay
-        self.backoff = backoff
-    
-    def __call__(self, func):
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            current_delay = self.delay
-            
-            for attempt in range(self.max_retries + 1):
-                try:
-                    if attempt > 0:
-                        logger.info(f"🔄 Попытка {attempt}/{self.max_retries} для {func.__name__}")
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    if attempt < self.max_retries:
-                        wait_time = current_delay * (self.backoff ** attempt)
-                        logger.warning(f"⚠️ Ошибка: {e}. Повтор через {wait_time:.2f}с")
-                        await asyncio.sleep(wait_time)
-            
-            logger.error(f"❌ Все {self.max_retries} попыток провалились для {func.__name__}")
-            raise last_exception
-        return wrapper
-
-# ============================================
 # ПОМОЩНИКИ ДЛЯ РАБОТЫ С ACCESSIBILITY TREE
 # ============================================
 
@@ -428,56 +265,17 @@ def get_text_from_ax_tree():
     return "\n".join(result) if result else "Нет текста в AX Tree"
 
 # ============================================
-# УНИВЕРСАЛЬНАЯ ОЧИСТКА ВКЛАДОК
+# ЭМУЛЯЦИЯ ЧЕЛОВЕЧЕСКОГО ПОВЕДЕНИЯ
 # ============================================
 
-def cleanup_tabs(keep_one=True):
-    try:
-        tabs = list_tabs()
-        if not tabs:
-            logger.info("ℹ️ Нет открытых вкладок")
-            return
-        
-        logger.info(f"🧹 Очистка: {len(tabs)} вкладок")
-        
-        if keep_one and len(tabs) > 1:
-            for i, tab in enumerate(tabs):
-                if i == 0:
-                    continue
-                try:
-                    switch_tab(tab)
-                    close_tab()
-                    logger.info(f"✅ Закрыта вкладка: {tab}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось закрыть {tab}: {e}")
-            
-            try:
-                switch_tab(tabs[0])
-                goto_url("about:blank")
-                wait_for_load()
-                logger.info("✅ Оставлена одна чистая вкладка")
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось переключиться: {e}")
-        else:
-            for tab in tabs:
-                try:
-                    switch_tab(tab)
-                    close_tab()
-                    logger.info(f"✅ Закрыта вкладка: {tab}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Не удалось закрыть {tab}: {e}")
-            
-            new_tab("about:blank")
-            wait_for_load()
-            logger.info("✅ Все вкладки закрыты, создана новая")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка очистки: {e}")
+def random_delay(min_ms: int = 500, max_ms: int = 3000):
+    delay = random.randint(min_ms, max_ms) / 1000
+    time.sleep(delay)
 
 def set_cookies_via_js():
     try:
         new_tab("https://x.com")
-        SmartWait.wait_for_load(timeout=30)
+        wait_for_load()
         
         js_code = """
         (function() {
@@ -516,207 +314,47 @@ def set_cookies_via_js():
         
         if result and result.get('success', 0) > 0:
             logger.info(f"✅ Установлено кук: {result.get('success')} из {result.get('total')}")
-            if result.get('failed', 0) > 0:
-                logger.warning(f"⚠️ Не удалось установить: {result.get('errors', [])}")
             return result.get('success', 0) > 0
         else:
             logger.error(f"❌ Не удалось установить куки: {result}")
             return False
         
     except Exception as e:
-        logger.error(f"❌ Ошибка установки кук через JS: {e}")
+        logger.error(f"❌ Ошибка установки кук: {e}")
         return False
 
-# ============================================
-# ЭМУЛЯЦИЯ ЧЕЛОВЕЧЕСКОГО ПОВЕДЕНИЯ (УЛУЧШЕННАЯ)
-# ============================================
-
-def random_delay(min_ms: int = 500, max_ms: int = 3000):
-    """Случайная задержка для имитации человека"""
-    delay = random.randint(min_ms, max_ms) / 1000
-    time.sleep(delay)
-    logger.info(f"⏱️ Задержка {delay:.2f}с")
-
-async def async_random_delay(min_ms: int = 500, max_ms: int = 3000):
-    """Асинхронная случайная задержка"""
-    delay = random.randint(min_ms, max_ms) / 1000
-    await asyncio.sleep(delay)
-    logger.info(f"⏱️ Задержка {delay:.2f}с")
-
-def bezier_curve(p0: tuple, p1: tuple, p2: tuple, t: float) -> tuple:
-    """Кривая Безье для естественного движения мыши"""
-    x = (1-t)**2 * p0[0] + 2*(1-t)*t * p1[0] + t**2 * p2[0]
-    y = (1-t)**2 * p0[1] + 2*(1-t)*t * p1[1] + t**2 * p2[1]
-    return (int(x), int(y))
-
-def fitts_law_distance(distance: int, width: int = 50) -> float:
-    """Закон Фиттса: время движения зависит от расстояния"""
-    a, b = 100, 30  # ms
-    return a + b * math.log2(distance / width + 1)
-
-async def human_mouse_move(target_x: int, target_y: int, current_x: int = 0, current_y: int = 0):
-    """Движение мыши по кривой Безье с физикой"""
-    # 1. Контрольные точки для кривой
-    dx, dy = target_x - current_x, target_y - current_y
-    cp1_x = current_x + dx * random.uniform(0.2, 0.4)
-    cp1_y = current_y + dy * random.uniform(0.2, 0.4) + random.randint(-50, 50)
-    
-    # 2. Расчёт времени по закону Фиттса
-    distance = math.hypot(dx, dy)
-    duration = fitts_law_distance(distance) / 1000  # в секундах
-    
-    # 3. Движение с колоколообразной скоростью
-    steps = random.randint(20, 40)
-    for i in range(steps + 1):
-        t = i / steps
-        # Колоколообразная скорость (minimum-jerk)
-        velocity = math.sin(t * math.pi)
-        t_adj = t * velocity  # Нелинейный прогресс
+def cleanup_tabs(keep_one=True):
+    try:
+        tabs = list_tabs()
+        if not tabs:
+            return
         
-        x, y = bezier_curve((current_x, current_y), (cp1_x, cp1_y), (target_x, target_y), t_adj)
-        
-        # Тремор (гауссов шум)
-        if random.random() < 0.3:
-            x += random.gauss(0, 1)
-            y += random.gauss(0, 1)
-        
-        await asyncio.sleep(duration / steps)
-    
-    # 4. Overshoot correction (70% шанс)
-    if random.random() < 0.7 and distance > 100:
-        overshoot = random.randint(int(distance * 0.03), int(distance * 0.12))
-        # Промахнулись
-        await asyncio.sleep(random.uniform(0.05, 0.15))
-        # Скорректировались
-        await asyncio.sleep(random.uniform(0.05, 0.15))
-
-async def human_click(x: int, y: int):
-    """Человеческий клик с физикой"""
-    # 1. Движение к цели
-    await human_mouse_move(x, y)
-    
-    # 2. Микро-пауза перед кликом
-    await asyncio.sleep(random.uniform(0.05, 0.2))
-    
-    # 3. Нажатие с микро-дрожанием
-    cdp("Input.dispatchMouseEvent", {
-        "type": "mousePressed",
-        "x": x + random.randint(-2, 2),
-        "y": y + random.randint(-2, 2),
-        "button": "left",
-        "clickCount": 1
-    })
-    
-    await asyncio.sleep(random.uniform(0.05, 0.15))
-    
-    cdp("Input.dispatchMouseEvent", {
-        "type": "mouseReleased",
-        "x": x + random.randint(-2, 2),
-        "y": y + random.randint(-2, 2),
-        "button": "left",
-        "clickCount": 1
-    })
-    
-    logger.info(f"🖱️ Человеческий клик по ({x}, {y})")
-
-async def human_scroll(dy: int = 100, steps: int = None):
-    """Человеческая прокрутка с переменной скоростью"""
-    if steps is None:
-        steps = random.randint(5, 10)
-    
-    per_step = dy / steps
-    
-    for i in range(steps):
-        # Разная скорость на каждом шаге
-        step_dy = per_step * random.uniform(0.5, 1.5)
-        cdp("Input.dispatchMouseEvent", {
-            "type": "mouseWheel",
-            "deltaX": random.randint(-5, 5),
-            "deltaY": step_dy
-        })
-        await asyncio.sleep(random.uniform(0.03, 0.1))
-    
-    logger.info(f"📜 Человеческая прокрутка на {dy}px")
-
-async def human_type_text(text: str):
-    """Ввод текста с переменной скоростью и опечатками"""
-    for char in text:
-        # Переменная скорость ввода (50-200ms на символ)
-        delay = random.uniform(0.05, 0.2)
-        await asyncio.sleep(delay)
-        
-        # 2% шанс опечатки
-        if random.random() < 0.02 and len(text) > 3:
-            # Ошибка
-            error_char = random.choice('qwertyuiopasdfghjklzxcvbnm')
-            await js(f"document.activeElement.value += '{error_char}'")
-            await asyncio.sleep(random.uniform(0.2, 0.4))
-            # Backspace
-            await js("document.activeElement.value = document.activeElement.value.slice(0, -1)")
-            await asyncio.sleep(random.uniform(0.1, 0.2))
-        
-        # Вводим правильный символ
-        await js(f"document.activeElement.value += '{char}'")
-
-# ============================================
-# УМНЫЙ ГОТУ (АДАПТИРОВАН ИЗ PYDoll)
-# ============================================
-
-class SmartGo:
-    """Умная навигация с ожиданием"""
-    
-    @staticmethod
-    @Retry(max_retries=3, delay=1.0)
-    async def go_to(url: str, timeout: int = 30, wait_network: bool = True):
-        """Умный переход с ожиданием загрузки"""
-        logger.info(f"🌐 Переход на {url}")
-        
-        # 1. Переходим
-        goto_url(url)
-        
-        # 2. Ждём загрузку DOM
-        await SmartWait.wait_for_load(timeout=timeout)
-        
-        # 3. Ждём сеть, если нужно
-        if wait_network:
-            await SmartWait.wait_for_network_idle(timeout=timeout)
-        
-        # 4. Случайная пауза (имитация человека)
-        await async_random_delay(1000, 3000)
-        
-        logger.info(f"✅ Страница загружена: {url}")
-        return True
-    
-    @staticmethod
-    @Retry(max_retries=3, delay=1.0)
-    async def click_selector(selector: str, timeout: int = 30):
-        """Умный клик с ожиданием видимости"""
-        # 1. Ждём появления элемента
-        await SmartWait.wait_for_selector(selector, timeout=timeout)
-        
-        # 2. Ждём видимости
-        await SmartWait.wait_for_visible(selector, timeout=timeout)
-        
-        # 3. Получаем координаты
-        result = js(f"""
-            (() => {{
-                const el = document.querySelector('{selector}');
-                const rect = el.getBoundingClientRect();
-                return {{
-                    x: rect.left + rect.width/2,
-                    y: rect.top + rect.height/2
-                }};
-            }})()
-        """)
-        
-        # 4. Человеческий клик
-        await human_click(int(result['x']), int(result['y']))
-        
-        # 5. Ждём реакции страницы
-        await async_random_delay(500, 1500)
-        
-        logger.info(f"✅ Клик по {selector}")
-        return True
+        if keep_one and len(tabs) > 1:
+            for i, tab in enumerate(tabs):
+                if i == 0:
+                    continue
+                try:
+                    switch_tab(tab)
+                    close_tab()
+                except:
+                    pass
+            try:
+                switch_tab(tabs[0])
+                goto_url("about:blank")
+                wait_for_load()
+            except:
+                pass
+        else:
+            for tab in tabs:
+                try:
+                    switch_tab(tab)
+                    close_tab()
+                except:
+                    pass
+            new_tab("about:blank")
+            wait_for_load()
+    except:
+        pass
 
 # ============================================
 # DSPy ИНТЕГРАЦИЯ
@@ -731,7 +369,7 @@ try:
     DSPY_AVAILABLE = True
 except ImportError:
     DSPY_AVAILABLE = False
-    logger.warning("⚠️ DSPy не установлен. Установи: pip install dspy httpx")
+    logger.warning("⚠️ DSPy не установлен")
 
 class AgnesLM(dspy.LM):
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
@@ -869,7 +507,7 @@ dspy_agent = None
 dspy_lm = None
 
 # ============================================
-# DSPy ЛОГИРОВАНИЕ В ФАЙЛ
+# DSPy ЛОГИРОВАНИЕ
 # ============================================
 
 def save_dspy_log(question: str, answer: str, history: str = "", llm_history: str = "", username: str = "unknown"):
@@ -904,7 +542,7 @@ def save_dspy_log(question: str, answer: str, history: str = "", llm_history: st
         logger.error(f"❌ Ошибка сохранения лога: {e}")
 
 # ============================================
-# ИНИЦИАЛИЗАЦИЯ DSPy С ИНСТРУМЕНТАМИ
+# ИНИЦИАЛИЗАЦИЯ DSPy
 # ============================================
 
 def init_dspy_agent():
@@ -923,7 +561,7 @@ def init_dspy_agent():
         def tool_new_tab(url: str = "https://example.com") -> str:
             try:
                 new_tab(url)
-                SmartWait.wait_for_load(timeout=30)
+                wait_for_load()
                 random_delay(1000, 3000)
                 return f"✅ Открыта вкладка: {url}"
             except Exception as e:
@@ -931,14 +569,16 @@ def init_dspy_agent():
         
         def tool_goto_url(url: str) -> str:
             try:
-                SmartGo.go_to(url, timeout=30)
+                goto_url(url)
+                wait_for_load()
+                random_delay(1000, 3000)
                 return f"✅ Перешел на {url}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_wait_for_load() -> str:
             try:
-                SmartWait.wait_for_load(timeout=30)
+                wait_for_load()
                 random_delay(500, 2000)
                 return "✅ Страница загружена"
             except Exception as e:
@@ -968,27 +608,19 @@ def init_dspy_agent():
         
         def tool_click_by_role(role: str, name: str = None) -> str:
             try:
-                nodes = get_ax_tree()
-                target = find_element_by_role(nodes, role, name)
-                if not target:
-                    return f"❌ Элемент не найден: {role}: {name or 'без имени'}"
-                backend_id = target.get("backendDOMNodeId")
-                if not backend_id:
-                    return "❌ Нет backendDOMNodeId"
-                x, y = get_element_coords(backend_id)
-                if x is None or y is None:
-                    return "❌ Не удалось получить координаты"
-                asyncio.run(human_click(int(x), int(y)))
-                random_delay(500, 1500)
-                return f"✅ Человеческий клик по {role}: {name or 'без имени'}"
+                success = click_element_by_role(role, name)
+                if success:
+                    random_delay(500, 1500)
+                    return f"✅ Клик по {role}: {name or 'без имени'}"
+                return f"❌ Элемент не найден: {role}: {name or 'без имени'}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_click_by_coords(x: int, y: int) -> str:
             try:
-                asyncio.run(human_click(x, y))
+                click_at_xy(x, y)
                 random_delay(500, 1500)
-                return f"✅ Человеческий клик по ({x}, {y})"
+                return f"✅ Клик по ({x}, {y})"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
@@ -1043,17 +675,9 @@ def init_dspy_agent():
         
         def tool_scroll(dx: int, dy: int) -> str:
             try:
-                asyncio.run(human_scroll(dy))
+                scroll(dx, dy)
                 random_delay(500, 1500)
-                return f"✅ Человеческая прокрутка на ({dx}, {dy})"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
-        def tool_human_type(text: str) -> str:
-            try:
-                asyncio.run(human_type_text(text))
-                random_delay(500, 1500)
-                return f"✅ Человеческий ввод: {text[:20]}..."
+                return f"✅ Прокрутка на ({dx}, {dy})"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
@@ -1108,7 +732,6 @@ def init_dspy_agent():
             Tool(tool_js),
             Tool(tool_fill_input),
             Tool(tool_scroll),
-            Tool(tool_human_type),
             Tool(tool_list_tabs),
             Tool(tool_current_tab),
             Tool(tool_switch_tab),
@@ -1119,7 +742,7 @@ def init_dspy_agent():
         dspy_lm, dspy_agent = init_dspy(
             api_key=AGNES_API_KEY,
             tools=tools,
-            max_iters=15
+            max_iters=10
         )
         
         if dspy_agent:
@@ -1197,22 +820,6 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "--use-angle=gl-egl",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-features=BlockInsecurePrivateNetworkRequests",
-                "--disable-component-extensions-with-background-pages",
-                "--disable-default-apps",
-                "--disable-extensions",
-                "--disable-plugins",
-                "--disable-translate",
-                "--disable-sync",
-                "--disable-background-networking",
-                "--disable-client-side-phishing-detection",
-                "--disable-hang-monitor",
-                "--disable-prompt-on-repost",
-                "--disable-speech-api",
-                "--disable-voice-input",
-                "--disable-print-preview",
-                "--disable-bundled-ppapi-flash",
-                "--disable-setuid-sandbox",
                 f"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             ],
             stdout=subprocess.DEVNULL,
@@ -1241,7 +848,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             init_dspy_agent()
         
         new_tab("https://x.com")
-        SmartWait.wait_for_load(timeout=30)
+        wait_for_load()
         random_delay(2000, 5000)
         
         await update.message.reply_text(
@@ -1249,9 +856,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
             f"🍪 Куки X.com: {'✅' if success else '❌'}\n"
-            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n"
-            f"👤 Эмуляция человека: ✅\n"
-            f"⏰ Умное ожидание: ✅\n\n"
+            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
             f"/screen <url> - сделать скриншот\n"
@@ -1272,8 +877,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         new_tab("https://bot.sannysoft.com")
-        SmartWait.wait_for_load(timeout=30)
-        random_delay(1000, 3000)
+        wait_for_load()
         
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
@@ -1304,7 +908,6 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         close_tab()
         cleanup_tabs(keep_one=True)
-        random_delay(1000, 3000)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -1318,8 +921,7 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         new_tab("https://x.com")
-        SmartWait.wait_for_load(timeout=30)
-        random_delay(2000, 5000)
+        wait_for_load()
         
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
@@ -1369,7 +971,6 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         close_tab()
         cleanup_tabs(keep_one=True)
-        random_delay(1000, 3000)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -1395,8 +996,7 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         new_tab(url)
-        SmartWait.wait_for_load(timeout=30)
-        random_delay(1000, 3000)
+        wait_for_load()
         
         timestamp = int(time.time())
         filename = f"screenshot_{timestamp}.png"
@@ -1435,8 +1035,7 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report = "🧪 **Тест browser-harness (по документации)**\n\n"
         
         new_tab("https://example.com")
-        SmartWait.wait_for_load(timeout=30)
-        random_delay(1000, 3000)
+        wait_for_load()
         report += "✅ new_tab()\n"
         
         ax = get_text_from_ax_tree()
@@ -1446,9 +1045,8 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = find_element_by_role(nodes, "link", "More information...")
         if link:
             x, y = get_element_coords(link.get("backendDOMNodeId"))
-            await human_click(int(x), int(y))
-            random_delay(1000, 3000)
-            report += f"✅ Человеческий клик по ссылке 'More information...'\n"
+            click_at_xy(x, y)
+            report += f"✅ Клик по ссылке 'More information...'\n"
         else:
             report += "ℹ️ Ссылка 'More information...' не найдена\n"
         
@@ -1475,7 +1073,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• tool_get_ax_tree - Accessibility Tree (РЕКОМЕНДУЕТСЯ)\n"
             "• tool_click_by_role / tool_click_by_coords\n"
             "• tool_capture_screenshot - для проверки\n"
-            "• tool_human_type - ввод с эмуляцией человека\n"
             "• tool_set_x_cookies - установить куки X.com\n\n"
             "Примеры:\n"
             "/dspy открой x.com и покажи заголовок\n"
@@ -1568,8 +1165,6 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• AGNES_API_KEY: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
     report += f"• Куки X.com: {'✅' if COOKIES else '❌'} ({len(COOKIES)} шт.)\n"
     report += f"• DSPy лог: {'✅' if os.path.exists('dspy.log') else '❌'}\n"
-    report += f"• Эмуляция человека: {'✅' if DSPY_AVAILABLE else '❌'}\n"
-    report += f"• Умное ожидание: ✅\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
@@ -1605,11 +1200,9 @@ def main():
     app.add_handler(CommandHandler("dspy_log", dspy_log_command))
     app.add_handler(CommandHandler("diag", diag))
     
-    logger.info("🤖 Бот запущен (по документации browser-harness)!")
+    logger.info("🤖 Бот запущен!")
     logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /dspy_log, /diag")
     logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
-    logger.info("👤 Эмуляция человека: включена")
-    logger.info("⏰ Умное ожидание: включено")
     app.run_polling()
 
 if __name__ == "__main__":
