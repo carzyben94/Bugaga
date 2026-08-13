@@ -6,6 +6,9 @@ import subprocess
 import time
 import json
 import base64
+import io
+from contextlib import redirect_stdout
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -49,7 +52,7 @@ if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
 # ============================================
-# КУКИ ДЛЯ X.COM (TWITTER)
+# КУКИ ДЛЯ X.COM (TWITTER) - СОКРАЩЕНО
 # ============================================
 
 COOKIES = [
@@ -200,14 +203,10 @@ VEIL_OK, VEIL_VER = check_veil()
 CHROME_PATH = check_chrome()
 
 # ============================================
-# ПОМОЩНИКИ ДЛЯ РАБОТЫ С ACCESSIBILITY TREE (ПО ДОКЕ)
+# ПОМОЩНИКИ ДЛЯ РАБОТЫ С ACCESSIBILITY TREE
 # ============================================
 
 def get_ax_tree():
-    """
-    Получить полное Accessibility Tree страницы.
-    Строго по документации: cdp("Accessibility.getFullAXTree")["nodes"]
-    """
     try:
         result = cdp("Accessibility.getFullAXTree")
         return result.get("nodes", [])
@@ -216,10 +215,6 @@ def get_ax_tree():
         return []
 
 def find_element_by_role(nodes, role, name=None):
-    """
-    Найти элемент по роли и имени в AX Tree.
-    Возвращает узел с backendDOMNodeId.
-    """
     for node in nodes:
         if node.get("role") == role:
             if name is None or node.get("name") == name:
@@ -227,15 +222,10 @@ def find_element_by_role(nodes, role, name=None):
     return None
 
 def get_element_coords(backend_node_id):
-    """
-    Получить координаты центра элемента по backendDOMNodeId.
-    Строго по документации: cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]
-    """
     try:
         result = cdp("DOM.getBoxModel", backendNodeId=backend_node_id)
         if result and "model" in result and "content" in result["model"]:
             box = result["model"]["content"]
-            # content = [x1, y1, x2, y2, x3, y3, x4, y4]
             x = sum(box[0::2]) / 4
             y = sum(box[1::2]) / 4
             return x, y
@@ -244,9 +234,6 @@ def get_element_coords(backend_node_id):
     return None, None
 
 def click_element_by_role(role, name=None):
-    """
-    Найти элемент по роли/имени и кликнуть по его центру.
-    """
     nodes = get_ax_tree()
     target = find_element_by_role(nodes, role, name)
     if not target:
@@ -267,10 +254,6 @@ def click_element_by_role(role, name=None):
     return True
 
 def get_text_from_ax_tree():
-    """
-    Получить текст из Accessibility Tree.
-    Собирает все текстовые узлы с их ролью.
-    """
     nodes = get_ax_tree()
     result = []
     for node in nodes:
@@ -281,15 +264,10 @@ def get_text_from_ax_tree():
     return "\n".join(result) if result else "Нет текста в AX Tree"
 
 # ============================================
-# УНИВЕРСАЛЬНАЯ ОЧИСТКА ВКЛАДОК (БЕЗ СООБЩЕНИЙ В TELEGRAM)
+# УНИВЕРСАЛЬНАЯ ОЧИСТКА ВКЛАДОК
 # ============================================
 
 def cleanup_tabs(keep_one=True):
-    """
-    Закрывает все вкладки, кроме одной (по умолчанию).
-    Если keep_one=True - оставляет одну чистую вкладку.
-    Без сообщений в Telegram, только логи.
-    """
     try:
         tabs = list_tabs()
         if not tabs:
@@ -298,9 +276,7 @@ def cleanup_tabs(keep_one=True):
         
         logger.info(f"🧹 Очистка: {len(tabs)} вкладок")
         
-        # Если нужно оставить одну вкладку
         if keep_one and len(tabs) > 1:
-            # Закрываем все, кроме первой
             for i, tab in enumerate(tabs):
                 if i == 0:
                     continue
@@ -311,7 +287,6 @@ def cleanup_tabs(keep_one=True):
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось закрыть {tab}: {e}")
             
-            # Переключаемся на первую вкладку
             try:
                 switch_tab(tabs[0])
                 goto_url("about:blank")
@@ -319,8 +294,6 @@ def cleanup_tabs(keep_one=True):
                 logger.info("✅ Оставлена одна чистая вкладка")
             except Exception as e:
                 logger.warning(f"⚠️ Не удалось переключиться: {e}")
-        
-        # Если keep_one=False - закрываем все
         else:
             for tab in tabs:
                 try:
@@ -338,13 +311,10 @@ def cleanup_tabs(keep_one=True):
         logger.error(f"❌ Ошибка очистки: {e}")
 
 def set_cookies_via_js():
-    """Установить куки через JavaScript (наиболее надёжный способ)"""
     try:
-        # Открываем страницу X.com (куки привязываются к домену)
         new_tab("https://x.com")
         wait_for_load()
         
-        # Формируем JavaScript для установки всех кук
         js_code = """
         (function() {
             const cookies = %s;
@@ -394,7 +364,7 @@ def set_cookies_via_js():
         return False
 
 # ============================================
-# DSPy ИНТЕГРАЦИЯ С MLflow TRACING
+# DSPy ИНТЕГРАЦИЯ
 # ============================================
 
 try:
@@ -402,20 +372,13 @@ try:
     import httpx
     import dspy
     from dspy import Signature, InputField, OutputField, Module, settings, ReActV2, Tool
-    import mlflow
-    from mlflow import dspy as mlflow_dspy
     warnings.filterwarnings("ignore")
     DSPY_AVAILABLE = True
-    MLFLOW_AVAILABLE = True
-except ImportError as e:
+except ImportError:
     DSPY_AVAILABLE = False
-    MLFLOW_AVAILABLE = False
-    logger.warning(f"⚠️ Ошибка импорта: {e}")
-    logger.warning("⚠️ Установи: pip install dspy httpx mlflow")
+    logger.warning("⚠️ DSPy не установлен. Установи: pip install dspy httpx")
 
 class AgnesLM(dspy.LM):
-    """Адаптер для Agnes AI совместимый с DSPy"""
-    
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
@@ -481,63 +444,11 @@ class AgnesLM(dspy.LM):
 
 
 class BrowserTask(Signature):
-    """
-    Ты агент с доступом к браузеру через Browser Harness.
-    Работай строго по документации browser-harness.
-    
-    ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
-    
-    1. Навигация:
-       - tool_new_tab(url) -> str — ПЕРВАЯ НАВИГАЦИЯ ТОЛЬКО ЧЕРЕЗ НЕЁ!
-       - tool_goto_url(url) -> str — для навигации в активной вкладке
-       - tool_wait_for_load() -> str — ВСЕГДА после навигации
-       - tool_ensure_real_tab() -> str — если вкладка устарела
-    
-    2. Поиск элементов (РЕКОМЕНДУЕМЫЙ СПОСОБ):
-       - tool_get_ax_tree() -> str — всё дерево с role, name, backendDOMNodeId
-       - tool_click_by_role(role, name) -> str — клик по центру элемента
-       - tool_click_by_coords(x, y) -> str — клик по координатам
-       - tool_get_coords_by_role(role, name) -> str — координаты элемента
-    
-    3. Информация о странице:
-       - tool_page_info() -> str — URL, title, viewport
-       - tool_capture_screenshot() -> str — ТОЛЬКО ДЛЯ ПРОВЕРКИ
-    
-    4. Fallback (когда AX Tree не помогает):
-       - tool_js(expression) -> str — выполнить JavaScript (canvas, виджеты)
-       - tool_fill_input(selector, text) -> str — заполнить поле
-       - tool_scroll(dx, dy) -> str — прокрутить страницу
-    
-    5. Управление вкладками:
-       - tool_list_tabs() -> str
-       - tool_current_tab() -> str
-       - tool_switch_tab(tab_id) -> str
-       - tool_close_tab() -> str
-    
-    ПРАВИЛА ИЗ ДОКУМЕНТАЦИИ:
-    1. Первая навигация — ТОЛЬКО tool_new_tab(url), НЕ tool_goto_url(url)
-    2. Всегда вызывай tool_wait_for_load() после любой навигации
-    3. Для поиска используй tool_get_ax_tree(), НЕ скриншоты
-    4. Для кликов — tool_click_by_role() или tool_click_by_coords()
-    5. Скриншоты — только для проверки результата
-    6. Если AX Tree не хватает — используй tool_js() как fallback
-    7. Если вкладка устарела — tool_ensure_real_tab()
-    
-    СТРАТЕГИЯ ПО УМОЛЧАНИЮ:
-    1. tool_new_tab(url) — открыть страницу
-    2. tool_wait_for_load() — дождаться загрузки
-    3. tool_get_ax_tree() — получить структуру страницы
-    4. Найти элемент по role/name в AX Tree
-    5. tool_click_by_role(role, name) — кликнуть
-    6. tool_capture_screenshot() — проверить результат
-    """
-    
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Ответ с использованием Browser Harness")
 
 
 def create_browser_agent(tools, max_iters=10):
-    """Создать ReActV2 агента с инструментами"""
     try:
         agent = ReActV2(
             signature=BrowserTask,
@@ -551,8 +462,7 @@ def create_browser_agent(tools, max_iters=10):
         return None
 
 
-def init_dspy(api_key=None, tools=None, max_iters=10, enable_tracing=True):
-    """Инициализировать DSPy с Agnes AI и MLflow Tracing"""
+def init_dspy(api_key=None, tools=None, max_iters=10):
     api_key = api_key or os.environ.get("AGNES_API_KEY")
     
     if not api_key:
@@ -569,19 +479,6 @@ def init_dspy(api_key=None, tools=None, max_iters=10, enable_tracing=True):
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
         
-        # ВКЛЮЧАЕМ MLflow TRACING
-        if enable_tracing and MLFLOW_AVAILABLE:
-            try:
-                # Настраиваем MLflow для логирования в файл (на Railway нет UI, но логи сохраняются)
-                mlflow.set_tracking_uri("file:./mlruns")
-                mlflow.set_experiment("dspy_agent")
-                
-                # Автологирование DSPy
-                mlflow_dspy.autolog()
-                logger.info("✅ MLflow DSPy autolog включен")
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось включить MLflow autolog: {e}")
-        
         if tools:
             agent = create_browser_agent(tools, max_iters)
         else:
@@ -595,7 +492,6 @@ def init_dspy(api_key=None, tools=None, max_iters=10, enable_tracing=True):
 
 
 def run_agent(agent, question: str) -> str:
-    """Запустить агента с вопросом"""
     if not agent:
         return "❌ Агент не инициализирован"
     
@@ -618,11 +514,33 @@ dspy_agent = None
 dspy_lm = None
 
 # ============================================
-# ИНИЦИАЛИЗАЦИЯ DSPy С ИНСТРУМЕНТАМИ (ПО ДОКЕ)
+# DSPy ЛОГИРОВАНИЕ В ФАЙЛ
+# ============================================
+
+def save_dspy_log(question: str, answer: str, history: str = None):
+    """Сохраняет лог DSPy в файл"""
+    try:
+        log_file = "dspy.log"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write("=" * 60 + "\n")
+            f.write(f"📅 Время: {timestamp}\n")
+            f.write(f"❓ Вопрос: {question}\n")
+            f.write(f"✅ Ответ: {answer}\n")
+            if history:
+                f.write(f"📋 История: {history}\n")
+            f.write("=" * 60 + "\n\n")
+        
+        logger.info(f"✅ Лог сохранён в {log_file}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения лога: {e}")
+
+# ============================================
+# ИНИЦИАЛИЗАЦИЯ DSPy С ИНСТРУМЕНТАМИ
 # ============================================
 
 def init_dspy_agent():
-    """Инициализация DSPy агента с инструментами Browser Harness по документации"""
     global dspy_agent, dspy_lm
     
     if not DSPY_AVAILABLE:
@@ -635,13 +553,7 @@ def init_dspy_agent():
         return
     
     try:
-        # ============================================================
-        # ВСЕ ИНСТРУМЕНТЫ ПО ДОКУМЕНТАЦИИ
-        # ============================================================
-        
-        # 1. Навигация
         def tool_new_tab(url: str = "https://example.com") -> str:
-            """Открыть новую вкладку с URL (ПЕРВАЯ НАВИГАЦИЯ ТОЛЬКО ЧЕРЕЗ НЕЁ)"""
             try:
                 new_tab(url)
                 wait_for_load()
@@ -650,7 +562,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_goto_url(url: str) -> str:
-            """Перейти на URL (для навигации в активной вкладке)"""
             try:
                 goto_url(url)
                 wait_for_load()
@@ -659,7 +570,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_wait_for_load() -> str:
-            """Дождаться загрузки страницы"""
             try:
                 wait_for_load()
                 return "✅ Страница загружена"
@@ -667,22 +577,19 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_ensure_real_tab() -> str:
-            """Восстановить вкладку, если она устарела"""
             try:
                 ensure_real_tab()
                 return "✅ Вкладка восстановлена"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        # 2. Accessibility Tree (РЕКОМЕНДУЕМЫЙ СПОСОБ)
         def tool_get_ax_tree() -> str:
-            """Получить Accessibility Tree страницы (role, name, backendDOMNodeId)"""
             try:
                 nodes = get_ax_tree()
                 if not nodes:
                     return "❌ AX Tree пуст"
                 result = []
-                for node in nodes[:50]:  # Ограничиваем для LLM
+                for node in nodes[:50]:
                     role = node.get("role", "unknown")
                     name = node.get("name", "")
                     if name:
@@ -692,7 +599,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_click_by_role(role: str, name: str = None) -> str:
-            """Кликнуть по элементу по его роли и имени"""
             try:
                 success = click_element_by_role(role, name)
                 if success:
@@ -702,7 +608,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_click_by_coords(x: int, y: int) -> str:
-            """Кликнуть по координатам"""
             try:
                 click_at_xy(x, y)
                 return f"✅ Клик по ({x}, {y})"
@@ -710,7 +615,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_get_coords_by_role(role: str, name: str = None) -> str:
-            """Получить координаты элемента по роли и имени"""
             try:
                 nodes = get_ax_tree()
                 target = find_element_by_role(nodes, role, name)
@@ -726,9 +630,7 @@ def init_dspy_agent():
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        # 3. Информация о странице
         def tool_page_info() -> str:
-            """Получить информацию о странице (URL, title, viewport)"""
             try:
                 info = page_info()
                 return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
@@ -736,7 +638,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_capture_screenshot(filename: str = None) -> str:
-            """Сделать скриншот страницы (ТОЛЬКО ДЛЯ ПРОВЕРКИ)"""
             try:
                 if not filename:
                     timestamp = int(time.time())
@@ -746,9 +647,7 @@ def init_dspy_agent():
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        # 4. Fallback (когда AX Tree не помогает)
         def tool_js(expression: str) -> str:
-            """Выполнить JavaScript на странице (fallback)"""
             try:
                 result = js(expression)
                 return str(result) if result is not None else "✅ JS выполнен"
@@ -756,7 +655,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_fill_input(selector: str, text: str) -> str:
-            """Заполнить поле ввода по CSS селектору"""
             try:
                 fill_input(selector, text)
                 return f"✅ Заполнено: {selector}"
@@ -764,16 +662,13 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_scroll(dx: int, dy: int) -> str:
-            """Прокрутить страницу"""
             try:
                 scroll(dx, dy)
                 return f"✅ Прокрутка на ({dx}, {dy})"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        # 5. Управление вкладками
         def tool_list_tabs() -> str:
-            """Список всех открытых вкладок"""
             try:
                 tabs = list_tabs()
                 return f"Вкладки: {tabs}"
@@ -781,7 +676,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_current_tab() -> str:
-            """ID текущей вкладки"""
             try:
                 tab = current_tab()
                 return f"Текущая вкладка: {tab}"
@@ -789,7 +683,6 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_switch_tab(tab_id: int) -> str:
-            """Переключиться на вкладку по ID"""
             try:
                 switch_tab(tab_id)
                 return f"✅ Переключился на вкладку {tab_id}"
@@ -797,16 +690,13 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_close_tab() -> str:
-            """Закрыть текущую вкладку"""
             try:
                 close_tab()
                 return "✅ Вкладка закрыта"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        # 6. Куки для X.com
         def tool_set_x_cookies() -> str:
-            """Установить куки для X.com (авторизация)"""
             try:
                 success = set_cookies_via_js()
                 if success:
@@ -814,10 +704,6 @@ def init_dspy_agent():
                 return "❌ Ошибка установки кук"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
-        
-        # ============================================================
-        # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ
-        # ============================================================
         
         tools = [
             Tool(tool_new_tab),
@@ -840,16 +726,14 @@ def init_dspy_agent():
             Tool(tool_set_x_cookies),
         ]
         
-        # Инициализируем DSPy с инструментами
         dspy_lm, dspy_agent = init_dspy(
             api_key=AGNES_API_KEY,
             tools=tools,
-            max_iters=10,
-            enable_tracing=True
+            max_iters=10
         )
         
         if dspy_agent:
-            logger.info(f"✅ DSPy агент инициализирован с {len(tools)} инструментами (по документации)")
+            logger.info(f"✅ DSPy агент инициализирован с {len(tools)} инструментами")
         else:
             logger.warning("⚠️ Не удалось создать DSPy агента")
             
@@ -872,12 +756,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/harness - тест harness\n"
         "/ax - показать Accessibility Tree\n"
         "/dspy <задача> - задать вопрос агенту\n"
-        "/dspy_debug - показать логи DSPy\n"
+        "/dspy_log - скачать лог DSPy\n"
         "/diag - диагностика"
     )
 
 async def ax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать Accessibility Tree страницы"""
     await update.message.reply_text("🌳 Получаю Accessibility Tree...")
     
     if not browser_instance:
@@ -892,7 +775,6 @@ async def ax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌳 **Accessibility Tree**\n\n{text}"
         )
         
-        # Очистка без сообщения в Telegram
         cleanup_tabs(keep_one=True)
         
     except Exception as e:
@@ -941,7 +823,6 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from veilbrowser import Browser
         browser_instance = await Browser.connect(cdp_url)
         
-        # УСТАНАВЛИВАЕМ КУКИ X.COM ЧЕРЕЗ JS
         await update.message.reply_text("🍪 Устанавливаю куки X.com...")
         success = set_cookies_via_js()
         if success:
@@ -949,12 +830,10 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ Не удалось установить куки")
         
-        # Инициализируем DSPy агента
         if DSPY_AVAILABLE:
             await update.message.reply_text("🧠 Инициализирую DSPy агента...")
             init_dspy_agent()
         
-        # Открываем тестовую страницу
         new_tab("https://x.com")
         wait_for_load()
         
@@ -963,14 +842,13 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
             f"🍪 Куки X.com: {'✅' if success else '❌'}\n"
-            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n"
-            f"📊 MLflow: {'✅ Включен' if MLFLOW_AVAILABLE else '❌'}\n\n"
+            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
             f"/screen <url> - сделать скриншот\n"
             f"/ax - показать Accessibility Tree\n"
             f"/dspy <задача> - AI-агент\n"
-            f"/dspy_debug - логи DSPy"
+            f"/dspy_log - скачать лог DSPy"
         )
         
     except Exception as e:
@@ -1021,7 +899,6 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет авторизацию на X.com через куки"""
     await update.message.reply_text("🔍 Проверяю X.com...")
     
     if not browser_instance:
@@ -1029,26 +906,20 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Открываем новую вкладку с X.com
         new_tab("https://x.com")
         wait_for_load()
         
-        # Делаем скриншот
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
             with open(screenshot_path, 'rb') as f:
                 await update.message.reply_photo(photo=f, caption="📸 X.com после загрузки")
         
-        # Проверяем, авторизованы ли мы
         result = js("""
             () => {
-                // Проверяем наличие элементов
                 const signUp = document.querySelector('[data-testid="signUpButton"]');
                 const logIn = document.querySelector('[data-testid="loginButton"]');
                 const profile = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
                 const home = document.querySelector('[data-testid="AppTabBar_Home_Link"]');
-                
-                // Проверяем куки
                 const hasAuth = document.cookie.includes('auth_token');
                 const hasTwid = document.cookie.includes('twid');
                 
@@ -1065,31 +936,22 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
         """)
         
-        # Формируем отчет
         report = "🔍 **Проверка X.com**\n\n"
-        
-        # Куки
         report += "🍪 **Куки:**\n"
         report += f"• auth_token: {'✅' if result.get('hasAuthToken') else '❌'}\n"
         report += f"• twid: {'✅' if result.get('hasTwid') else '❌'}\n\n"
-        
-        # UI элементы
         report += "🖥️ **UI элементы:**\n"
         report += f"• Кнопка 'Sign up': {'❌' if result.get('hasSignUp') else '✅ (скрыта)'}\n"
         report += f"• Кнопка 'Log in': {'❌' if result.get('hasLogIn') else '✅ (скрыта)'}\n"
         report += f"• Профиль: {'✅' if result.get('hasProfile') else '❌'}\n"
         report += f"• Домой: {'✅' if result.get('hasHome') else '❌'}\n\n"
         
-        # Статус авторизации
-        report += "**📊 Статус:**\n"
         if result.get('hasProfile') or result.get('hasHome'):
-            report += "✅ **АВТОРИЗОВАН!** Вы вошли в X.com\n"
+            report += "✅ **АВТОРИЗОВАН!**\n"
         elif result.get('hasSignUp') or result.get('hasLogIn'):
-            report += "⚠️ **НЕ АВТОРИЗОВАН!** Куки не работают или истекли\n"
+            report += "⚠️ **НЕ АВТОРИЗОВАН!**\n"
         else:
-            report += "❓ **НЕИЗВЕСТНО** - страница загрузилась, но статус не определен\n"
-        
-        report += f"\n📌 Title: {result.get('title', 'N/A')[:100]}"
+            report += "❓ **НЕИЗВЕСТНО**\n"
         
         await update.message.reply_text(report)
         
@@ -1100,8 +962,6 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /screen [url] - сделать скриншот указанного URL"""
-    # Проверяем, передан ли URL
     if not context.args:
         await update.message.reply_text(
             "❌ **Укажи URL!**\n\n"
@@ -1111,8 +971,6 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     url = context.args[0]
-    
-    # Проверяем, что URL начинается с http:// или https://
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
     
@@ -1123,11 +981,9 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Открываем новую вкладку с указанным URL
         new_tab(url)
         wait_for_load()
         
-        # Делаем скриншот
         timestamp = int(time.time())
         filename = f"screenshot_{timestamp}.png"
         screenshot_path = capture_screenshot(filename)
@@ -1139,7 +995,6 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"📸 **Скриншот:** `{url}`"
                 )
             
-            # Получаем информацию о странице
             info = page_info()
             await update.message.reply_text(
                 f"✅ **Готово!**\n\n"
@@ -1171,11 +1026,9 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wait_for_load()
         report += "✅ wait_for_load()\n"
         
-        # 1. AX Tree
         ax = get_text_from_ax_tree()
         report += f"✅ AX Tree: {len(ax)} символов\n"
         
-        # 2. Координатный клик
         nodes = get_ax_tree()
         link = find_element_by_role(nodes, "link", "More information...")
         if link:
@@ -1200,7 +1053,6 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /dspy"""
     if not context.args:
         await update.message.reply_text(
             "🧠 **DSPy Agent (по документации browser-harness)**\n\n"
@@ -1214,7 +1066,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Примеры:\n"
             "/dspy открой x.com и покажи заголовок\n"
             "/dspy установи куки X.com и открой страницу\n\n"
-            "📊 Логи сохраняются в MLflow (папка ./mlruns)"
+            "📊 Логи сохраняются в dspy.log"
         )
         return
     
@@ -1223,7 +1075,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not DSPY_AVAILABLE:
-        await update.message.reply_text("❌ DSPy не установлен!\nУстанови: pip install dspy httpx mlflow")
+        await update.message.reply_text("❌ DSPy не установлен!\nУстанови: pip install dspy httpx")
         return
     
     if not dspy_agent:
@@ -1243,99 +1095,57 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         loop = asyncio.get_running_loop()
-        answer = await loop.run_in_executor(None, run_agent, dspy_agent, user_query)
+        
+        # Сохраняем историю
+        f = io.StringIO()
+        with redirect_stdout(f):
+            answer = await loop.run_in_executor(None, run_agent, dspy_agent, user_query)
+        
+        history_output = f.getvalue()
         
         if not answer or answer.strip() == "":
             await status_msg.edit_text("❌ Агент вернул пустой ответ")
             return
+        
+        # Сохраняем лог
+        save_dspy_log(user_query, answer, history_output)
         
         if len(answer) > 4000:
             answer = answer[:4000] + "\n\n... (обрезано)"
         
         await status_msg.edit_text(f"✅ **Результат:**\n\n{answer}")
         
-        # ОЧИСТКА БЕЗ СООБЩЕНИЯ В TELEGRAM (только в логах)
         cleanup_tabs(keep_one=True)
         
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
-        
-        # ДАЖЕ ПРИ ОШИБКЕ - ОЧИСТКА БЕЗ СООБЩЕНИЯ
         cleanup_tabs(keep_one=True)
 
-async def dspy_debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /dspy_debug - показать последние логи DSPy"""
-    await update.message.reply_text("🔍 Получаю последние логи DSPy...")
+async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /dspy_log - скачать лог DSPy"""
+    log_file = "dspy.log"
     
-    if not DSPY_AVAILABLE:
-        await update.message.reply_text("❌ DSPy не доступен")
+    if not os.path.exists(log_file):
+        await update.message.reply_text("📄 **Лог DSPy пуст**\n\nПока нет записей. Используй /dspy чтобы начать.")
         return
     
     try:
-        # 1. Проверяем, есть ли MLflow логи
-        if MLFLOW_AVAILABLE:
-            try:
-                from mlflow.tracking import MlflowClient
-                
-                client = MlflowClient()
-                experiment = client.get_experiment_by_name("dspy_agent")
-                
-                if experiment:
-                    runs = client.search_runs(
-                        experiment_ids=[experiment.experiment_id],
-                        order_by=["start_time DESC"],
-                        max_results=5
-                    )
-                    
-                    if runs:
-                        report = "📊 **Последние 5 запусков DSPy (MLflow)**\n\n"
-                        for i, run in enumerate(runs):
-                            report += f"**{i+1}. Запуск {run.info.run_id[:8]}**\n"
-                            report += f"   Время: {run.info.start_time}\n"
-                            report += f"   Статус: {run.info.status}\n"
-                            # Параметры
-                            params = run.data.params
-                            if params:
-                                report += f"   Параметры: {list(params.keys())[:3]}\n"
-                            # Метрики
-                            metrics = run.data.metrics
-                            if metrics:
-                                report += f"   Метрики: {list(metrics.keys())[:3]}\n"
-                            report += "\n"
-                        
-                        if len(report) > 4000:
-                            report = report[:4000] + "\n\n... (обрезано)"
-                        await update.message.reply_text(report)
-                    else:
-                        await update.message.reply_text("ℹ️ Нет запусков в MLflow")
-                else:
-                    await update.message.reply_text("ℹ️ Эксперимент 'dspy_agent' не найден")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка MLflow: {e}")
-                await update.message.reply_text(f"⚠️ Ошибка MLflow: {str(e)[:100]}")
+        # Читаем файл
+        with open(log_file, "r", encoding="utf-8") as f:
+            content = f.read()
         
-        # 2. dspy.inspect_history() для последних вызовов
-        try:
-            import io
-            from contextlib import redirect_stdout
-            
-            f = io.StringIO()
-            with redirect_stdout(f):
-                dspy.inspect_history(n=2)  # Последние 2 вызова
-            
-            history_output = f.getvalue()
-            if history_output:
-                if len(history_output) > 3500:
-                    history_output = history_output[:3500] + "\n\n... (обрезано)"
-                await update.message.reply_text(
-                    f"📝 **Последние вызовы DSPy:**\n\n```\n{history_output}\n```"
-                )
-            else:
-                await update.message.reply_text("ℹ️ Нет истории вызовов DSPy")
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка inspect_history: {e}")
-            await update.message.reply_text(f"⚠️ Ошибка inspect_history: {str(e)[:100]}")
+        if len(content) > 4000:
+            # Если файл большой, отправляем как документ
+            await update.message.reply_document(
+                document=open(log_file, "rb"),
+                filename="dspy.log",
+                caption="📄 **Лог DSPy**"
+            )
+        else:
+            await update.message.reply_text(
+                f"📄 **Лог DSPy**\n\n```\n{content}\n```"
+            )
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -1347,10 +1157,10 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• Harness path: {'✅' if os.path.exists('browser-harness/src') else '❌'}\n"
     report += f"• Браузер: {'✅' if browser_instance else '❌'}\n"
     report += f"• DSPy: {'✅' if dspy_agent else '❌'}\n"
-    report += f"• MLflow: {'✅' if MLFLOW_AVAILABLE else '❌'}\n"
     report += f"• BU_CDP_URL: {os.environ.get('BU_CDP_URL', '❌')}\n"
     report += f"• AGNES_API_KEY: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
     report += f"• Куки X.com: {'✅' if COOKIES else '❌'} ({len(COOKIES)} шт.)\n"
+    report += f"• DSPy лог: {'✅' if os.path.exists('dspy.log') else '❌'}\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
@@ -1383,14 +1193,12 @@ def main():
     app.add_handler(CommandHandler("harness", test_harness))
     app.add_handler(CommandHandler("ax", ax_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
-    app.add_handler(CommandHandler("dspy_debug", dspy_debug_command))
+    app.add_handler(CommandHandler("dspy_log", dspy_log_command))
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен (по документации browser-harness)!")
-    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /dspy_debug, /diag")
+    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /dspy_log, /diag")
     logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
-    if MLFLOW_AVAILABLE:
-        logger.info("📊 MLflow Tracing включен (логи в ./mlruns)")
     app.run_polling()
 
 if __name__ == "__main__":
