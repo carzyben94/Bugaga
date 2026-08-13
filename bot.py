@@ -69,17 +69,11 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from veilbrowser import Browser, Fingerprint
         
-        # Правильный запуск Veil 1.3.1 — используем flags
+        # Правильный запуск Veil 1.3.1 — без дополнительных аргументов
+        # Veil сам добавляет нужные флаги (--no-sandbox и др.)
         browser_instance = await Browser.launch(
             headless=True,
-            fingerprint=Fingerprint.preset("linux-chrome"),
-            flags=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--remote-debugging-port=9222",
-                "--disable-blink-features=AutomationControlled"
-            ]
+            fingerprint=Fingerprint.preset("linux-chrome")
         )
         
         await update.message.reply_text(
@@ -90,18 +84,10 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except TypeError as e:
-        # Если flags не работает, пробуем без fingerprint
+        # Если fingerprint не принимается, пробуем без него
         try:
             from veilbrowser import Browser
-            browser_instance = await Browser.launch(
-                headless=True,
-                flags=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--remote-debugging-port=9222"
-                ]
-            )
+            browser_instance = await Browser.launch(headless=True)
             await update.message.reply_text(
                 f"✅ **Veil запущен!** (без fingerprint)\n\n"
                 f"🔌 CDP: http://127.0.0.1:9222\n\n"
