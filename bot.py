@@ -151,7 +151,7 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Результат выполнения задачи")
 
 # ============================================================
-# 7. ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ CAMOUFOX (С persistent_context)
+# 7. ИНИЦИАЛИЗАЦИЯ CAMOUFOX (С ДИАГНОСТИКОЙ)
 # ============================================================
 
 async def init_browser_and_harness():
@@ -165,24 +165,67 @@ async def init_browser_and_harness():
     logger.info("🚀 Запускаем Camoufox...")
     
     try:
-        # 🔥 КЛЮЧЕВОЙ МОМЕНТ: persistent_context=True
-        browser = AsyncCamoufox(
-            headless=True,
-            fingerprint=True,
-            persistent_context=True  # 👈 БЕЗ ЭТОГО НЕ РАБОТАЕТ!
-        )
-        browser_instance = await browser.__aenter__()
+        # Пробуем разные варианты
+        browser = None
         
-        logger.info("✅ Camoufox запущен и сохранён")
+        # Вариант 1: с persistent_context (если поддерживается)
+        try:
+            logger.info("🔧 Пробуем с persistent_context=True...")
+            browser = AsyncCamoufox(
+                headless=True,
+                fingerprint=True,
+                persistent_context=True
+            )
+            browser_instance = await browser.__aenter__()
+            logger.info("✅ Запущено с persistent_context=True")
+        except TypeError as e:
+            # Вариант 2: без persistent_context
+            logger.warning(f"⚠️ persistent_context не поддерживается: {e}")
+            logger.info("🔧 Пробуем без persistent_context...")
+            browser = AsyncCamoufox(
+                headless=True,
+                fingerprint=True
+            )
+            browser_instance = await browser.__aenter__()
+            logger.info("✅ Запущено без persistent_context")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при запуске: {e}")
+            browser_instance = None
+            return False
+        
+        # Проверка: если browser_instance — bool, значит ошибка
+        if isinstance(browser_instance, bool):
+            logger.error(f"❌ browser_instance вернул bool: {browser_instance}")
+            browser_instance = None
+            return False
+        
+        logger.info(f"✅ Camoufox запущен, тип: {type(browser_instance)}")
+        
+        # Проверка: создаём тестовую страницу
+        try:
+            logger.info("🔍 Проверяем браузер...")
+            test_page = await browser_instance.new_page()
+            await test_page.goto("about:blank", wait_until="load")
+            await test_page.close()
+            logger.info("✅ Проверка браузера пройдена")
+        except Exception as e:
+            logger.error(f"❌ Проверка браузера не пройдена: {e}")
+            browser_instance = None
+            return False
+        
         await asyncio.sleep(2)
         
         if HARNESS_AVAILABLE:
             logger.info("🔗 Подключаем Browser Harness...")
-            ensure_daemon()
-            new_tab("about:blank")
-            wait_for_load()
-            harness_ready = True
-            logger.info("✅ Browser Harness готов")
+            try:
+                ensure_daemon()
+                new_tab("about:blank")
+                wait_for_load()
+                harness_ready = True
+                logger.info("✅ Browser Harness готов")
+            except Exception as e:
+                logger.error(f"❌ Ошибка подключения Harness: {e}")
+                harness_ready = False
         
         return True
         
@@ -321,7 +364,11 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if browser_instance is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /status.")
+            await msg.edit_text("❌ Браузер не запущен. Используйте /status")
+            return
+        
+        if isinstance(browser_instance, bool):
+            await msg.edit_text(f"❌ Ошибка: browser_instance = {browser_instance}")
             return
         
         # Используем сохранённый браузер
@@ -346,7 +393,11 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if browser_instance is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /status.")
+            await msg.edit_text("❌ Браузер не запущен. Используйте /status")
+            return
+        
+        if isinstance(browser_instance, bool):
+            await msg.edit_text(f"❌ Ошибка: browser_instance = {browser_instance}")
             return
         
         # Используем сохранённый браузер
@@ -362,14 +413,16 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    status_text = (
         f"📦 **Статус системы**\n\n"
         f"🦊 Camoufox: {'✅ Доступен' if CAMOUFOX_AVAILABLE else '❌ Не установлен'}\n"
         f"🔧 Harness: {'✅ Готов' if harness_ready else '❌ Не готов'}\n"
         f"🧠 DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}\n"
-        f"🌐 Браузер: {'✅ Запущен' if browser_instance else '❌ Не запущен'}",
-        parse_mode='Markdown'
+        f"🌐 Браузер: {'✅ Запущен' if browser_instance and not isinstance(browser_instance, bool) else '❌ Не запущен'}\n"
     )
+    if browser_instance:
+        status_text += f"📌 Тип: {type(browser_instance).__name__}"
+    await update.message.reply_text(status_text, parse_mode='Markdown')
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -410,7 +463,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def close_browser():
     global browser_instance
-    if browser_instance:
+    if browser_instance and not isinstance(browser_instance, bool):
         try:
             await browser_instance.close()
             logger.info("✅ Браузер закрыт")
@@ -445,7 +498,9 @@ async def main():
     logger.info(f"🦊 Camoufox: {'✅' if CAMOUFOX_AVAILABLE else '❌'}")
     logger.info(f"🔧 Harness: {'✅' if harness_ready else '❌'}")
     logger.info(f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}")
-    logger.info(f"🌐 Браузер: {'✅' if browser_instance else '❌'}")
+    logger.info(f"🌐 Браузер: {'✅' if browser_instance and not isinstance(browser_instance, bool) else '❌'}")
+    if browser_instance:
+        logger.info(f"📌 Тип browser_instance: {type(browser_instance)}")
     logger.info("📋 Команды: /start, /check, /screenshot, /status, /dspy")
     
     try:
@@ -453,7 +508,7 @@ async def main():
         await app.start()
         await app.updater.start_polling()
         
-        # Обработка сигналов для корректного завершения
+        # Обработка сигналов
         stop_signal = asyncio.Event()
         
         def signal_handler():
