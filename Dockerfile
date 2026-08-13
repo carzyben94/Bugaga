@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim 
 
 # Устанавливаем зависимости и banana-browser
 RUN apt-get update && apt-get install -y \
