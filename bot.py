@@ -76,6 +76,16 @@ class ZendriverMCP:
             self.is_ready = False
             logger.info("✅ Zendriver остановлен")
     
+    async def evaluate(self, script: str):
+        """Выполнить JavaScript на странице"""
+        if not self.is_ready or not self.page:
+            return None
+        try:
+            return await self.page.evaluate(script)
+        except Exception as e:
+            logger.error(f"❌ Ошибка evaluate: {e}")
+            return None
+    
     async def navigate(self, url: str) -> str:
         if not self.is_ready:
             return "❌ Браузер не запущен"
@@ -102,7 +112,7 @@ class ZendriverMCP:
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
-            content = await self.page.get_content()
+            content = await self.evaluate("document.body.innerText")
             return content[:5000] if content else "❌ Нет текста"
         except Exception as e:
             return f"❌ Ошибка: {e}"
@@ -111,7 +121,7 @@ class ZendriverMCP:
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
-            html = await self.page.execute_script("document.documentElement.outerHTML")
+            html = await self.evaluate("document.documentElement.outerHTML")
             return html[:5000] if html else "❌ Нет HTML"
         except Exception as e:
             return f"❌ Ошибка: {e}"
@@ -150,7 +160,7 @@ class ZendriverMCP:
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
-            title = await self.page.execute_script("document.title")
+            title = await self.evaluate("document.title")
             return f"✅ Заголовок: {title}"
         except Exception as e:
             return f"❌ Ошибка: {e}"
@@ -167,7 +177,7 @@ class ZendriverMCP:
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
-            await self.page.execute_script(f"window.scrollBy({dx}, {dy})")
+            await self.evaluate(f"window.scrollBy({dx}, {dy})")
             return f"✅ Прокрутка на ({dx}, {dy})"
         except Exception as e:
             return f"❌ Ошибка: {e}"
@@ -176,8 +186,19 @@ class ZendriverMCP:
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
-            result = await self.page.solve_turnstile()
-            return "✅ Turnstile решён" if result else "⚠️ Turnstile не найден"
+            if hasattr(self.page, 'solve_turnstile'):
+                result = await self.page.solve_turnstile()
+                return "✅ Turnstile решён" if result else "⚠️ Turnstile не найден"
+            else:
+                result = await self.evaluate("""
+                    (function() {
+                        if (typeof window.turnstile !== 'undefined') {
+                            return 'found';
+                        }
+                        return 'not found';
+                    })()
+                """)
+                return f"⚠️ Turnstile: {result}"
         except Exception as e:
             return f"❌ Ошибка: {e}"
     
@@ -186,7 +207,17 @@ class ZendriverMCP:
             return "❌ Браузер или страница не активны"
         try:
             cookies = await self.browser.cookies.get_all()
-            return f"✅ Куки: {cookies}"
+            cookies_list = []
+            for cookie in cookies:
+                cookies_list.append({
+                    "name": cookie.name,
+                    "value": cookie.value,
+                    "domain": cookie.domain,
+                    "path": cookie.path,
+                    "secure": cookie.secure,
+                    "httpOnly": cookie.http_only
+                })
+            return f"✅ Куки: {json.dumps(cookies_list, indent=2)}"
         except Exception as e:
             return f"❌ Ошибка: {e}"
     
@@ -409,10 +440,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛡️ **Zendriver + DSPy**\n\n"
         "Команды:\n"
         "/start_zd - запустить Zendriver\n"
+        "/stop_zd - остановить Zendriver\n"
         "/check - проверить маскировку\n"
         "/screen <url> - сделать скриншот\n"
         "/dspy <задача> - задать вопрос агенту\n"
-        "/dspy_log - скачать лог DSPy\n"
         "/diag - диагностика"
     )
 
@@ -443,6 +474,7 @@ async def start_zd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 Команды:\n"
             f"/screen <url> - сделать скриншот\n"
             f"/dspy <задача> - AI-агент\n"
+            f"/check - проверить маскировку\n"
             f"/diag - диагностика"
         )
         
@@ -473,22 +505,22 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mcp.navigate("https://bot.sannysoft.com")
         await asyncio.sleep(2)
         
-        # Проверяем webdriver через JS
-        webdriver = await mcp.page.execute_script("navigator.webdriver")
+        webdriver = await mcp.evaluate("navigator.webdriver")
         
         if webdriver is None or webdriver is False:
             verdict = "✅ **Браузер НЕОТЛИЧИМ!** 🎉"
         else:
             verdict = "⚠️ **Браузер как бот**"
         
-        # Делаем скриншот
-        screenshot_path = await mcp.screenshot()
-        if screenshot_path and os.path.exists(screenshot_path.split(": ")[-1]):
-            with open(screenshot_path.split(": ")[-1], 'rb') as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption=f"📸 Проверка маскировки"
-                )
+        result = await mcp.screenshot()
+        if result and result.startswith("✅"):
+            filename = result.split(": ")[-1]
+            if os.path.exists(filename):
+                with open(filename, 'rb') as f:
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption=f"📸 Проверка маскировки"
+                    )
         
         await update.message.reply_text(
             f"🔍 **Результат**\n\n"
@@ -520,7 +552,6 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mcp.navigate(url)
         result = await mcp.screenshot()
         
-        # Находим файл скриншота
         files = glob.glob("screenshot_*.png")
         if files:
             latest = max(files, key=os.path.getctime)
@@ -587,21 +618,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
 
-async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_file = "dspy.log"
-    if not os.path.exists(log_file):
-        await update.message.reply_text("📄 Лог DSPy пуст")
-        return
-    
-    try:
-        await update.message.reply_document(
-            document=open(log_file, "rb"),
-            filename="dspy.log",
-            caption="📄 Лог DSPy"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
-
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mcp = context.bot_data.get('mcp_server')
     agent = context.bot_data.get('dspy_agent')
@@ -615,10 +631,10 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if mcp and mcp.is_ready and mcp.page:
         try:
-            title = await mcp.get_title()
+            title = await mcp.evaluate("document.title")
             report += f"• Текущая страница: {title}\n"
-        except:
-            pass
+        except Exception as e:
+            report += f"• Текущая страница: ❌ {str(e)[:50]}\n"
     
     await update.message.reply_text(report)
 
@@ -634,11 +650,10 @@ def main():
     app.add_handler(CommandHandler("check", check_browser))
     app.add_handler(CommandHandler("screen", screen_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
-    app.add_handler(CommandHandler("dspy_log", dspy_log_command))
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен!")
-    logger.info("📋 Команды: /start_zd, /stop_zd, /check, /screen, /dspy, /dspy_log, /diag")
+    logger.info("📋 Команды: /start_zd, /stop_zd, /check, /screen, /dspy, /diag")
     app.run_polling()
 
 if __name__ == "__main__":
