@@ -280,74 +280,60 @@ def get_text_from_ax_tree():
             result.append(f"[{role}] {name}")
     return "\n".join(result) if result else "Нет текста в AX Tree"
 
-def set_cookies_via_cdp():
-    """Установить все куки через Network.setCookies с sessionId"""
+def set_cookies_via_js():
+    """Установить куки через JavaScript (наиболее надёжный способ)"""
     try:
-        # 1. Находим активную вкладку
-        targets = cdp("Target.getTargets")
-        target_id = None
-        if targets and "targetInfos" in targets:
-            for target in targets["targetInfos"]:
-                if target.get("type") == "page":
-                    target_id = target.get("targetId")
-                    break
+        # Открываем страницу X.com (куки привязываются к домену)
+        new_tab("https://x.com")
+        wait_for_load()
         
-        if not target_id:
-            logger.error("❌ Не найдена активная вкладка для установки кук")
-            # Если вкладки нет, просто создаем ее
-            new_tab("about:blank")
-            wait_for_load()
-            # Пробуем получить target_id еще раз
-            targets = cdp("Target.getTargets")
-            for target in targets.get("targetInfos", []):
-                if target.get("type") == "page":
-                    target_id = target.get("targetId")
-                    break
+        # Формируем JavaScript для установки всех кук
+        js_code = """
+        (function() {
+            const cookies = %s;
+            let success = 0;
+            let failed = 0;
+            let errors = [];
             
-            if not target_id:
-                return False
+            cookies.forEach(function(cookie) {
+                try {
+                    let cookieString = cookie.name + '=' + cookie.value;
+                    if (cookie.domain) cookieString += '; domain=' + cookie.domain;
+                    if (cookie.path) cookieString += '; path=' + cookie.path;
+                    if (cookie.secure) cookieString += '; secure';
+                    if (cookie.sameSite && cookie.sameSite !== 'unspecified') {
+                        cookieString += '; SameSite=' + cookie.sameSite;
+                    }
+                    document.cookie = cookieString;
+                    success++;
+                } catch(e) {
+                    failed++;
+                    errors.push(cookie.name + ': ' + e.message);
+                }
+            });
+            
+            return {
+                success: success, 
+                failed: failed, 
+                errors: errors,
+                total: cookies.length
+            };
+        })()
+        """ % json.dumps(COOKIES)
         
-        # 2. Подключаемся к вкладке, чтобы получить sessionId
-        session_info = cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-        session_id = session_info.get("sessionId")
+        result = js(js_code)
         
-        if not session_id:
-            logger.error("❌ Не удалось получить sessionId для установки кук")
+        if result and result.get('success', 0) > 0:
+            logger.info(f"✅ Установлено кук: {result.get('success')} из {result.get('total')}")
+            if result.get('failed', 0) > 0:
+                logger.warning(f"⚠️ Не удалось установить: {result.get('errors', [])}")
+            return result.get('success', 0) > 0
+        else:
+            logger.error(f"❌ Не удалось установить куки: {result}")
             return False
         
-        # 3. Форматируем куки
-        cookies_list = []
-        for cookie in COOKIES:
-            cookie_data = {
-                "name": cookie.get("name"),
-                "value": cookie.get("value"),
-                "domain": cookie.get("domain", ""),
-                "path": cookie.get("path", "/"),
-                "secure": cookie.get("secure", False),
-                "httpOnly": cookie.get("httpOnly", False),
-            }
-            # sameSite может быть 'Lax', 'Strict', 'None' или 'unspecified'
-            same_site = cookie.get("sameSite", "unspecified")
-            if same_site in ("Lax", "Strict", "None"):
-                cookie_data["sameSite"] = same_site
-            if "expires" in cookie:
-                cookie_data["expires"] = cookie["expires"]
-            cookies_list.append(cookie_data)
-        
-        # 4. Устанавливаем все куки одной командой
-        cdp("Network.setCookies", {
-            "cookies": cookies_list,
-            "sessionId": session_id
-        })
-        
-        # 5. Отключаемся от вкладки
-        cdp("Target.detachFromTarget", {"sessionId": session_id})
-        
-        logger.info(f"✅ Установлено {len(cookies_list)} кук через CDP (sessionId: {session_id[:8]}...)")
-        return True
-        
     except Exception as e:
-        logger.error(f"❌ Ошибка установки кук через CDP: {e}")
+        logger.error(f"❌ Ошибка установки кук через JS: {e}")
         return False
 
 # ============================================
@@ -747,7 +733,7 @@ def init_dspy_agent():
         def tool_set_x_cookies() -> str:
             """Установить куки для X.com (авторизация)"""
             try:
-                success = set_cookies_via_cdp()
+                success = set_cookies_via_js()
                 if success:
                     return "✅ Куки X.com установлены"
                 return "❌ Ошибка установки кук"
@@ -873,11 +859,11 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from veilbrowser import Browser
         browser_instance = await Browser.connect(cdp_url)
         
-        # УСТАНАВЛИВАЕМ КУКИ X.COM СРАЗУ ПОСЛЕ ПОДКЛЮЧЕНИЯ
+        # УСТАНАВЛИВАЕМ КУКИ X.COM ЧЕРЕЗ JS
         await update.message.reply_text("🍪 Устанавливаю куки X.com...")
-        success = set_cookies_via_cdp()
+        success = set_cookies_via_js()
         if success:
-            await update.message.reply_text(f"✅ Установлено {len(COOKIES)} кук X.com!")
+            await update.message.reply_text(f"✅ Установлены куки X.com!")
         else:
             await update.message.reply_text("⚠️ Не удалось установить куки")
         
@@ -894,7 +880,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ **Veil запущен!**\n\n"
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
-            f"🍪 Куки X.com: {'✅' if success else '❌'} ({len(COOKIES)} шт.)\n"
+            f"🍪 Куки X.com: {'✅' if success else '❌'}\n"
             f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
