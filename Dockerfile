@@ -1,15 +1,33 @@
 FROM python:3.12-slim
 
-# Устанавливаем зависимости для работы Chrome в контейнере [citation:1]
+# Устанавливаем зависимости для Firefox и Camoufox
 RUN apt-get update && apt-get install -y \
+    wget \
     curl \
-    chromium \
-    xvfb \
     git \
+    unzip \
+    libxtst6 \
+    libxrandr2 \
+    libxrender1 \
+    libcups2 \
+    libdbus-glib-1-2 \
+    libx11-xcb1 \
+    libxcb-shm0 \
+    libxcb-shape0 \
+    libxcb-xfixes0 \
+    libatk-bridge2.0-0 \
+    libgtk-3-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libasound2 \
+    libpulse0 \
+    libvdpau1 \
+    libva2 \
+    libgl1-mesa-dri \
     libglib2.0-0 \
     libnss3 \
-    libx11-xcb1 \
-    # ... и другие зависимости
+    libnspr4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем Camoufox (специальная сборка Firefox)
