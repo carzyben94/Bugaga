@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim 
 
 # Устанавливаем зависимости для Firefox и Camoufox
 RUN apt-get update && apt-get install -y \
