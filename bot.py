@@ -3,9 +3,14 @@ import sys
 import asyncio
 import logging
 import time
+import signal
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown
+
+# ============================================================
+# 1. ЛОГГЕР
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,7 +18,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# 2. ПУТЬ К BROWSER HARNESS
+# ============================================================
+
 sys.path.insert(0, "/app/browser-harness/src")
+
+# ============================================================
+# 3. ИМПОРТЫ
+# ============================================================
 
 import warnings
 import httpx
@@ -46,6 +59,10 @@ except ImportError as e:
 
 warnings.filterwarnings("ignore")
 
+# ============================================================
+# 4. НАСТРОЙКА
+# ============================================================
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -58,7 +75,7 @@ harness_ready = False
 dspy_agent_instance = None
 
 # ============================================================
-# DSPy SETUP
+# 5. AGNES LM АДАПТЕР ДЛЯ DSPy
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -113,6 +130,10 @@ class AgnesLM(dspy.LM):
     def __call__(self, prompt=None, messages=None, **kwargs):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
+# ============================================================
+# 6. DSPy СИГНАТУРА
+# ============================================================
+
 class BrowserTask(Signature):
     """
     Ты агент с доступом к браузеру Camoufox через Browser Harness.
@@ -129,7 +150,7 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Результат выполнения задачи")
 
 # ============================================================
-# ИНИЦИАЛИЗАЦИЯ
+# 7. ЗАПУСК CAMOUFOX И HARNESS
 # ============================================================
 
 async def init_browser_and_harness():
@@ -143,7 +164,7 @@ async def init_browser_and_harness():
     logger.info("🚀 Запускаем Camoufox...")
     
     try:
-        # ✅ Правильный запуск через async with
+        # ✅ Правильный запуск через контекстный менеджер
         async with AsyncCamoufox(
             headless=True,
             fingerprint=True
@@ -167,8 +188,12 @@ async def init_browser_and_harness():
         logger.error(f"❌ Ошибка запуска Camoufox: {e}")
         return False
 
+# ============================================================
+# 8. СОЗДАНИЕ ИНСТРУМЕНТОВ ДЛЯ DSPy
+# ============================================================
+
 def create_harness_tools():
-    """Создать инструменты для DSPy"""
+    """Создать инструменты для DSPy агента"""
     tools = []
     
     def tool_goto_url(url: str) -> str:
@@ -229,6 +254,10 @@ def create_harness_tools():
     
     return tools
 
+# ============================================================
+# 9. ИНИЦИАЛИЗАЦИЯ DSPy
+# ============================================================
+
 def init_dspy():
     global dspy_agent_instance
     api_key = os.environ.get("AGNES_API_KEY")
@@ -258,7 +287,7 @@ def run_agent(question: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# TELEGRAM КОМАНДЫ
+# 10. TELEGRAM КОМАНДЫ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -357,7 +386,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# ЗАПУСК
+# 11. ЗАПУСК
 # ============================================================
 
 async def main():
@@ -386,13 +415,36 @@ async def main():
     logger.info(f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}")
     logger.info("📋 Команды: /start, /check, /screenshot, /status, /dspy")
     
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    while True:
-        await asyncio.sleep(60)
-        logger.info("💓 Bot alive")
+    try:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        # Обработка сигналов для корректного завершения
+        stop_signal = asyncio.Event()
+        
+        def signal_handler():
+            stop_signal.set()
+        
+        # Для UNIX-сигналов (SIGINT, SIGTERM)
+        if hasattr(asyncio, 'add_signal_handler'):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.add_signal_handler(signal.SIGINT, signal_handler)
+                loop.add_signal_handler(signal.SIGTERM, signal_handler)
+            except NotImplementedError:
+                pass
+        
+        while not stop_signal.is_set():
+            await asyncio.sleep(60)
+            logger.info("💓 Bot alive")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка в основном цикле: {e}")
+    finally:
+        logger.info("🛑 Останавливаем бота...")
+        await app.stop()
+        await app.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
