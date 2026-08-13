@@ -5,6 +5,7 @@ import logging
 import subprocess
 import json
 import time
+import shutil
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown
@@ -14,7 +15,6 @@ from cloakbrowser import launch_async
 # 1. НАСТРОЙКА ПУТЕЙ И ЛОГГЕРА
 # ============================================================
 
-# Добавляем путь к Browser Harness
 sys.path.insert(0, "browser-harness/src")
 
 logging.basicConfig(
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # 2. ИМПОРТ BROWSER HARNESS
 # ============================================================
 
+HARNESS_AVAILABLE = False
 try:
     from browser_harness.helpers import (
         new_tab,
@@ -50,7 +51,6 @@ try:
     logger.info("✅ Browser Harness загружен")
 except ImportError as e:
     logger.warning(f"⚠️ Browser Harness не найден: {e}")
-    HARNESS_AVAILABLE = False
 
 # ============================================================
 # 3. ИМПОРТЫ DSPy
@@ -119,9 +119,12 @@ class AgnesLM(dspy.LM):
         except Exception as e:
             logger.error(f"❌ Agnes API: {e}")
             return [f"Ошибка: {str(e)}"]
+    
+    def __call__(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# 5. DSPy СИГНАТУРА ДЛЯ BROWSER HARNESS
+# 5. DSPy СИГНАТУРА
 # ============================================================
 
 class BrowserTask(Signature):
@@ -129,38 +132,23 @@ class BrowserTask(Signature):
     Ты агент с доступом к браузеру через Browser Harness.
     
     ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
-    
-    1. Навигация:
-       - tool_goto_url(url) - перейти на сайт
-       - tool_wait_for_load() - дождаться загрузки
-       - tool_new_tab() - открыть новую вкладку
-       - tool_close_tab() - закрыть вкладку
-       - tool_switch_tab(tab_id) - переключить вкладку
-       - tool_list_tabs() - список всех вкладок
-    
-    2. Информация:
-       - tool_page_info() - URL и заголовок
-       - tool_get_text() - весь текст на странице
-       - tool_get_links() - все ссылки
-       - tool_get_buttons() - все кнопки
-       - tool_get_headings() - все заголовки
-    
-    3. Взаимодействие:
-       - tool_js(expression) - выполнить JavaScript
-       - tool_fill_input(selector, text) - заполнить поле
-       - tool_click_at_xy(x, y) - кликнуть по координатам
-       - tool_type_text(text) - ввести текст
-       - tool_press_key(key) - нажать клавишу
-       - tool_scroll(x, y) - прокрутить страницу
-    
-    4. Скриншоты:
-       - tool_capture_screenshot(filename) - сделать скриншот
+    - tool_goto_url(url) - перейти на сайт
+    - tool_wait_for_load() - дождаться загрузки
+    - tool_new_tab() - открыть новую вкладку
+    - tool_close_tab() - закрыть вкладку
+    - tool_page_info() - информация о странице
+    - tool_get_text() - весь текст на странице
+    - tool_get_links() - все ссылки
+    - tool_get_buttons() - все кнопки
+    - tool_js(expression) - выполнить JavaScript
+    - tool_capture_screenshot(filename) - сделать скриншот
+    - tool_fill_input(selector, text) - заполнить поле
+    - tool_click_at_xy(x, y) - кликнуть по координатам
     
     ПРАВИЛА:
     - Всегда используй инструменты Browser Harness
     - Сначала открывай страницу через tool_goto_url
     - Для получения текста используй tool_get_text
-    - Для кликов используй tool_click_at_xy
     - Отвечай на русском языке
     """
     question = InputField(desc="Задача пользователя")
@@ -175,45 +163,50 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 browser_instance = None
-page_instance = None
+browser_port = 9222
 dspy_agent_instance = None
-browser_harness_ready = False
+harness_ready = False
 
-# Папки для скриншотов
 SCREENSHOTS_DIR = '/app/screenshots'
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 # ============================================================
-# 7. ИНИЦИАЛИЗАЦИЯ BROWSER HARNESS
+# 7. ЗАПУСК BROWSER HARNESS (после CloakBrowser)
 # ============================================================
 
-def init_browser_harness():
-    """Инициализация Browser Harness"""
-    global browser_harness_ready
+def init_browser_harness(port=9222):
+    """Инициализация Browser Harness с указанием порта"""
+    global harness_ready
     
     if not HARNESS_AVAILABLE:
         logger.warning("⚠️ Browser Harness недоступен")
         return False
     
     try:
+        # Устанавливаем переменную окружения для порта
+        os.environ["BU_CDP_URL"] = f"http://localhost:{port}"
+        
         # Запускаем daemon
         ensure_daemon()
         logger.info("✅ Browser Harness daemon запущен")
         
-        # Создаём вкладку
-        new_tab("about:blank")
-        wait_for_load()
-        
-        browser_harness_ready = True
-        logger.info("✅ Browser Harness готов к работе")
-        return True
+        # Пробуем создать вкладку
+        try:
+            new_tab("about:blank")
+            wait_for_load()
+            harness_ready = True
+            logger.info("✅ Browser Harness готов к работе")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось создать вкладку: {e}")
+            return False
         
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации Browser Harness: {e}")
         return False
 
 # ============================================================
-# 8. СОЗДАНИЕ ИНСТРУМЕНТОВ BROWSER HARNESS
+# 8. СОЗДАНИЕ ИНСТРУМЕНТОВ
 # ============================================================
 
 def create_harness_tools():
@@ -256,24 +249,6 @@ def create_harness_tools():
         except Exception as e:
             return f"❌ Ошибка: {e}"
     tools.append(Tool(tool_close_tab))
-    
-    def tool_switch_tab(tab_id: int) -> str:
-        """Переключиться на вкладку по ID"""
-        try:
-            switch_tab(tab_id)
-            return f"✅ Переключился на вкладку {tab_id}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_switch_tab))
-    
-    def tool_list_tabs() -> str:
-        """Список всех открытых вкладок"""
-        try:
-            tabs = list_tabs()
-            return f"Вкладки: {tabs}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_list_tabs))
     
     def tool_page_info() -> str:
         """Получить информацию о странице"""
@@ -323,18 +298,6 @@ def create_harness_tools():
             return f"❌ Ошибка: {e}"
     tools.append(Tool(tool_get_buttons))
     
-    def tool_get_headings() -> str:
-        """Получить все заголовки на странице"""
-        try:
-            result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
-            if isinstance(result, list) and result:
-                headings = [str(item).strip() for item in result if item and str(item).strip()]
-                return f"Заголовки:\n" + "\n".join(headings)
-            return "❌ Заголовков не найдено"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_get_headings))
-    
     def tool_js(expression: str) -> str:
         """Выполнить JavaScript на странице"""
         try:
@@ -377,33 +340,6 @@ def create_harness_tools():
             return f"❌ Ошибка: {e}"
     tools.append(Tool(tool_click_at_xy))
     
-    def tool_type_text(text: str) -> str:
-        """Ввести текст"""
-        try:
-            type_text(text)
-            return f"✅ Введено: {text}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_type_text))
-    
-    def tool_press_key(key: str) -> str:
-        """Нажать клавишу"""
-        try:
-            press_key(key)
-            return f"✅ Нажата клавиша: {key}"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_press_key))
-    
-    def tool_scroll(dx: int, dy: int) -> str:
-        """Прокрутить страницу"""
-        try:
-            scroll(dx, dy)
-            return f"✅ Прокрутка на ({dx}, {dy})"
-        except Exception as e:
-            return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_scroll))
-    
     return tools
 
 # ============================================================
@@ -420,15 +356,12 @@ def init_dspy():
         return False
     
     try:
-        # Создаём LM
         lm = AgnesLM(api_key=api_key, temperature=0.3, max_tokens=2000)
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
         
-        # Создаём инструменты
         tools = create_harness_tools()
         
-        # Создаём агента
         dspy_agent_instance = ReActV2(
             signature=BrowserTask,
             tools=tools,
@@ -456,7 +389,44 @@ def run_agent(question: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# 10. ТЕЛЕГРАМ БОТ
+# 10. ЗАПУСК BROWSER И HARNESS
+# ============================================================
+
+async def start_browser_and_harness():
+    """Запустить CloakBrowser, потом Browser Harness"""
+    global browser_instance, harness_ready
+    
+    logger.info("🚀 Запускаем CloakBrowser...")
+    
+    # 1. Запускаем CloakBrowser с CDP портом
+    browser_instance = await launch_async(
+        headless=True,
+        args=[
+            "--fingerprint",
+            f"--remote-debugging-port={browser_port}",
+            "--remote-debugging-address=127.0.0.1",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        ]
+    )
+    logger.info(f"✅ CloakBrowser запущен на порту {browser_port}")
+    
+    # Ждём, пока браузер поднимется
+    await asyncio.sleep(2)
+    
+    # 2. Инициализируем Browser Harness
+    logger.info("🔗 Подключаем Browser Harness...")
+    harness_ready = init_browser_harness(browser_port)
+    
+    if harness_ready:
+        logger.info("✅ Browser Harness подключен к CloakBrowser")
+    else:
+        logger.warning("⚠️ Browser Harness не подключился")
+    
+    return browser_instance
+
+# ============================================================
+# 11. ТЕЛЕГРАМ БОТ
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,15 +464,16 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
-async def harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def harness_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статус Browser Harness"""
-    status = "✅ Browser Harness активен" if browser_harness_ready else "❌ Browser Harness не активен"
+    status = "✅ Готов" if harness_ready else "❌ Не готов"
     harness_avail = "✅ Доступен" if HARNESS_AVAILABLE else "❌ Не установлен"
     
     await update.message.reply_text(
         f"📦 **Browser Harness**\n"
-        f"• Статус: {harness_avail}\n"
-        f"• Готовность: {status}\n"
+        f"• Библиотека: {harness_avail}\n"
+        f"• Подключение: {status}\n"
+        f"• Порт CDP: {browser_port}\n"
         f"• DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}"
     )
 
@@ -520,22 +491,20 @@ async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 **CloakBrowser**\n"
             f"• Статус: ✅ Работает\n"
             f"• Инфо: `{info[:200] if info else 'доступен'}`\n"
-            f"• Harness: {'✅' if HARNESS_AVAILABLE else '❌'}"
+            f"• Harness: {'✅' if harness_ready else '❌'}"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /dspy с Browser Harness"""
+    """Обработчик /dspy"""
     if not context.args:
         await update.message.reply_text(
             "🧠 **DSPy Agent с Browser Harness**\n\n"
-            "Отправь задачу:\n"
+            "Примеры:\n"
             "`/dspy открой google.com и покажи заголовок`\n"
             "`/dspy сделай скриншот example.com`\n"
-            "`/dspy найди все ссылки на python.org`\n"
-            "`/dspy заполни форму поиска на google.com`\n\n"
-            "Агент использует Browser Harness для управления браузером!",
+            "`/dspy найди все ссылки на python.org`",
             parse_mode='Markdown'
         )
         return
@@ -547,10 +516,10 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if not browser_harness_ready:
+    if not harness_ready:
         await update.message.reply_text(
             "❌ **Browser Harness не готов.**\n"
-            "Проверьте установку browser-harness."
+            "Проверьте логи при запуске."
         )
         return
     
@@ -558,7 +527,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or "unknown"
     logger.info(f"👤 {username} DSPy: {user_query}")
     
-    status_msg = await update.message.reply_text("🧠 Думаю и управляю браузером...")
+    status_msg = await update.message.reply_text("🧠 Думаю...")
     
     try:
         loop = asyncio.get_running_loop()
@@ -567,7 +536,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if not answer or answer.strip() == "":
-            await status_msg.edit_text("❌ Агент вернул пустой ответ")
+            await status_msg.edit_text("❌ Пустой ответ")
             return
         
         if len(answer) > 4000:
@@ -585,33 +554,36 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 11. ЗАПУСК
+# 12. ЗАПУСК
 # ============================================================
 
 def main():
-    global browser_harness_ready
+    logger.info("🚀 Запуск...")
     
-    logger.info("🚀 Инициализация...")
+    # Создаём event loop и запускаем браузер
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    # 1. Инициализируем Browser Harness
-    if HARNESS_AVAILABLE:
-        browser_harness_ready = init_browser_harness()
+    try:
+        loop.run_until_complete(start_browser_and_harness())
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска браузера: {e}")
     
-    # 2. Инициализируем DSPy
+    # Инициализируем DSPy
     dspy_ok = init_dspy()
     
-    # 3. Создаём Telegram бота
+    # Создаём Telegram бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check))
-    app.add_handler(CommandHandler("harness", harness))
+    app.add_handler(CommandHandler("harness", harness_status))
     app.add_handler(CommandHandler("version", version))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🧠 DSPy статус: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}")
-    logger.info(f"🔧 Harness статус: {'✅ Готов' if browser_harness_ready else '❌ Не готов'}")
+    logger.info(f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}")
+    logger.info(f"🔧 Harness: {'✅' if harness_ready else '❌'}")
     
     app.run_polling()
 
