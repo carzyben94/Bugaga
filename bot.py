@@ -1,5 +1,5 @@
 import os
-import sys 
+import sys
 import asyncio
 import logging
 import subprocess
@@ -7,6 +7,8 @@ import time
 import json
 import base64
 import io
+import random
+import math
 from contextlib import redirect_stdout
 from datetime import datetime
 from telegram import Update
@@ -364,6 +366,137 @@ def set_cookies_via_js():
         return False
 
 # ============================================
+# ЭМУЛЯЦИЯ ЧЕЛОВЕЧЕСКОГО ПОВЕДЕНИЯ
+# ============================================
+
+def random_delay(min_ms: int = 500, max_ms: int = 3000):
+    """Случайная задержка для имитации человека"""
+    delay = random.randint(min_ms, max_ms) / 1000
+    time.sleep(delay)
+    logger.info(f"⏱️ Задержка {delay:.2f}с")
+
+async def async_random_delay(min_ms: int = 500, max_ms: int = 3000):
+    """Асинхронная случайная задержка"""
+    delay = random.randint(min_ms, max_ms) / 1000
+    await asyncio.sleep(delay)
+    logger.info(f"⏱️ Задержка {delay:.2f}с")
+
+def bezier_curve(p0: tuple, p1: tuple, p2: tuple, t: float) -> tuple:
+    """Кривая Безье для естественного движения мыши"""
+    x = (1-t)**2 * p0[0] + 2*(1-t)*t * p1[0] + t**2 * p2[0]
+    y = (1-t)**2 * p0[1] + 2*(1-t)*t * p1[1] + t**2 * p2[1]
+    return (int(x), int(y))
+
+def fitts_law_distance(distance: int, width: int = 50) -> float:
+    """Закон Фиттса: время движения зависит от расстояния"""
+    a, b = 100, 30  # ms
+    return a + b * math.log2(distance / width + 1)
+
+async def human_mouse_move(target_x: int, target_y: int, current_x: int = 0, current_y: int = 0):
+    """Движение мыши по кривой Безье с физикой"""
+    # 1. Контрольные точки для кривой
+    dx, dy = target_x - current_x, target_y - current_y
+    cp1_x = current_x + dx * random.uniform(0.2, 0.4)
+    cp1_y = current_y + dy * random.uniform(0.2, 0.4) + random.randint(-50, 50)
+    
+    # 2. Расчёт времени по закону Фиттса
+    distance = math.hypot(dx, dy)
+    duration = fitts_law_distance(distance) / 1000  # в секундах
+    
+    # 3. Движение с колоколообразной скоростью
+    steps = random.randint(20, 40)
+    for i in range(steps + 1):
+        t = i / steps
+        # Колоколообразная скорость (minimum-jerk)
+        velocity = math.sin(t * math.pi)
+        t_adj = t * velocity  # Нелинейный прогресс
+        
+        x, y = bezier_curve((current_x, current_y), (cp1_x, cp1_y), (target_x, target_y), t_adj)
+        
+        # Тремор (гауссов шум)
+        if random.random() < 0.3:
+            x += random.gauss(0, 1)
+            y += random.gauss(0, 1)
+        
+        await asyncio.sleep(duration / steps)
+    
+    # 4. Overshoot correction (70% шанс)
+    if random.random() < 0.7 and distance > 100:
+        overshoot = random.randint(int(distance * 0.03), int(distance * 0.12))
+        # Промахнулись
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+        # Скорректировались
+        await asyncio.sleep(random.uniform(0.05, 0.15))
+
+async def human_click(x: int, y: int):
+    """Человеческий клик с физикой"""
+    # 1. Движение к цели
+    await human_mouse_move(x, y)
+    
+    # 2. Микро-пауза перед кликом
+    await asyncio.sleep(random.uniform(0.05, 0.2))
+    
+    # 3. Нажатие с микро-дрожанием
+    cdp("Input.dispatchMouseEvent", {
+        "type": "mousePressed",
+        "x": x + random.randint(-2, 2),
+        "y": y + random.randint(-2, 2),
+        "button": "left",
+        "clickCount": 1
+    })
+    
+    await asyncio.sleep(random.uniform(0.05, 0.15))
+    
+    cdp("Input.dispatchMouseEvent", {
+        "type": "mouseReleased",
+        "x": x + random.randint(-2, 2),
+        "y": y + random.randint(-2, 2),
+        "button": "left",
+        "clickCount": 1
+    })
+    
+    logger.info(f"🖱️ Человеческий клик по ({x}, {y})")
+
+async def human_scroll(dy: int = 100, steps: int = None):
+    """Человеческая прокрутка с переменной скоростью"""
+    if steps is None:
+        steps = random.randint(5, 10)
+    
+    per_step = dy / steps
+    
+    for i in range(steps):
+        # Разная скорость на каждом шаге
+        step_dy = per_step * random.uniform(0.5, 1.5)
+        cdp("Input.dispatchMouseEvent", {
+            "type": "mouseWheel",
+            "deltaX": random.randint(-5, 5),
+            "deltaY": step_dy
+        })
+        await asyncio.sleep(random.uniform(0.03, 0.1))
+    
+    logger.info(f"📜 Человеческая прокрутка на {dy}px")
+
+async def human_type_text(text: str):
+    """Ввод текста с переменной скоростью и опечатками"""
+    for char in text:
+        # Переменная скорость ввода (50-200ms на символ)
+        delay = random.uniform(0.05, 0.2)
+        await asyncio.sleep(delay)
+        
+        # 2% шанс опечатки
+        if random.random() < 0.02 and len(text) > 3:
+            # Ошибка
+            error_char = random.choice('qwertyuiopasdfghjklzxcvbnm')
+            await js(f"document.activeElement.value += '{error_char}'")
+            await asyncio.sleep(random.uniform(0.2, 0.4))
+            # Backspace
+            await js("document.activeElement.value = document.activeElement.value.slice(0, -1)")
+            await asyncio.sleep(random.uniform(0.1, 0.2))
+        
+        # Вводим правильный символ
+        await js(f"document.activeElement.value += '{char}'")
+
+# ============================================
 # DSPy ИНТЕГРАЦИЯ
 # ============================================
 
@@ -570,6 +703,7 @@ def init_dspy_agent():
             try:
                 new_tab(url)
                 wait_for_load()
+                random_delay(1000, 3000)  # Эмуляция человека
                 return f"✅ Открыта вкладка: {url}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
@@ -578,6 +712,7 @@ def init_dspy_agent():
             try:
                 goto_url(url)
                 wait_for_load()
+                random_delay(1000, 3000)
                 return f"✅ Перешел на {url}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
@@ -585,6 +720,7 @@ def init_dspy_agent():
         def tool_wait_for_load() -> str:
             try:
                 wait_for_load()
+                random_delay(500, 2000)
                 return "✅ Страница загружена"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
@@ -613,17 +749,28 @@ def init_dspy_agent():
         
         def tool_click_by_role(role: str, name: str = None) -> str:
             try:
-                success = click_element_by_role(role, name)
-                if success:
-                    return f"✅ Клик по {role}: {name or 'без имени'}"
-                return f"❌ Элемент не найден: {role}: {name or 'без имени'}"
+                nodes = get_ax_tree()
+                target = find_element_by_role(nodes, role, name)
+                if not target:
+                    return f"❌ Элемент не найден: {role}: {name or 'без имени'}"
+                backend_id = target.get("backendDOMNodeId")
+                if not backend_id:
+                    return "❌ Нет backendDOMNodeId"
+                x, y = get_element_coords(backend_id)
+                if x is None or y is None:
+                    return "❌ Не удалось получить координаты"
+                # Человеческий клик
+                asyncio.run(human_click(int(x), int(y)))
+                random_delay(500, 1500)
+                return f"✅ Человеческий клик по {role}: {name or 'без имени'}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_click_by_coords(x: int, y: int) -> str:
             try:
-                click_at_xy(x, y)
-                return f"✅ Клик по ({x}, {y})"
+                asyncio.run(human_click(x, y))
+                random_delay(500, 1500)
+                return f"✅ Человеческий клик по ({x}, {y})"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
@@ -656,6 +803,7 @@ def init_dspy_agent():
                     timestamp = int(time.time())
                     filename = f"screenshot_{timestamp}.png"
                 path = capture_screenshot(filename)
+                random_delay(500, 1500)
                 return f"✅ Скриншот сохранен: {path}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
@@ -670,14 +818,24 @@ def init_dspy_agent():
         def tool_fill_input(selector: str, text: str) -> str:
             try:
                 fill_input(selector, text)
+                random_delay(500, 1500)
                 return f"✅ Заполнено: {selector}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_scroll(dx: int, dy: int) -> str:
             try:
-                scroll(dx, dy)
-                return f"✅ Прокрутка на ({dx}, {dy})"
+                asyncio.run(human_scroll(dy))
+                random_delay(500, 1500)
+                return f"✅ Человеческая прокрутка на ({dx}, {dy})"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_human_type(text: str) -> str:
+            try:
+                asyncio.run(human_type_text(text))
+                random_delay(500, 1500)
+                return f"✅ Человеческий ввод: {text[:20]}..."
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
@@ -732,6 +890,7 @@ def init_dspy_agent():
             Tool(tool_js),
             Tool(tool_fill_input),
             Tool(tool_scroll),
+            Tool(tool_human_type),
             Tool(tool_list_tabs),
             Tool(tool_current_tab),
             Tool(tool_switch_tab),
@@ -742,7 +901,7 @@ def init_dspy_agent():
         dspy_lm, dspy_agent = init_dspy(
             api_key=AGNES_API_KEY,
             tools=tools,
-            max_iters=10
+            max_iters=15  # Увеличили с 10 до 15
         )
         
         if dspy_agent:
@@ -820,6 +979,22 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "--use-angle=gl-egl",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-features=BlockInsecurePrivateNetworkRequests",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-plugins",
+                "--disable-translate",
+                "--disable-sync",
+                "--disable-background-networking",
+                "--disable-client-side-phishing-detection",
+                "--disable-hang-monitor",
+                "--disable-prompt-on-repost",
+                "--disable-speech-api",
+                "--disable-voice-input",
+                "--disable-print-preview",
+                "--disable-bundled-ppapi-flash",
+                "--disable-setuid-sandbox",
                 f"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             ],
             stdout=subprocess.DEVNULL,
@@ -849,13 +1024,15 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         new_tab("https://x.com")
         wait_for_load()
+        random_delay(2000, 5000)  # Пауза после открытия X.com
         
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
             f"🍪 Куки X.com: {'✅' if success else '❌'}\n"
-            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
+            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n"
+            f"👤 Эмуляция человека: ✅\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
             f"/screen <url> - сделать скриншот\n"
@@ -877,6 +1054,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         new_tab("https://bot.sannysoft.com")
         wait_for_load()
+        random_delay(1000, 3000)
         
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
@@ -907,6 +1085,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         close_tab()
         cleanup_tabs(keep_one=True)
+        random_delay(1000, 3000)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -921,6 +1100,7 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         new_tab("https://x.com")
         wait_for_load()
+        random_delay(2000, 5000)
         
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
@@ -970,6 +1150,7 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         close_tab()
         cleanup_tabs(keep_one=True)
+        random_delay(1000, 3000)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -996,6 +1177,7 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         new_tab(url)
         wait_for_load()
+        random_delay(1000, 3000)
         
         timestamp = int(time.time())
         filename = f"screenshot_{timestamp}.png"
@@ -1034,10 +1216,9 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report = "🧪 **Тест browser-harness (по документации)**\n\n"
         
         new_tab("https://example.com")
-        report += "✅ new_tab()\n"
-        
         wait_for_load()
-        report += "✅ wait_for_load()\n"
+        random_delay(1000, 3000)
+        report += "✅ new_tab()\n"
         
         ax = get_text_from_ax_tree()
         report += f"✅ AX Tree: {len(ax)} символов\n"
@@ -1046,8 +1227,9 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         link = find_element_by_role(nodes, "link", "More information...")
         if link:
             x, y = get_element_coords(link.get("backendDOMNodeId"))
-            click_at_xy(x, y)
-            report += f"✅ Клик по ссылке 'More information...'\n"
+            await human_click(int(x), int(y))
+            random_delay(1000, 3000)
+            report += f"✅ Человеческий клик по ссылке 'More information...'\n"
         else:
             report += "ℹ️ Ссылка 'More information...' не найдена\n"
         
@@ -1074,7 +1256,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• tool_get_ax_tree - Accessibility Tree (РЕКОМЕНДУЕТСЯ)\n"
             "• tool_click_by_role / tool_click_by_coords\n"
             "• tool_capture_screenshot - для проверки\n"
-            "• tool_js - fallback для сложных случаев\n"
+            "• tool_human_type - ввод с эмуляцией человека\n"
             "• tool_set_x_cookies - установить куки X.com\n\n"
             "Примеры:\n"
             "/dspy открой x.com и покажи заголовок\n"
@@ -1109,15 +1291,12 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         loop = asyncio.get_running_loop()
         
-        # Сохраняем историю ВСЕХ шагов
         f = io.StringIO()
         with redirect_stdout(f):
             answer = await loop.run_in_executor(None, run_agent, dspy_agent, user_query)
         
-        # Получаем ВСЮ траекторию
         history_output = f.getvalue()
         
-        # Дополнительно получаем inspect_history (она показывает все LLM-вызовы)
         f_history = io.StringIO()
         with redirect_stdout(f_history):
             dspy.inspect_history(n=10)
@@ -1128,7 +1307,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Агент вернул пустой ответ")
             return
         
-        # Сохраняем ПОЛНУЮ траекторию в файл
         save_dspy_log(user_query, answer, history_output, full_history, username)
         
         if len(answer) > 4000:
@@ -1144,7 +1322,6 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cleanup_tabs(keep_one=True)
 
 async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /dspy_log - скачать лог DSPy как файл"""
     log_file = "dspy.log"
     
     if not os.path.exists(log_file):
@@ -1152,7 +1329,6 @@ async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Отправляем как документ (всегда файл для скачивания)
         await update.message.reply_document(
             document=open(log_file, "rb"),
             filename="dspy.log",
@@ -1173,6 +1349,7 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• AGNES_API_KEY: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
     report += f"• Куки X.com: {'✅' if COOKIES else '❌'} ({len(COOKIES)} шт.)\n"
     report += f"• DSPy лог: {'✅' if os.path.exists('dspy.log') else '❌'}\n"
+    report += f"• Эмуляция человека: {'✅' if DSPY_AVAILABLE else '❌'}\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
@@ -1211,6 +1388,7 @@ def main():
     logger.info("🤖 Бот запущен (по документации browser-harness)!")
     logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /dspy_log, /diag")
     logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
+    logger.info("👤 Эмуляция человека: включена")
     app.run_polling()
 
 if __name__ == "__main__":
