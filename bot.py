@@ -3,8 +3,8 @@ import sys
 import asyncio
 import logging
 import subprocess
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # Настройка логирования
 logging.basicConfig(
@@ -40,7 +40,7 @@ def find_chrome():
             logger.info(f"✅ Найден браузер: {path}")
             return path
     
-    # 3. 🔥 Ищем через agent-browser (ОСНОВНОЙ ПУТЬ)
+    # 3. Ищем через agent-browser (ОСНОВНОЙ ПУТЬ)
     agent_dirs = [
         "/root/.agent-browser/browsers",
         "/root/.agent-browser",
@@ -51,14 +51,12 @@ def find_chrome():
         if os.path.exists(agent_dir):
             logger.info(f"📁 Проверяем: {agent_dir}")
             try:
-                # Рекурсивно ищем chrome
                 for root, dirs, files in os.walk(agent_dir):
                     if "chrome" in files:
                         chrome_path = os.path.join(root, "chrome")
                         if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
                             logger.info(f"✅ Найден agent-browser Chrome: {chrome_path}")
                             return chrome_path
-                    # Проверяем подпапки chrome-linux64
                     if "chrome-linux64" in dirs:
                         chrome_path = os.path.join(root, "chrome-linux64", "chrome")
                         if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
@@ -67,7 +65,7 @@ def find_chrome():
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка поиска в {agent_dir}: {e}")
     
-    # 4. Ищем через banana-browser (старые пути)
+    # 4. Ищем через banana-browser
     cache_dirs = [
         "/root/.cache/banana-browser/chrome",
         "/root/.cache/banana-browser/chromium",
@@ -93,54 +91,24 @@ def find_chrome():
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка поиска в {cache_dir}: {e}")
     
-    # 5. Ищем через системную команду find (в обоих местах)
+    # 5. Ищем через find
     try:
-        logger.info("🔍 Ищем через find в /root/.agent-browser...")
-        result = subprocess.run(
-            ['find', '/root/.agent-browser', '-name', 'chrome', '-type', 'f'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        paths = result.stdout.strip().split('\n')
-        for path in paths:
-            if path and os.path.exists(path) and os.access(path, os.X_OK):
-                logger.info(f"✅ Найден через find: {path}")
-                return path
+        logger.info("🔍 Ищем через find...")
+        for search_path in ["/root/.agent-browser", "/root/.cache/banana-browser"]:
+            if os.path.exists(search_path):
+                result = subprocess.run(
+                    ['find', search_path, '-name', 'chrome', '-type', 'f'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                paths = result.stdout.strip().split('\n')
+                for path in paths:
+                    if path and os.path.exists(path) and os.access(path, os.X_OK):
+                        logger.info(f"✅ Найден через find: {path}")
+                        return path
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка find в .agent-browser: {e}")
-    
-    try:
-        logger.info("🔍 Ищем через find в /root/.cache/banana-browser...")
-        result = subprocess.run(
-            ['find', '/root/.cache/banana-browser', '-name', 'chrome', '-type', 'f'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        paths = result.stdout.strip().split('\n')
-        for path in paths:
-            if path and os.path.exists(path) and os.access(path, os.X_OK):
-                logger.info(f"✅ Найден через find: {path}")
-                return path
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка find в .cache/banana-browser: {e}")
-    
-    # 6. Проверяем через which
-    try:
-        result = subprocess.run(
-            ['which', 'chromium', 'chromium-browser', 'google-chrome'],
-            capture_output=True,
-            text=True,
-            timeout=3
-        )
-        paths = result.stdout.strip().split('\n')
-        for path in paths:
-            if path and os.path.exists(path):
-                logger.info(f"✅ Найден через which: {path}")
-                return path
-    except:
-        pass
+        logger.warning(f"⚠️ Ошибка find: {e}")
     
     logger.error("❌ Браузер НЕ НАЙДЕН!")
     return None
@@ -162,113 +130,201 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
+# --- КНОПКИ ---
+def get_main_keyboard():
+    """Главное меню с кнопками"""
+    keyboard = [
+        [InlineKeyboardButton("🚀 Запустить браузер", callback_data="start_browser")],
+        [InlineKeyboardButton("🔍 Проверить браузер", callback_data="check_browser")],
+        [InlineKeyboardButton("📊 Статус системы", callback_data="check_install")],
+        [InlineKeyboardButton("🔄 Полная диагностика", callback_data="diagnostic")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Приветственное сообщение"""
+    """Приветственное сообщение с кнопками"""
     await update.message.reply_text(
         "👋 Привет! Я проверяю браузер на незаметность.\n\n"
-        "📋 **Доступные команды:**\n"
-        "/check_browser - проверить браузер\n"
-        "/check_install - проверить установленные компоненты\n"
-        "/diagnostic - полная диагностика системы\n"
-        "/browser_info - информация о браузере\n"
-        "/find_browser - найти браузер в системе"
+        "Выбери действие на клавиатуре ниже:",
+        reply_markup=get_main_keyboard()
     )
 
-async def find_browser_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ищет реальный путь к браузеру"""
-    await update.message.reply_text("🔍 Ищу браузер...")
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий кнопок"""
+    query = update.callback_query
+    await query.answer()
     
-    report = "🔎 **Поиск браузера**\n\n"
-    
-    # 1. Ищем через find в .agent-browser
-    try:
-        result = subprocess.run(
-            ['find', '/root/.agent-browser', '-name', 'chrome', '-type', 'f'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        paths = result.stdout.strip().split('\n')
-        if paths and paths[0]:
-            report += "**Найденные пути в .agent-browser:**\n"
-            for i, path in enumerate(paths[:5], 1):
-                report += f"{i}. `{path}`\n"
-                if os.path.exists(path):
-                    report += f"   ✅ Существует\n"
-                    if os.access(path, os.X_OK):
-                        report += f"   ✅ Исполняемый\n"
-        else:
-            report += "❌ Chrome не найден в /root/.agent-browser/\n"
-    except Exception as e:
-        report += f"⚠️ Ошибка поиска: {e}\n"
-    
-    # 2. Ищем через find в .cache/banana-browser
-    try:
-        result = subprocess.run(
-            ['find', '/root/.cache/banana-browser', '-name', 'chrome', '-type', 'f'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        paths = result.stdout.strip().split('\n')
-        if paths and paths[0]:
-            report += "\n**Найденные пути в .cache/banana-browser:**\n"
-            for i, path in enumerate(paths[:5], 1):
-                report += f"{i}. `{path}`\n"
-                if os.path.exists(path):
-                    report += f"   ✅ Существует\n"
-                    if os.access(path, os.X_OK):
-                        report += f"   ✅ Исполняемый\n"
-        else:
-            report += "\n❌ Chrome не найден в /root/.cache/banana-browser/\n"
-    except Exception as e:
-        report += f"⚠️ Ошибка поиска: {e}\n"
-    
-    # 3. Проверяем все возможные папки
-    report += "\n**Проверка папок:**\n"
-    for dir_path in [
-        '/root/.agent-browser/browsers',
-        '/root/.agent-browser',
-        '/root/.cache/banana-browser/chrome',
-        '/root/.cache/banana-browser'
-    ]:
-        if os.path.exists(dir_path):
-            report += f"✅ Существует: {dir_path}\n"
-            try:
-                items = os.listdir(dir_path)
-                report += f"   Содержимое: {', '.join(items[:5])}\n"
-            except:
-                pass
-        else:
-            report += f"❌ Не существует: {dir_path}\n"
-    
-    # 4. Текущий CHROMIUM_PATH
-    report += f"\n**Текущий CHROMIUM_PATH:**\n"
-    current = os.environ.get('CHROMIUM_PATH', 'не установлен')
-    report += f"`{current}`\n"
-    if current and os.path.exists(current):
-        report += "✅ Путь существует\n"
-    else:
-        report += "❌ Путь НЕ существует\n"
-    
-    await update.message.reply_text(report)
+    if query.data == "start_browser":
+        await start_browser(query)
+    elif query.data == "check_browser":
+        await check_browser_button(query)
+    elif query.data == "check_install":
+        await check_install_button(query)
+    elif query.data == "diagnostic":
+        await diagnostic_button(query)
 
-async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_browser(query):
+    """Запускает браузер через banana-browser"""
+    await query.edit_message_text("🔄 Запускаю браузер...")
+    
+    try:
+        # Проверяем banana-browser
+        result = subprocess.run(
+            ['banana-browser', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode != 0:
+            await query.edit_message_text(
+                "❌ banana-browser не установлен!\n"
+                "Установи: npm install -g banana-browser",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        # Проверяем Chrome
+        if not CHROME_PATH or not os.path.exists(CHROME_PATH):
+            await query.edit_message_text(
+                "❌ Браузер не найден!\n"
+                "Выполни: banana-browser install --with-deps",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        # Запускаем banana-browser в фоне
+        process = subprocess.Popen(
+            ['banana-browser', 'start', '--remote-debugging-port=9222'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        # Сохраняем PID в контексте
+        context.bot_data['browser_pid'] = process.pid
+        
+        await query.edit_message_text(
+            f"✅ **Браузер запущен!**\n\n"
+            f"📁 Путь: `{CHROME_PATH}`\n"
+            f"🆔 PID: `{process.pid}`\n"
+            f"🔌 Порт: `9222`\n\n"
+            f"Используй /check_browser для проверки.",
+            reply_markup=get_main_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска браузера: {e}")
+        await query.edit_message_text(
+            f"❌ Ошибка: {str(e)[:200]}",
+            reply_markup=get_main_keyboard()
+        )
+
+async def check_browser_button(query):
+    """Проверяет браузер через banana-browser"""
+    await query.edit_message_text("🔄 Проверяю браузер...")
+    
+    try:
+        # Проверяем banana-browser
+        result = subprocess.run(
+            ['banana-browser', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode != 0:
+            await query.edit_message_text(
+                "❌ banana-browser не установлен!",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        # Проверяем Chrome
+        if not CHROME_PATH or not os.path.exists(CHROME_PATH):
+            await query.edit_message_text(
+                "❌ Браузер не найден!",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        # Запускаем проверку на bot.sannysoft.com
+        await query.edit_message_text("🌐 Открываю тестовую страницу...")
+        
+        # Используем banana-browser для открытия страницы
+        cmd = [
+            'banana-browser', 'screenshot',
+            'https://bot.sannysoft.com',
+            '-o', '/tmp/screenshot.png',
+            '--wait', '5000'
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0 and os.path.exists('/tmp/screenshot.png'):
+            # Отправляем скриншот
+            with open('/tmp/screenshot.png', 'rb') as photo:
+                await query.message.reply_photo(
+                    photo=photo,
+                    caption="📸 Скриншот проверки браузера"
+                )
+            
+            # Проверяем webdriver через JavaScript
+            check_cmd = [
+                'banana-browser', 'eval',
+                'navigator.webdriver',
+                '--url', 'https://bot.sannysoft.com'
+            ]
+            
+            result = subprocess.run(
+                check_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            webdriver = result.stdout.strip().lower()
+            
+            if webdriver == 'false':
+                verdict = "✅ **Браузер НЕОТЛИЧИМ от обычного!**"
+            else:
+                verdict = "⚠️ **Браузер обнаруживается как бот**"
+            
+            await query.message.reply_text(
+                f"🔍 **Результат проверки**\n\n"
+                f"{verdict}\n\n"
+                f"• `navigator.webdriver` = `{webdriver}`\n\n"
+                f"💡 Если `false` — браузер неотличим.",
+                reply_markup=get_main_keyboard()
+            )
+            
+        else:
+            await query.edit_message_text(
+                "❌ Не удалось проверить браузер.\n"
+                f"Ошибка: {result.stderr[:100]}",
+                reply_markup=get_main_keyboard()
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка проверки: {e}")
+        await query.edit_message_text(
+            f"❌ Ошибка: {str(e)[:200]}",
+            reply_markup=get_main_keyboard()
+        )
+
+async def check_install_button(query):
     """Проверяет установленные компоненты"""
+    await query.edit_message_text("🔍 Проверяю установку...")
+    
     report = "🔍 **Проверка установленных компонентов**\n\n"
     
-    # 1. Проверка Python пакетов
-    report += "**📦 Python пакеты:**\n"
-    packages = ['browser_harness', 'playwright', 'telegram']
-    for pkg in packages:
-        try:
-            __import__(pkg.replace('-', '_'))
-            report += f"✅ {pkg} - установлен\n"
-        except ImportError:
-            report += f"❌ {pkg} - НЕ установлен\n"
-    
-    # 2. Проверка banana-browser
-    report += "\n**🍌 banana-browser:**\n"
+    # 1. Проверка banana-browser
+    report += "**🍌 banana-browser:**\n"
     try:
         result = subprocess.run(
             ['banana-browser', '--version'],
@@ -286,11 +342,10 @@ async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         report += f"⚠️ Ошибка: {str(e)[:50]}\n"
     
-    # 3. Проверка браузера
+    # 2. Проверка браузера
     report += "\n**🌐 Браузер:**\n"
     if CHROME_PATH and os.path.exists(CHROME_PATH):
         report += f"✅ Найден: {CHROME_PATH}\n"
-        # Проверяем версию
         try:
             result = subprocess.run(
                 [CHROME_PATH, '--version'],
@@ -305,9 +360,9 @@ async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         report += "❌ Браузер НЕ НАЙДЕН\n"
     
-    # 4. Проверка переменных окружения
+    # 3. Проверка переменных окружения
     report += "\n**🔧 Переменные окружения:**\n"
-    env_vars = ['AGENT_BROWSER_ENGINE', 'CHROMIUM_PATH', 'BU_CDP_URL']
+    env_vars = ['AGENT_BROWSER_ENGINE', 'CHROMIUM_PATH']
     for var in env_vars:
         value = os.environ.get(var)
         if value:
@@ -315,8 +370,8 @@ async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             report += f"⚠️ {var} - не установлена\n"
     
-    # 5. Проверка xvfb
-    report += "\n**🖥️ xvfb (графический эмулятор):**\n"
+    # 4. Проверка xvfb
+    report += "\n**🖥️ xvfb:**\n"
     try:
         result = subprocess.run(
             ['which', 'xvfb-run'],
@@ -331,207 +386,90 @@ async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         report += "❌ xvfb НЕ установлен\n"
     
-    await update.message.reply_text(report)
+    await query.edit_message_text(
+        report,
+        reply_markup=get_main_keyboard()
+    )
 
-async def browser_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает информацию о браузере"""
-    if not CHROME_PATH or not os.path.exists(CHROME_PATH):
-        await update.message.reply_text("❌ Браузер не найден!")
-        return
+async def diagnostic_button(query):
+    """Полная диагностика"""
+    await query.edit_message_text("🔄 Запускаю диагностику...")
     
-    report = f"📊 **Информация о браузере**\n\n"
-    report += f"📁 Путь: `{CHROME_PATH}`\n"
+    report = "🔬 **Диагностика**\n\n"
     
-    # Версия
+    # Проверяем banana-browser
     try:
         result = subprocess.run(
-            [CHROME_PATH, '--version'],
+            ['banana-browser', 'demo'],
             capture_output=True,
             text=True,
-            timeout=3
+            timeout=30
         )
+        
         if result.returncode == 0:
-            report += f"📌 Версия: `{result.stdout.strip()}`\n"
-    except:
-        pass
+            report += "✅ banana-browser работает\n"
+            # Извлекаем результаты
+            if "PASS" in result.stdout:
+                report += "✅ Все тесты пройдены\n"
+            else:
+                report += "⚠️ Некоторые тесты не пройдены\n"
+        else:
+            report += f"❌ Ошибка: {result.stderr[:100]}\n"
+            
+    except subprocess.TimeoutExpired:
+        report += "⚠️ Тест завис (таймаут 30с)\n"
+    except Exception as e:
+        report += f"❌ Ошибка: {str(e)[:100]}\n"
     
-    # Проверка прав
-    try:
-        stat = os.stat(CHROME_PATH)
-        report += f"🔑 Права: `{oct(stat.st_mode)[-3:]}`\n"
-        report += f"📏 Размер: `{stat.st_size // 1024} KB`\n"
-    except:
-        pass
-    
-    # Переменные окружения
-    report += f"\n**Переменные:**\n"
-    report += f"`AGENT_BROWSER_ENGINE` = {os.environ.get('AGENT_BROWSER_ENGINE', 'не установлена')}\n"
-    report += f"`CHROMIUM_PATH` = {os.environ.get('CHROMIUM_PATH', 'не установлена')}\n"
-    
-    await update.message.reply_text(report)
-
-async def diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Полная диагностика с запуском браузера"""
-    await update.message.reply_text("🔄 Запускаю полную диагностику...")
-    
-    try:
-        # Проверяем импорт
-        from browser_harness import BrowserSession
-        
-        report = "🔬 **Диагностика browser-harness**\n\n"
-        
-        # Версия
+    # Информация о браузере
+    report += f"\n**Браузер:**\n"
+    if CHROME_PATH and os.path.exists(CHROME_PATH):
+        report += f"✅ Путь: `{CHROME_PATH}`\n"
         try:
-            import browser_harness
-            report += f"📦 Версия: {browser_harness.__version__}\n\n"
+            result = subprocess.run(
+                [CHROME_PATH, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            if result.returncode == 0:
+                report += f"✅ Версия: {result.stdout.strip()}\n"
         except:
             pass
-        
-        # Проверяем браузер
-        report += "🔄 Запуск браузера...\n"
-        
-        try:
-            async with BrowserSession() as session:
-                await session.start()
-                report += "✅ Браузер запущен\n"
-                
-                # Открываем страницу
-                page = await session.new_page()
-                await page.goto("about:blank")
-                report += "✅ Страница открыта\n"
-                
-                # Проверяем navigator.webdriver
-                webdriver = await page.evaluate("navigator.webdriver")
-                report += f"✅ navigator.webdriver = {webdriver}\n\n"
-                
-                if webdriver is False:
-                    report += "🎉 **Браузер НЕОТЛИЧИМ от обычного!**\n"
-                else:
-                    report += "⚠️ Браузер обнаруживается как бот\n"
-                
-                await session.close()
-                
-        except Exception as e:
-            report += f"❌ Ошибка: {str(e)[:200]}\n"
-        
-        await update.message.reply_text(report)
-        
-    except ImportError as e:
-        await update.message.reply_text(
-            f"❌ browser-harness не установлен!\n"
-            f"Ошибка: {str(e)[:100]}\n\n"
-            "Установите: pip install browser-harness"
-        )
-    except Exception as e:
-        logger.error(f"Диагностика ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+    else:
+        report += "❌ Браузер не найден\n"
+    
+    await query.edit_message_text(
+        report,
+        reply_markup=get_main_keyboard()
+    )
 
-async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверяет браузер на сайте bot.sannysoft.com"""
-    await update.message.reply_text("🔄 Запускаю проверку браузера...")
+async def check_browser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /check_browser с кнопками"""
+    await update.message.reply_text(
+        "🔄 Проверяю браузер...",
+        reply_markup=get_main_keyboard()
+    )
 
-    try:
-        # Проверяем установку
-        try:
-            from browser_harness import BrowserSession
-        except ImportError:
-            await update.message.reply_text(
-                "❌ browser-harness не установлен!\n"
-                "Используй /check_install для диагностики"
-            )
-            return
-        
-        # Проверяем браузер
-        if not CHROME_PATH or not os.path.exists(CHROME_PATH):
-            await update.message.reply_text(
-                f"❌ Браузер не найден по пути: {CHROME_PATH}\n"
-                "Используй /check_install для диагностики"
-            )
-            return
-        
-        # Запускаем браузер
-        try:
-            async with BrowserSession() as session:
-                await session.start()
-                page = await session.new_page()
-                
-                # Открываем тестовый сайт
-                await page.goto("https://bot.sannysoft.com")
-                await asyncio.sleep(5)
-                
-                # Делаем скриншот
-                screenshot = await page.screenshot()
-                await update.message.reply_photo(
-                    photo=screenshot,
-                    caption="📸 Проверка браузера"
-                )
-                
-                # Извлекаем метрики
-                result = await page.evaluate("""
-                    () => {
-                        const canvas = document.createElement('canvas');
-                        return {
-                            webdriver: navigator.webdriver,
-                            userAgent: navigator.userAgent,
-                            platform: navigator.platform,
-                            languages: navigator.languages,
-                            webgl: !!canvas.getContext('webgl'),
-                            canvas: !!canvas.getContext('2d')
-                        }
-                    }
-                """)
-                
-                # Формируем отчет
-                if not result['webdriver']:
-                    verdict = "✅ **Браузер выглядит как обычный!**"
-                else:
-                    verdict = "⚠️ **Браузер похож на бота!**"
-                
-                report = f"""
-🔍 **Результат проверки**
-
-{verdict}
-
-**Ключевые метрики:**
-• `navigator.webdriver`: `{result['webdriver']}` 
-• `navigator.platform`: `{result['platform']}`
-• `navigator.languages`: `{', '.join(result['languages'][:2])}`
-• WebGL: {'✅ Доступен' if result['webgl'] else '❌ Недоступен'}
-• Canvas 2D: {'✅ Доступен' if result['canvas'] else '❌ Недоступен'}
-• User-Agent: `{result['userAgent'][:60]}...`
-
-💡 **Вывод:** Если `webdriver = false` — браузер неотличим от обычного.
-"""
-                await update.message.reply_text(report)
-                
-        except Exception as e:
-            logger.error(f"Ошибка проверки: {e}")
-            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+# ============================================
+# ЗАПУСК
+# ============================================
 
 def main():
     """Запуск бота"""
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрация команд
+    # Команды
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("check_browser", check_browser))
-    app.add_handler(CommandHandler("check_install", check_install))
-    app.add_handler(CommandHandler("diagnostic", diagnostic))
-    app.add_handler(CommandHandler("browser_info", browser_info))
-    app.add_handler(CommandHandler("find_browser", find_browser_path))
+    app.add_handler(CommandHandler("check_browser", check_browser_command))
+    
+    # Обработчики кнопок
+    app.add_handler(CallbackQueryHandler(button_handler))
     
     logger.info("🤖 Бот запущен!")
     logger.info("📋 Доступные команды:")
-    logger.info("  /start - приветствие")
+    logger.info("  /start - главное меню")
     logger.info("  /check_browser - проверить браузер")
-    logger.info("  /check_install - проверить установку")
-    logger.info("  /diagnostic - полная диагностика")
-    logger.info("  /browser_info - информация о браузере")
-    logger.info("  /find_browser - найти браузер в системе")
     
     app.run_polling()
 
