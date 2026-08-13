@@ -1,6 +1,6 @@
 import os
 import sys
-import asyncio 
+import asyncio
 import logging
 import time
 import signal
@@ -150,11 +150,11 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Результат выполнения задачи")
 
 # ============================================================
-# 7. ЗАПУСК CAMOUFOX И HARNESS
+# 7. ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ CAMOUFOX
 # ============================================================
 
 async def init_browser_and_harness():
-    """Запустить Camoufox и Browser Harness"""
+    """Запустить Camoufox и сохранить экземпляр браузера"""
     global browser_instance, harness_ready
     
     if not CAMOUFOX_AVAILABLE:
@@ -164,25 +164,27 @@ async def init_browser_and_harness():
     logger.info("🚀 Запускаем Camoufox...")
     
     try:
-        # ✅ Правильный запуск через контекстный менеджер
-        async with AsyncCamoufox(
+        # ✅ ПРАВИЛЬНЫЙ СПОСОБ — сохраняем браузер через __aenter__()
+        # persistent_context=True — браузер не закроется при выходе
+        browser = AsyncCamoufox(
             headless=True,
-            fingerprint=True
-        ) as browser:
-            browser_instance = browser
-            logger.info("✅ Camoufox запущен")
-            
-            await asyncio.sleep(2)
-            
-            if HARNESS_AVAILABLE:
-                logger.info("🔗 Подключаем Browser Harness...")
-                ensure_daemon()
-                new_tab("about:blank")
-                wait_for_load()
-                harness_ready = True
-                logger.info("✅ Browser Harness готов")
-            
-            return True
+            fingerprint=True,
+            persistent_context=True  # 👈 КЛЮЧЕВОЙ ПАРАМЕТР
+        )
+        browser_instance = await browser.__aenter__()
+        
+        logger.info("✅ Camoufox запущен и сохранён")
+        await asyncio.sleep(2)
+        
+        if HARNESS_AVAILABLE:
+            logger.info("🔗 Подключаем Browser Harness...")
+            ensure_daemon()
+            new_tab("about:blank")
+            wait_for_load()
+            harness_ready = True
+            logger.info("✅ Browser Harness готов")
+        
+        return True
         
     except Exception as e:
         logger.error(f"❌ Ошибка запуска Camoufox: {e}")
@@ -315,6 +317,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Camoufox не установлен")
             return
         
+        # Создаём НОВЫЙ экземпляр для команды /check
         async with AsyncCamoufox(headless=True, fingerprint=True) as browser:
             page = await browser.new_page()
             await page.goto(url, wait_until="networkidle")
@@ -333,13 +336,22 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Camoufox не установлен")
             return
         
-        async with AsyncCamoufox(headless=True, fingerprint=True) as browser:
-            page = await browser.new_page()
-            await page.goto("https://example.com")
-            screenshot_bytes = await page.screenshot()
+        # ИСПОЛЬЗУЕМ СОХРАНЁННЫЙ ЭКЗЕМПЛЯР браузера
+        global browser_instance
+        
+        if browser_instance is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /status для проверки.")
+            return
+        
+        # Создаём новую страницу в существующем браузере
+        page = await browser_instance.new_page()
+        await page.goto("https://example.com", wait_until="networkidle")
+        screenshot_bytes = await page.screenshot()
+        await page.close()
         
         await update.message.reply_photo(photo=screenshot_bytes, caption="📸 Скриншот через Camoufox")
         await msg.delete()
+        
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
@@ -348,7 +360,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 **Статус системы**\n\n"
         f"🦊 Camoufox: {'✅ Доступен' if CAMOUFOX_AVAILABLE else '❌ Не установлен'}\n"
         f"🔧 Harness: {'✅ Готов' if harness_ready else '❌ Не готов'}\n"
-        f"🧠 DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}",
+        f"🧠 DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}\n"
+        f"🌐 Браузер: {'✅ Запущен' if browser_instance else '❌ Не запущен'}",
         parse_mode='Markdown'
     )
 
@@ -386,7 +399,20 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 11. ЗАПУСК
+# 11. ЗАКРЫТИЕ БРАУЗЕРА ПРИ ЗАВЕРШЕНИИ
+# ============================================================
+
+async def close_browser():
+    global browser_instance
+    if browser_instance:
+        try:
+            await browser_instance.close()
+            logger.info("✅ Браузер закрыт")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при закрытии браузера: {e}")
+
+# ============================================================
+# 12. ЗАПУСК
 # ============================================================
 
 async def main():
@@ -426,7 +452,6 @@ async def main():
         def signal_handler():
             stop_signal.set()
         
-        # Для UNIX-сигналов (SIGINT, SIGTERM)
         if hasattr(asyncio, 'add_signal_handler'):
             try:
                 loop = asyncio.get_running_loop()
@@ -443,6 +468,7 @@ async def main():
         logger.error(f"❌ Ошибка в основном цикле: {e}")
     finally:
         logger.info("🛑 Останавливаем бота...")
+        await close_browser()
         await app.stop()
         await app.shutdown()
 
