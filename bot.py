@@ -19,11 +19,14 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Загружаю...")
     
     try:
-        # ✅ В версии 0.5.7 параметр называется stealth, а не fingerprint
+        # ✅ Правильный способ в вашей версии
         browser = await launch_async(
             headless=True,
-            stealth=True,  # ← вместо fingerprint
-            timeout=30000
+            args=[
+                "--fingerprint",          # Включает генерацию уникального отпечатка
+                # Опционально: можно зафиксировать отпечаток, чтобы выглядеть как один и тот же пользователь
+                # "--fingerprint=12345"
+            ]
         )
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle")
