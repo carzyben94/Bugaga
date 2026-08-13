@@ -7,7 +7,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, "/app/browser-harness/src")
@@ -18,7 +21,13 @@ import dspy
 from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 
 # CAMOUFOX
-from camoufox.async_api import AsyncCamoufox
+try:
+    from camoufox.async_api import AsyncCamoufox
+    CAMOUFOX_AVAILABLE = True
+    logger.info("✅ Camoufox загружен")
+except ImportError as e:
+    CAMOUFOX_AVAILABLE = False
+    logger.warning(f"⚠️ Camoufox не найден: {e}")
 
 # BROWSER HARNESS
 try:
@@ -31,9 +40,9 @@ try:
     from browser_harness.admin import ensure_daemon
     HARNESS_AVAILABLE = True
     logger.info("✅ Browser Harness загружен")
-except ImportError:
+except ImportError as e:
     HARNESS_AVAILABLE = False
-    logger.warning("⚠️ Browser Harness не найден")
+    logger.warning(f"⚠️ Browser Harness не найден: {e}")
 
 warnings.filterwarnings("ignore")
 
@@ -127,31 +136,35 @@ async def init_browser_and_harness():
     """Запустить Camoufox и Browser Harness"""
     global browser_instance, harness_ready
     
+    if not CAMOUFOX_AVAILABLE:
+        logger.error("❌ Camoufox не доступен")
+        return False
+    
     logger.info("🚀 Запускаем Camoufox...")
     
     try:
-        # ✅ Правильный запуск через launch()
-        browser_instance = await AsyncCamoufox.launch(
+        # ✅ Правильный запуск через async with
+        async with AsyncCamoufox(
             headless=True,
-            humanize=True,
             fingerprint=True
-        )
-        
-        logger.info("✅ Camoufox запущен")
-        await asyncio.sleep(2)
-        
-        if HARNESS_AVAILABLE:
-            logger.info("🔗 Подключаем Browser Harness...")
-            ensure_daemon()
-            new_tab("about:blank")
-            wait_for_load()
-            harness_ready = True
-            logger.info("✅ Browser Harness готов")
-        
-        return True
+        ) as browser:
+            browser_instance = browser
+            logger.info("✅ Camoufox запущен")
+            
+            await asyncio.sleep(2)
+            
+            if HARNESS_AVAILABLE:
+                logger.info("🔗 Подключаем Browser Harness...")
+                ensure_daemon()
+                new_tab("about:blank")
+                wait_for_load()
+                harness_ready = True
+                logger.info("✅ Browser Harness готов")
+            
+            return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка запуска: {e}")
+        logger.error(f"❌ Ошибка запуска Camoufox: {e}")
         return False
 
 def create_harness_tools():
@@ -269,7 +282,11 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Открываю через Camoufox...")
     
     try:
-        async with AsyncCamoufox(headless=True, humanize=True, fingerprint=True) as browser:
+        if not CAMOUFOX_AVAILABLE:
+            await msg.edit_text("❌ Camoufox не установлен")
+            return
+        
+        async with AsyncCamoufox(headless=True, fingerprint=True) as browser:
             page = await browser.new_page()
             await page.goto(url, wait_until="networkidle")
             title = await page.title()
@@ -283,10 +300,15 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📸 Делаю скриншот...")
     try:
-        async with AsyncCamoufox(headless=True, humanize=True) as browser:
+        if not CAMOUFOX_AVAILABLE:
+            await msg.edit_text("❌ Camoufox не установлен")
+            return
+        
+        async with AsyncCamoufox(headless=True, fingerprint=True) as browser:
             page = await browser.new_page()
             await page.goto("https://example.com")
             screenshot_bytes = await page.screenshot()
+        
         await update.message.reply_photo(photo=screenshot_bytes, caption="📸 Скриншот через Camoufox")
         await msg.delete()
     except Exception as e:
@@ -294,20 +316,27 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"📦 **Статус**\n\n"
-        f"🦊 Camoufox: {'✅' if browser_instance else '❌'}\n"
-        f"🔧 Harness: {'✅' if harness_ready else '❌'}\n"
-        f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}",
+        f"📦 **Статус системы**\n\n"
+        f"🦊 Camoufox: {'✅ Доступен' if CAMOUFOX_AVAILABLE else '❌ Не установлен'}\n"
+        f"🔧 Harness: {'✅ Готов' if harness_ready else '❌ Не готов'}\n"
+        f"🧠 DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}",
         parse_mode='Markdown'
     )
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("🧠 DSPy Agent\nПример: /dspy открой google.com")
+        await update.message.reply_text(
+            "🧠 **DSPy Agent**\n\n"
+            "Примеры:\n"
+            "`/dspy открой google.com и покажи заголовок`\n"
+            "`/dspy найди все ссылки на python.org`\n"
+            "`/dspy сделай скриншот`",
+            parse_mode='Markdown'
+        )
         return
     
     if not dspy_agent_instance:
-        await update.message.reply_text("❌ DSPy не инициализирован")
+        await update.message.reply_text("❌ DSPy не инициализирован. Проверьте AGNES_API_KEY")
         return
     
     query = " ".join(context.args)
@@ -316,8 +345,10 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         loop = asyncio.get_running_loop()
         answer = await loop.run_in_executor(None, run_agent, query)
+        
         if len(answer) > 4000:
             answer = answer[:4000] + "..."
+        
         await msg.edit_text(
             f"✅ **Результат:**\n\n{escape_markdown(answer, version=2)}",
             parse_mode='MarkdownV2'
@@ -332,10 +363,17 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global browser_instance
     
+    logger.info("🚀 Инициализация...")
+    
+    # Запускаем Camoufox и Browser Harness
     await init_browser_and_harness()
+    
+    # Инициализируем DSPy
     init_dspy()
     
+    # Создаём бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("screenshot", screenshot))
@@ -343,9 +381,10 @@ async def main():
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     logger.info("🚀 Бот запущен!")
-    logger.info(f"🦊 Camoufox: {'✅' if browser_instance else '❌'}")
+    logger.info(f"🦊 Camoufox: {'✅' if CAMOUFOX_AVAILABLE else '❌'}")
     logger.info(f"🔧 Harness: {'✅' if harness_ready else '❌'}")
     logger.info(f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}")
+    logger.info("📋 Команды: /start, /check, /screenshot, /status, /dspy")
     
     await app.initialize()
     await app.start()
