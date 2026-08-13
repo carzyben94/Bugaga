@@ -15,6 +15,15 @@ RUN apt-get update && apt-get install -y \
 # Устанавливаем Veil из GitHub [citation:2]
 RUN pip install git+https://github.com/acunningham-ship-it/veilbrowser.git#subdirectory=python
 
+
+WORKDIR /app
+
+RUN mkdir -p /app/logs /app/screenshots /app/browser-harness/agent-workspace
+
+# Устанавливаем browser-harness как Python пакет
+RUN pip install --no-cache-dir browser-harness
+
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
