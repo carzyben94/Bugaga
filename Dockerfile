@@ -1,4 +1,4 @@
-FROM python:3.12-slim 
+FROM python:3.12-slim
 
 # Устанавливаем зависимости и banana-browser
 RUN apt-get update && apt-get install -y \
@@ -25,16 +25,22 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем banana-browser глобально
-RUN npm install -g banana-browser \
-    && banana-browser install
+RUN npm install -g banana-browser && \
+    banana-browser install --with-deps
 
 ENV PYTHONUNBUFFERED=1
 ENV BH_DOMAIN_SKILLS=1
 ENV BH_AGENT_WORKSPACE=/app/browser-harness/agent-workspace
-# Указываем banana-browser как движок
 ENV AGENT_BROWSER_ENGINE=patchright
-# Путь к браузеру banana-browser
-ENV CHROMIUM_PATH=/root/.cache/banana-browser/chrome/linux-129.0.6668.89/chrome-linux64/chrome
+
+# Динамически находим реальный путь к Chrome
+RUN CHROME_PATH=$(find /root/.cache/banana-browser -name "chrome" -type f 2>/dev/null | head -1) && \
+    if [ -n "$CHROME_PATH" ]; then \
+        echo "✅ Found Chrome at: $CHROME_PATH" && \
+        echo "CHROMIUM_PATH=$CHROME_PATH" >> /etc/environment; \
+    else \
+        echo "❌ Chrome not found!"; \
+    fi
 
 WORKDIR /app
 
@@ -48,7 +54,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Запускаем через xvfb для имитации графического экрана
-CMD ["xvfb-run", "--auto-servernum"]
-
-CMD ["python", "bot.py"]
+# ✅ ОДНА КОМАНДА CMD: запускаем xvfb и бота вместе
+CMD ["bash", "-c", "xvfb-run --auto-servernum python bot.py"]
