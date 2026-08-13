@@ -52,7 +52,7 @@ if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
 # ============================================
-# КУКИ ДЛЯ X.COM (TWITTER) - СОКРАЩЕНО
+# КУКИ ДЛЯ X.COM (TWITTER)
 # ============================================
 
 COOKIES = [
@@ -517,8 +517,8 @@ dspy_lm = None
 # DSPy ЛОГИРОВАНИЕ В ФАЙЛ
 # ============================================
 
-def save_dspy_log(question: str, answer: str, history: str = None):
-    """Сохраняет лог DSPy в файл"""
+def save_dspy_log(question: str, answer: str, history: str = "", llm_history: str = "", username: str = "unknown"):
+    """Сохраняет полную траекторию DSPy в файл"""
     try:
         log_file = "dspy.log"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -526,13 +526,26 @@ def save_dspy_log(question: str, answer: str, history: str = None):
         with open(log_file, "a", encoding="utf-8") as f:
             f.write("=" * 60 + "\n")
             f.write(f"📅 Время: {timestamp}\n")
-            f.write(f"❓ Вопрос: {question}\n")
-            f.write(f"✅ Ответ: {answer}\n")
-            if history:
-                f.write(f"📋 История: {history}\n")
+            f.write(f"👤 Пользователь: {username}\n")
+            f.write(f"❓ Вопрос: {question}\n\n")
+            
+            f.write("=" * 60 + "\n")
+            f.write("📋 **ТРАЕКТОРИЯ ШАГОВ**\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(history if history else "Нет истории шагов\n")
+            f.write("\n")
+            
+            f.write("=" * 60 + "\n")
+            f.write("🧠 **LLM ВЫЗОВЫ**\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(llm_history if llm_history else "Нет LLM вызовов\n")
+            f.write("\n")
+            
+            f.write("=" * 60 + "\n")
+            f.write(f"✅ **ОТВЕТ:**\n{answer}\n")
             f.write("=" * 60 + "\n\n")
         
-        logger.info(f"✅ Лог сохранён в {log_file}")
+        logger.info(f"✅ Полный лог сохранён в {log_file}")
     except Exception as e:
         logger.error(f"❌ Ошибка сохранения лога: {e}")
 
@@ -1066,7 +1079,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Примеры:\n"
             "/dspy открой x.com и покажи заголовок\n"
             "/dspy установи куки X.com и открой страницу\n\n"
-            "📊 Логи сохраняются в dspy.log"
+            "📊 Полная траектория сохраняется в dspy.log"
         )
         return
     
@@ -1096,19 +1109,27 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         loop = asyncio.get_running_loop()
         
-        # Сохраняем историю
+        # Сохраняем историю ВСЕХ шагов
         f = io.StringIO()
         with redirect_stdout(f):
             answer = await loop.run_in_executor(None, run_agent, dspy_agent, user_query)
         
+        # Получаем ВСЮ траекторию
         history_output = f.getvalue()
+        
+        # Дополнительно получаем inspect_history (она показывает все LLM-вызовы)
+        f_history = io.StringIO()
+        with redirect_stdout(f_history):
+            dspy.inspect_history(n=10)
+        
+        full_history = f_history.getvalue()
         
         if not answer or answer.strip() == "":
             await status_msg.edit_text("❌ Агент вернул пустой ответ")
             return
         
-        # Сохраняем лог
-        save_dspy_log(user_query, answer, history_output)
+        # Сохраняем ПОЛНУЮ траекторию в файл
+        save_dspy_log(user_query, answer, history_output, full_history, username)
         
         if len(answer) > 4000:
             answer = answer[:4000] + "\n\n... (обрезано)"
@@ -1123,7 +1144,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cleanup_tabs(keep_one=True)
 
 async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /dspy_log - скачать лог DSPy"""
+    """Команда /dspy_log - скачать лог DSPy как файл"""
     log_file = "dspy.log"
     
     if not os.path.exists(log_file):
@@ -1131,21 +1152,12 @@ async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Читаем файл
-        with open(log_file, "r", encoding="utf-8") as f:
-            content = f.read()
-        
-        if len(content) > 4000:
-            # Если файл большой, отправляем как документ
-            await update.message.reply_document(
-                document=open(log_file, "rb"),
-                filename="dspy.log",
-                caption="📄 **Лог DSPy**"
-            )
-        else:
-            await update.message.reply_text(
-                f"📄 **Лог DSPy**\n\n```\n{content}\n```"
-            )
+        # Отправляем как документ (всегда файл для скачивания)
+        await update.message.reply_document(
+            document=open(log_file, "rb"),
+            filename="dspy.log",
+            caption="📄 **Лог DSPy** (полная траектория выполнения)"
+        )
             
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
