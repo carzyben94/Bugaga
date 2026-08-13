@@ -49,4 +49,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Запускаем через xvfb для имитации графического экрана
-CMD ["xvfb-run", "--auto-servernum", "python", "bot.py"]
+CMD ["xvfb-run", "--auto-servernum"]
+
+CMD ["python", "bot.py"]
