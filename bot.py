@@ -1,15 +1,21 @@
 import os
+import sys
 import asyncio
 import logging
 import subprocess
+import json
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown
 from cloakbrowser import launch_async
 
 # ============================================================
-# 1. НАСТРОЙКА ЛОГГЕРА
+# 1. НАСТРОЙКА ПУТЕЙ И ЛОГГЕРА
 # ============================================================
+
+# Добавляем путь к Browser Harness
+sys.path.insert(0, "browser-harness/src")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,7 +24,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 2. ИМПОРТЫ DSPy
+# 2. ИМПОРТ BROWSER HARNESS
+# ============================================================
+
+try:
+    from browser_harness.helpers import (
+        new_tab,
+        goto_url,
+        wait_for_load,
+        close_tab,
+        page_info,
+        current_tab,
+        capture_screenshot,
+        js,
+        list_tabs,
+        switch_tab,
+        fill_input,
+        click_at_xy,
+        type_text,
+        press_key,
+        scroll,
+    )
+    from browser_harness.admin import ensure_daemon
+    HARNESS_AVAILABLE = True
+    logger.info("✅ Browser Harness загружен")
+except ImportError as e:
+    logger.warning(f"⚠️ Browser Harness не найден: {e}")
+    HARNESS_AVAILABLE = False
+
+# ============================================================
+# 3. ИМПОРТЫ DSPy
 # ============================================================
 
 import warnings
@@ -29,7 +64,7 @@ from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 warnings.filterwarnings("ignore")
 
 # ============================================================
-# 3. AGNES LM АДАПТЕР
+# 4. AGNES LM АДАПТЕР
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -84,185 +119,330 @@ class AgnesLM(dspy.LM):
         except Exception as e:
             logger.error(f"❌ Agnes API: {e}")
             return [f"Ошибка: {str(e)}"]
-    
-    def __call__(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 # ============================================================
-# 4. DSPy СИГНАТУРА
+# 5. DSPy СИГНАТУРА ДЛЯ BROWSER HARNESS
 # ============================================================
 
 class BrowserTask(Signature):
     """
-    Ты агент с доступом к браузеру.
+    Ты агент с доступом к браузеру через Browser Harness.
     
     ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
-    - tool_goto_url(url) - перейти на сайт
-    - tool_screenshot() - сделать скриншот
-    - tool_get_text() - получить весь текст страницы
-    - tool_get_title() - получить заголовок страницы
-    - tool_js(expression) - выполнить JavaScript
+    
+    1. Навигация:
+       - tool_goto_url(url) - перейти на сайт
+       - tool_wait_for_load() - дождаться загрузки
+       - tool_new_tab() - открыть новую вкладку
+       - tool_close_tab() - закрыть вкладку
+       - tool_switch_tab(tab_id) - переключить вкладку
+       - tool_list_tabs() - список всех вкладок
+    
+    2. Информация:
+       - tool_page_info() - URL и заголовок
+       - tool_get_text() - весь текст на странице
+       - tool_get_links() - все ссылки
+       - tool_get_buttons() - все кнопки
+       - tool_get_headings() - все заголовки
+    
+    3. Взаимодействие:
+       - tool_js(expression) - выполнить JavaScript
+       - tool_fill_input(selector, text) - заполнить поле
+       - tool_click_at_xy(x, y) - кликнуть по координатам
+       - tool_type_text(text) - ввести текст
+       - tool_press_key(key) - нажать клавишу
+       - tool_scroll(x, y) - прокрутить страницу
+    
+    4. Скриншоты:
+       - tool_capture_screenshot(filename) - сделать скриншот
     
     ПРАВИЛА:
-    - Сначала всегда открывай страницу через tool_goto_url
-    - Потом используй другие инструменты
-    - Отвечай понятно и кратко
+    - Всегда используй инструменты Browser Harness
+    - Сначала открывай страницу через tool_goto_url
+    - Для получения текста используй tool_get_text
+    - Для кликов используй tool_click_at_xy
+    - Отвечай на русском языке
     """
     question = InputField(desc="Задача пользователя")
     answer = OutputField(desc="Результат выполнения задачи")
 
 # ============================================================
-# 5. ГЛОБАЛЬНЫЙ ЭКЗЕМПЛЯР БРАУЗЕРА
+# 6. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 # ============================================================
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 browser_instance = None
 page_instance = None
 dspy_agent_instance = None
-loop_for_browser = None
+browser_harness_ready = False
+
+# Папки для скриншотов
+SCREENSHOTS_DIR = '/app/screenshots'
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 # ============================================================
-# 6. СОЗДАНИЕ DSPy АГЕНТА С РЕАЛЬНЫМ БРАУЗЕРОМ
+# 7. ИНИЦИАЛИЗАЦИЯ BROWSER HARNESS
 # ============================================================
 
-def get_or_create_loop():
-    """Получить или создать event loop"""
-    global loop_for_browser
-    try:
-        loop = asyncio.get_running_loop()
-        return loop
-    except RuntimeError:
-        if loop_for_browser is None or loop_for_browser.is_closed():
-            loop_for_browser = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop_for_browser)
-        return loop_for_browser
-
-def run_async(coro):
-    """Выполнить асинхронную функцию в синхронном контексте"""
-    loop = get_or_create_loop()
-    if loop.is_running():
-        # Если loop уже запущен, создаём новый для этого вызова
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        try:
-            return new_loop.run_until_complete(coro)
-        finally:
-            new_loop.close()
-            # Восстанавливаем старый loop
-            asyncio.set_event_loop(loop)
-    else:
-        return loop.run_until_complete(coro)
-
-async def init_browser_async():
-    """Асинхронная инициализация браузера"""
-    global browser_instance, page_instance, dspy_agent_instance
+def init_browser_harness():
+    """Инициализация Browser Harness"""
+    global browser_harness_ready
+    
+    if not HARNESS_AVAILABLE:
+        logger.warning("⚠️ Browser Harness недоступен")
+        return False
     
     try:
-        # Запускаем браузер
-        browser_instance = await launch_async(
-            headless=True,
-            args=["--fingerprint"]
-        )
-        page_instance = await browser_instance.new_page()
-        logger.info("✅ CloakBrowser запущен")
+        # Запускаем daemon
+        ensure_daemon()
+        logger.info("✅ Browser Harness daemon запущен")
         
-        # Создаём инструменты
-        tools = create_tools()
+        # Создаём вкладку
+        new_tab("about:blank")
+        wait_for_load()
         
-        # Инициализируем DSPy
-        api_key = os.environ.get("AGNES_API_KEY")
-        if api_key:
-            lm = AgnesLM(api_key=api_key, temperature=0.3, max_tokens=2000)
-            settings.configure(lm=lm)
-            
-            dspy_agent_instance = ReActV2(
-                signature=BrowserTask,
-                tools=tools,
-                max_iters=10,
-            )
-            logger.info(f"✅ DSPy агент создан с {len(tools)} инструментами")
-        else:
-            logger.warning("⚠️ AGNES_API_KEY не задан")
-        
+        browser_harness_ready = True
+        logger.info("✅ Browser Harness готов к работе")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка инициализации браузера: {e}")
+        logger.error(f"❌ Ошибка инициализации Browser Harness: {e}")
         return False
 
-def init_browser():
-    """Синхронная обёртка для инициализации браузера"""
-    loop = get_or_create_loop()
-    if loop.is_running():
-        # Если loop запущен, создаём задачу
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, init_browser_async())
-            return future.result()
-    else:
-        return loop.run_until_complete(init_browser_async())
+# ============================================================
+# 8. СОЗДАНИЕ ИНСТРУМЕНТОВ BROWSER HARNESS
+# ============================================================
 
-def create_tools():
-    """Создать инструменты с реальным браузером"""
+def create_harness_tools():
+    """Создать инструменты Browser Harness для DSPy"""
     tools = []
     
     def tool_goto_url(url: str) -> str:
-        """Перейти на URL"""
+        """Перейти на URL и дождаться загрузки"""
         try:
-            result = run_async(page_instance.goto(url, wait_until="networkidle"))
+            goto_url(url)
+            wait_for_load()
             return f"✅ Перешел на {url}"
         except Exception as e:
-            return f"❌ Ошибка перехода: {e}"
+            return f"❌ Ошибка: {e}"
     tools.append(Tool(tool_goto_url))
     
-    def tool_screenshot() -> str:
-        """Сделать скриншот"""
+    def tool_wait_for_load() -> str:
+        """Дождаться загрузки страницы"""
         try:
-            screenshot = run_async(page_instance.screenshot())
-            import time
-            filename = f"/app/screenshots/dspy_{int(time.time())}.png"
-            os.makedirs("/app/screenshots", exist_ok=True)
-            with open(filename, "wb") as f:
-                f.write(screenshot)
-            return f"✅ Скриншот сохранён: {filename}"
-        except Exception as e:
-            return f"❌ Ошибка скриншота: {e}"
-    tools.append(Tool(tool_screenshot))
-    
-    def tool_get_text() -> str:
-        """Получить весь текст страницы"""
-        try:
-            text = run_async(page_instance.content())
-            import re
-            clean_text = re.sub(r'<[^>]+>', ' ', text)
-            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-            if len(clean_text) > 3000:
-                clean_text = clean_text[:3000] + "..."
-            return f"✅ Текст страницы:\n{clean_text}" if clean_text else "❌ Текст не найден"
-        except Exception as e:
-            return f"❌ Ошибка получения текста: {e}"
-    tools.append(Tool(tool_get_text))
-    
-    def tool_get_title() -> str:
-        """Получить заголовок страницы"""
-        try:
-            title = run_async(page_instance.title())
-            return f"✅ Заголовок: {title}" if title else "❌ Заголовок не найден"
+            wait_for_load()
+            return "✅ Страница загружена"
         except Exception as e:
             return f"❌ Ошибка: {e}"
-    tools.append(Tool(tool_get_title))
+    tools.append(Tool(tool_wait_for_load))
+    
+    def tool_new_tab() -> str:
+        """Открыть новую вкладку"""
+        try:
+            new_tab()
+            return "✅ Новая вкладка открыта"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_new_tab))
+    
+    def tool_close_tab() -> str:
+        """Закрыть текущую вкладку"""
+        try:
+            close_tab()
+            return "✅ Вкладка закрыта"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_close_tab))
+    
+    def tool_switch_tab(tab_id: int) -> str:
+        """Переключиться на вкладку по ID"""
+        try:
+            switch_tab(tab_id)
+            return f"✅ Переключился на вкладку {tab_id}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_switch_tab))
+    
+    def tool_list_tabs() -> str:
+        """Список всех открытых вкладок"""
+        try:
+            tabs = list_tabs()
+            return f"Вкладки: {tabs}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_list_tabs))
+    
+    def tool_page_info() -> str:
+        """Получить информацию о странице"""
+        try:
+            info = page_info()
+            return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_page_info))
+    
+    def tool_get_text() -> str:
+        """Получить весь текст на странице"""
+        try:
+            result = js('() => document.body.innerText')
+            if isinstance(result, dict):
+                text = result.get('result', str(result))
+            else:
+                text = str(result)
+            if text and len(text) > 10:
+                return text[:5000]
+            return "❌ Текст не найден"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_text))
+    
+    def tool_get_links() -> str:
+        """Получить все ссылки на странице"""
+        try:
+            result = js('() => Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
+            if isinstance(result, list) and result:
+                links = [str(item) for item in result if item]
+                return f"Ссылки ({len(links)}): {links[:20]}" + ("..." if len(links) > 20 else "")
+            return "❌ Ссылок не найдено"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_links))
+    
+    def tool_get_buttons() -> str:
+        """Получить все кнопки на странице"""
+        try:
+            result = js('() => Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t.trim())')
+            if isinstance(result, list) and result:
+                buttons = [str(item).strip() for item in result if item and str(item).strip()]
+                return f"Кнопки: {buttons[:20]}" + ("..." if len(buttons) > 20 else "")
+            return "❌ Кнопок не найдено"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_buttons))
+    
+    def tool_get_headings() -> str:
+        """Получить все заголовки на странице"""
+        try:
+            result = js('() => Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t.trim())')
+            if isinstance(result, list) and result:
+                headings = [str(item).strip() for item in result if item and str(item).strip()]
+                return f"Заголовки:\n" + "\n".join(headings)
+            return "❌ Заголовков не найдено"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_get_headings))
     
     def tool_js(expression: str) -> str:
         """Выполнить JavaScript на странице"""
         try:
-            result = run_async(page_instance.evaluate(expression))
-            return f"✅ JS выполнен: {result}" if result is not None else "✅ JS выполнен (нет результата)"
+            result = js(expression)
+            if isinstance(result, dict):
+                return str(result.get('result', result))
+            return str(result) if result is not None else "✅ JavaScript выполнен"
         except Exception as e:
-            return f"❌ Ошибка JS: {e}"
+            return f"❌ Ошибка: {e}"
     tools.append(Tool(tool_js))
+    
+    def tool_capture_screenshot(filename: str = None) -> str:
+        """Сделать скриншот страницы"""
+        try:
+            if not filename:
+                timestamp = int(time.time())
+                filename = f"screenshot_{timestamp}.png"
+            full_path = os.path.join(SCREENSHOTS_DIR, filename)
+            capture_screenshot(path=full_path)
+            return f"✅ Скриншот сохранен: {filename}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_capture_screenshot))
+    
+    def tool_fill_input(selector: str, text: str) -> str:
+        """Заполнить поле ввода по CSS селектору"""
+        try:
+            fill_input(selector, text)
+            return f"✅ Заполнено: {selector} -> {text}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_fill_input))
+    
+    def tool_click_at_xy(x: int, y: int) -> str:
+        """Кликнуть по координатам"""
+        try:
+            click_at_xy(x, y)
+            return f"✅ Клик по ({x}, {y})"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_click_at_xy))
+    
+    def tool_type_text(text: str) -> str:
+        """Ввести текст"""
+        try:
+            type_text(text)
+            return f"✅ Введено: {text}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_type_text))
+    
+    def tool_press_key(key: str) -> str:
+        """Нажать клавишу"""
+        try:
+            press_key(key)
+            return f"✅ Нажата клавиша: {key}"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_press_key))
+    
+    def tool_scroll(dx: int, dy: int) -> str:
+        """Прокрутить страницу"""
+        try:
+            scroll(dx, dy)
+            return f"✅ Прокрутка на ({dx}, {dy})"
+        except Exception as e:
+            return f"❌ Ошибка: {e}"
+    tools.append(Tool(tool_scroll))
     
     return tools
 
-def run_dspy_agent(question: str) -> str:
+# ============================================================
+# 9. ИНИЦИАЛИЗАЦИЯ DSPy
+# ============================================================
+
+def init_dspy():
+    """Инициализировать DSPy с инструментами Browser Harness"""
+    global dspy_agent_instance
+    
+    api_key = os.environ.get("AGNES_API_KEY")
+    if not api_key:
+        logger.warning("⚠️ AGNES_API_KEY не задан")
+        return False
+    
+    try:
+        # Создаём LM
+        lm = AgnesLM(api_key=api_key, temperature=0.3, max_tokens=2000)
+        settings.configure(lm=lm)
+        logger.info("✅ DSPy настроен с AgnesLM")
+        
+        # Создаём инструменты
+        tools = create_harness_tools()
+        
+        # Создаём агента
+        dspy_agent_instance = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=10,
+        )
+        
+        logger.info(f"✅ DSPy агент создан с {len(tools)} инструментами")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации DSPy: {e}")
+        return False
+
+def run_agent(question: str) -> str:
     """Запустить DSPy агента"""
     if not dspy_agent_instance:
         return "❌ DSPy агент не инициализирован"
@@ -276,12 +456,8 @@ def run_dspy_agent(question: str) -> str:
         return f"❌ Ошибка: {str(e)}"
 
 # ============================================================
-# 7. ТЕЛЕГРАМ БОТ
+# 10. ТЕЛЕГРАМ БОТ
 # ============================================================
-
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -289,6 +465,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/check <url> - проверить сайт\n"
         "/dspy <запрос> - задать вопрос DSPy агенту\n"
+        "/harness - статус Browser Harness\n"
         "/version - версия CloakBrowser"
     )
 
@@ -317,6 +494,18 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
+async def harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Статус Browser Harness"""
+    status = "✅ Browser Harness активен" if browser_harness_ready else "❌ Browser Harness не активен"
+    harness_avail = "✅ Доступен" if HARNESS_AVAILABLE else "❌ Не установлен"
+    
+    await update.message.reply_text(
+        f"📦 **Browser Harness**\n"
+        f"• Статус: {harness_avail}\n"
+        f"• Готовность: {status}\n"
+        f"• DSPy: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}"
+    )
+
 async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         result = subprocess.run(
@@ -330,23 +519,23 @@ async def version(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"📦 **CloakBrowser**\n"
             f"• Статус: ✅ Работает\n"
-            f"• Инфо: `{info[:200] if info else 'доступен'}`"
+            f"• Инфо: `{info[:200] if info else 'доступен'}`\n"
+            f"• Harness: {'✅' if HARNESS_AVAILABLE else '❌'}"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /dspy с реальным браузером"""
-    global dspy_agent_instance
-    
+    """Обработчик /dspy с Browser Harness"""
     if not context.args:
         await update.message.reply_text(
-            "🧠 **DSPy Agent**\n\n"
+            "🧠 **DSPy Agent с Browser Harness**\n\n"
             "Отправь задачу:\n"
             "`/dspy открой google.com и покажи заголовок`\n"
             "`/dspy сделай скриншот example.com`\n"
-            "`/dspy перейди на python.org и получи текст`\n\n"
-            "Агент сам откроет браузер и выполнит задачу!",
+            "`/dspy найди все ссылки на python.org`\n"
+            "`/dspy заполни форму поиска на google.com`\n\n"
+            "Агент использует Browser Harness для управления браузером!",
             parse_mode='Markdown'
         )
         return
@@ -358,17 +547,23 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    if not browser_harness_ready:
+        await update.message.reply_text(
+            "❌ **Browser Harness не готов.**\n"
+            "Проверьте установку browser-harness."
+        )
+        return
+    
     user_query = " ".join(context.args)
     username = update.effective_user.username or "unknown"
     logger.info(f"👤 {username} DSPy: {user_query}")
     
-    status_msg = await update.message.reply_text("🧠 Думаю и открываю браузер...")
+    status_msg = await update.message.reply_text("🧠 Думаю и управляю браузером...")
     
     try:
-        # Выполняем задачу через DSPy агента в отдельном потоке
         loop = asyncio.get_running_loop()
         answer = await loop.run_in_executor(
-            None, run_dspy_agent, user_query
+            None, run_agent, user_query
         )
         
         if not answer or answer.strip() == "":
@@ -390,27 +585,34 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 8. ЗАПУСК
+# 11. ЗАПУСК
 # ============================================================
 
 def main():
-    # Инициализируем браузер и DSPy (синхронно)
-    logger.info("🚀 Инициализация браузера и DSPy...")
-    init_browser()
+    global browser_harness_ready
     
-    # Создаём Telegram бота
+    logger.info("🚀 Инициализация...")
+    
+    # 1. Инициализируем Browser Harness
+    if HARNESS_AVAILABLE:
+        browser_harness_ready = init_browser_harness()
+    
+    # 2. Инициализируем DSPy
+    dspy_ok = init_dspy()
+    
+    # 3. Создаём Telegram бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check))
+    app.add_handler(CommandHandler("harness", harness))
     app.add_handler(CommandHandler("version", version))
     app.add_handler(CommandHandler("dspy", dspy_command))
     
     logger.info("🚀 Бот запущен!")
     logger.info(f"🧠 DSPy статус: {'✅ Активен' if dspy_agent_instance else '❌ Отключен'}")
-    logger.info(f"🌐 CloakBrowser: {'✅ Запущен' if browser_instance else '❌ Не запущен'}")
+    logger.info(f"🔧 Harness статус: {'✅ Готов' if browser_harness_ready else '❌ Не готов'}")
     
-    # Запускаем бота (он сам создаст свой event loop)
     app.run_polling()
 
 if __name__ == "__main__":
