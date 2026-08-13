@@ -792,6 +792,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start_veil - запустить Veil с куками X.com\n"
         "/check - проверить маскировку\n"
         "/checkxcom - проверить авторизацию на X.com\n"
+        "/screen <url> - сделать скриншот страницы\n"
         "/harness - тест harness\n"
         "/ax - показать Accessibility Tree\n"
         "/dspy <задача> - задать вопрос агенту\n"
@@ -884,6 +885,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
+            f"/screen <url> - сделать скриншот\n"
             f"/ax - показать Accessibility Tree\n"
             f"/dspy <задача> - AI-агент"
         )
@@ -1006,6 +1008,61 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report += f"\n📌 Title: {result.get('title', 'N/A')[:100]}"
         
         await update.message.reply_text(report)
+        
+        close_tab()
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /screen [url] - сделать скриншот указанного URL"""
+    # Проверяем, передан ли URL
+    if not context.args:
+        await update.message.reply_text(
+            "❌ **Укажи URL!**\n\n"
+            "Пример: `/screen https://example.com`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    url = context.args[0]
+    
+    # Проверяем, что URL начинается с http:// или https://
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    await update.message.reply_text(f"🔄 Открываю `{url}` и делаю скриншот...", parse_mode='Markdown')
+    
+    if not browser_instance:
+        await update.message.reply_text("❌ Сначала запусти Veil: /start_veil")
+        return
+    
+    try:
+        # Открываем новую вкладку с указанным URL
+        new_tab(url)
+        wait_for_load()
+        
+        # Делаем скриншот
+        timestamp = int(time.time())
+        filename = f"screenshot_{timestamp}.png"
+        screenshot_path = capture_screenshot(filename)
+        
+        if screenshot_path and os.path.exists(screenshot_path):
+            with open(screenshot_path, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption=f"📸 **Скриншот:** `{url}`"
+                )
+            
+            # Получаем информацию о странице
+            info = page_info()
+            await update.message.reply_text(
+                f"✅ **Готово!**\n\n"
+                f"📌 **Title:** {info.get('title', 'N/A')[:100]}\n"
+                f"🔗 **URL:** {info.get('url', url)}"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось сохранить скриншот")
         
         close_tab()
         
@@ -1152,13 +1209,14 @@ def main():
     app.add_handler(CommandHandler("start_veil", start_veil))
     app.add_handler(CommandHandler("check", check_browser))
     app.add_handler(CommandHandler("checkxcom", check_xcom))
+    app.add_handler(CommandHandler("screen", screen_command))
     app.add_handler(CommandHandler("harness", test_harness))
     app.add_handler(CommandHandler("ax", ax_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен (по документации browser-harness)!")
-    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /harness, /ax, /dspy, /diag")
+    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /diag")
     logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
     app.run_polling()
 
