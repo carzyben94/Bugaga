@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y \
 # Устанавливаем Veil из GitHub [citation:2]
 RUN pip install git+https://github.com/acunningham-ship-it/veilbrowser.git#subdirectory=python
 
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
 
 CMD ["python", "bot.py"]
