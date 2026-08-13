@@ -70,9 +70,8 @@ if not TELEGRAM_TOKEN:
 SCREENSHOTS_DIR = '/app/screenshots'
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
-# ✅ ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-browser_instance = None  # Здесь будет храниться объект браузера
-browser_context = None   # Здесь будет храниться контекст
+# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+browser_instance = None
 harness_ready = False
 dspy_agent_instance = None
 
@@ -152,7 +151,7 @@ class BrowserTask(Signature):
     answer = OutputField(desc="Результат выполнения задачи")
 
 # ============================================================
-# 7. ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ CAMOUFOX
+# 7. ИСПРАВЛЕННАЯ ИНИЦИАЛИЗАЦИЯ CAMOUFOX (С persistent_context)
 # ============================================================
 
 async def init_browser_and_harness():
@@ -166,13 +165,13 @@ async def init_browser_and_harness():
     logger.info("🚀 Запускаем Camoufox...")
     
     try:
-        # ✅ Создаём браузер
-        # ВАЖНО: persistent_context=True - браузер не закроется
-        browser_instance = await AsyncCamoufox(
+        # 🔥 КЛЮЧЕВОЙ МОМЕНТ: persistent_context=True
+        browser = AsyncCamoufox(
             headless=True,
             fingerprint=True,
-            persistent_context=True
-        ).__aenter__()
+            persistent_context=True  # 👈 БЕЗ ЭТОГО НЕ РАБОТАЕТ!
+        )
+        browser_instance = await browser.__aenter__()
         
         logger.info("✅ Camoufox запущен и сохранён")
         await asyncio.sleep(2)
@@ -315,18 +314,17 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Открываю через Camoufox...")
     
     try:
+        global browser_instance
+        
         if not CAMOUFOX_AVAILABLE:
             await msg.edit_text("❌ Camoufox не установлен")
             return
         
-        # ✅ ИСПОЛЬЗУЕМ ГЛОБАЛЬНЫЙ browser_instance
-        global browser_instance
-        
         if browser_instance is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /status для проверки.")
+            await msg.edit_text("❌ Браузер не запущен. Используйте /status.")
             return
         
-        # Создаём страницу в существующем браузере
+        # Используем сохранённый браузер
         page = await browser_instance.new_page()
         await page.goto(url, wait_until="networkidle")
         title = await page.title()
@@ -341,17 +339,17 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📸 Делаю скриншот...")
     try:
+        global browser_instance
+        
         if not CAMOUFOX_AVAILABLE:
             await msg.edit_text("❌ Camoufox не установлен")
             return
         
-        global browser_instance
-        
         if browser_instance is None:
-            await msg.edit_text("❌ Браузер не запущен. Используйте /status для проверки.")
+            await msg.edit_text("❌ Браузер не запущен. Используйте /status.")
             return
         
-        # Используем существующий браузер
+        # Используем сохранённый браузер
         page = await browser_instance.new_page()
         await page.goto("https://example.com", wait_until="networkidle")
         screenshot_bytes = await page.screenshot()
@@ -407,7 +405,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ============================================================
-# 11. ЗАКРЫТИЕ БРАУЗЕРА ПРИ ЗАВЕРШЕНИИ
+# 11. ЗАКРЫТИЕ БРАУЗЕРА
 # ============================================================
 
 async def close_browser():
@@ -428,7 +426,7 @@ async def main():
     
     logger.info("🚀 Инициализация...")
     
-    # Запускаем Camoufox и Browser Harness
+    # Запускаем Camoufox
     await init_browser_and_harness()
     
     # Инициализируем DSPy
