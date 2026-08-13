@@ -18,7 +18,6 @@ if not TOKEN:
 # ============================================
 
 def check_veil():
-    """Проверяет установку Veil"""
     try:
         import veilbrowser
         return True, getattr(veilbrowser, '__version__', 'unknown')
@@ -26,7 +25,6 @@ def check_veil():
         return False, None
 
 def check_chrome():
-    """Проверяет Chrome"""
     paths = ["/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chrome"]
     for p in paths:
         if os.path.exists(p):
@@ -43,7 +41,7 @@ VEIL_OK, VEIL_VER = check_veil()
 CHROME_PATH = check_chrome()
 
 # ============================================
-# ОБРАБОТЧИКИ
+# БРАУЗЕР
 # ============================================
 
 browser_instance = None
@@ -51,7 +49,7 @@ browser_instance = None
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🛡️ **Veil Browser**\n\n"
-        "Доступные команды:\n"
+        "Команды:\n"
         "/start_veil - запустить Veil\n"
         "/check - проверить браузер\n"
         "/diag - диагностика"
@@ -71,14 +69,17 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from veilbrowser import Browser
         
+        # Исправленный запуск — через options
         browser_instance = await Browser.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--remote-debugging-port=9222",
-                "--disable-blink-features=AutomationControlled"
-            ]
+            options={
+                "args": [
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--remote-debugging-port=9222",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            }
         )
         
         await update.message.reply_text(
@@ -89,7 +90,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Проверяю браузер...")
@@ -103,14 +104,12 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await page.goto("https://bot.sannysoft.com")
         await asyncio.sleep(3)
         
-        # Скриншот
         screenshot = await page.screenshot()
         await update.message.reply_photo(
             photo=screenshot,
             caption="📸 Проверка браузера"
         )
         
-        # Проверка webdriver
         webdriver = await page.evaluate("navigator.webdriver")
         
         if webdriver is False:
@@ -126,7 +125,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = f"📊 **Диагностика Veil**\n\n"
@@ -135,11 +134,15 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• Браузер: {'✅' if browser_instance else '❌'}\n"
     
     if CHROME_PATH:
-        report += f"• Путь: `{CHROME_PATH}`\n"
+        report += f"• Путь Chrome: `{CHROME_PATH}`\n"
     
     if not VEIL_OK:
         report += "\n💡 Установи Veil:\n"
         report += "`pip install git+https://github.com/acunningham-ship-it/veilbrowser.git#subdirectory=python`"
+    
+    if not CHROME_PATH:
+        report += "\n\n❌ Chrome не найден! Установи в Dockerfile:\n"
+        report += "```dockerfile\nRUN apt-get install -y chromium\n```"
     
     await update.message.reply_text(report)
 
