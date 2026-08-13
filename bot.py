@@ -10,13 +10,29 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ДОБАВЛЯЕМ ЛОКАЛЬНЫЙ browser-harness
 # ============================================
 
-# Добавляем путь к локальной версии browser-harness
-LOCAL_HARNESS_PATH = os.path.join(os.path.dirname(__file__), "browser-harness", "src")
-if os.path.exists(LOCAL_HARNESS_PATH):
-    sys.path.insert(0, LOCAL_HARNESS_PATH)
-    print(f"✅ Добавлен локальный browser-harness: {LOCAL_HARNESS_PATH}")
-else:
-    print(f"⚠️ Локальный browser-harness не найден: {LOCAL_HARNESS_PATH}")
+sys.path.insert(0, "browser-harness/src")
+
+# ============================================
+# ИМПОРТЫ BROWSER HARNESS
+# ============================================
+
+from browser_harness.helpers import (
+    new_tab,
+    goto_url,
+    wait_for_load,
+    close_tab,
+    page_info,
+    current_tab,
+    capture_screenshot,
+    js,
+    list_tabs,
+    switch_tab,
+    fill_input,
+    click_at_xy,
+    type_text,
+    press_key,
+    scroll,
+)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -37,13 +53,6 @@ def check_veil():
     except ImportError:
         return False, None
 
-def check_harness():
-    try:
-        import browser_harness
-        return True, getattr(browser_harness, '__version__', 'unknown')
-    except ImportError:
-        return False, None
-
 def check_chrome():
     paths = ["/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/chrome"]
     for p in paths:
@@ -58,7 +67,6 @@ def check_chrome():
     return None
 
 VEIL_OK, VEIL_VER = check_veil()
-HARNESS_OK, HARNESS_VER = check_harness()
 CHROME_PATH = check_chrome()
 
 # ============================================
@@ -67,14 +75,16 @@ CHROME_PATH = check_chrome()
 
 browser_instance = None
 chrome_process = None
+cdp_url = "http://127.0.0.1:9222"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🛡️ **Veil + browser-harness**\n\n"
         "Команды:\n"
         "/start_veil - запустить Veil\n"
-        "/check - проверить через harness\n"
-        "/diag - диагностика"
+        "/check - проверить браузер\n"
+        "/diag - диагностика\n"
+        "/harness - тест harness функций"
     )
 
 async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,7 +105,6 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text("🔄 Запускаю Chrome с маскировкой...")
         
-        # Запускаем Chrome
         chrome_process = subprocess.Popen(
             [
                 CHROME_PATH,
@@ -117,91 +126,126 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await asyncio.sleep(2)
         
-        # Подключаем Veil
         from veilbrowser import Browser
-        browser_instance = await Browser.connect("http://127.0.0.1:9222")
+        browser_instance = await Browser.connect(cdp_url)
         
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
-            f"🔌 CDP: http://127.0.0.1:9222\n"
+            f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n\n"
-            f"Используй /check для проверки через harness"
+            f"Используй /check или /harness для проверки"
         )
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Проверяю через browser-harness...")
+    await update.message.reply_text("🔄 Проверяю браузер через harness...")
     
     if not browser_instance:
         await update.message.reply_text("❌ Сначала запусти Veil: /start_veil")
         return
     
     try:
-        # Используем browser-harness для проверки
-        from browser_harness import BrowserSession
+        await new_tab()
+        await goto_url("https://bot.sannysoft.com")
+        await wait_for_load()
         
-        # Подключаемся через CDP
-        async with BrowserSession(cdp_url="http://127.0.0.1:9222") as session:
-            page = await session.new_page()
-            await page.goto("https://bot.sannysoft.com")
-            await asyncio.sleep(3)
-            
-            # Скриншот
-            screenshot = await page.screenshot()
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="📸 Проверка через harness"
-            )
-            
-            # Проверка webdriver
-            result = await page.evaluate("""
-                () => ({
-                    webdriver: navigator.webdriver,
-                    userAgent: navigator.userAgent,
-                    platform: navigator.platform,
-                    languages: navigator.languages
-                })
-            """)
-            
-            if result['webdriver'] is False:
-                verdict = "✅ **Браузер НЕОТЛИЧИМ!** 🎉"
-            else:
-                verdict = "⚠️ **Браузер как бот**"
-            
-            await update.message.reply_text(
-                f"🔍 **Результат через harness**\n\n"
-                f"{verdict}\n"
-                f"• webdriver: `{result['webdriver']}`\n"
-                f"• platform: `{result['platform']}`\n"
-                f"• languages: `{', '.join(result['languages'][:2])}`\n\n"
-                f"💡 Если `false` — всё работает!"
-            )
-        
-    except ImportError as e:
-        await update.message.reply_text(
-            f"❌ browser-harness не найден!\n"
-            f"Проверь путь: {LOCAL_HARNESS_PATH}\n\n"
-            f"Ошибка: {str(e)[:100]}"
+        screenshot = await capture_screenshot()
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="📸 Проверка через harness"
         )
+        
+        result = await js("""
+            () => ({
+                webdriver: navigator.webdriver,
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                languages: navigator.languages
+            })
+        """)
+        
+        if result.get('webdriver') is False:
+            verdict = "✅ **Браузер НЕОТЛИЧИМ!** 🎉"
+        else:
+            verdict = "⚠️ **Браузер как бот**"
+        
+        await update.message.reply_text(
+            f"🔍 **Результат**\n\n"
+            f"{verdict}\n"
+            f"• webdriver: `{result.get('webdriver')}`\n"
+            f"• platform: `{result.get('platform')}`\n"
+            f"• languages: `{', '.join(result.get('languages', [])[:2])}`\n\n"
+            f"💡 Если `false` — всё работает!"
+        )
+        
+        await close_tab()
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧪 Тестирую browser-harness...")
+    
+    if not browser_instance:
+        await update.message.reply_text("❌ Сначала запусти Veil: /start_veil")
+        return
+    
+    try:
+        report = "🧪 **Тест browser-harness**\n\n"
+        
+        await new_tab()
+        report += "✅ new_tab()\n"
+        
+        await goto_url("https://example.com")
+        report += "✅ goto_url()\n"
+        
+        await wait_for_load()
+        report += "✅ wait_for_load()\n"
+        
+        info = await page_info()
+        report += f"✅ page_info(): {info.get('title', '')[:30]}\n"
+        
+        tab = await current_tab()
+        report += f"✅ current_tab(): {tab}\n"
+        
+        tabs = await list_tabs()
+        report += f"✅ list_tabs(): {len(tabs)} вкладок\n"
+        
+        result = await js("navigator.userAgent")
+        report += f"✅ js(): {str(result)[:40]}...\n"
+        
+        await scroll(0, 100)
+        report += "✅ scroll()\n"
+        
+        screenshot = await capture_screenshot()
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="📸 Скриншот через harness"
+        )
+        
+        await close_tab()
+        report += "✅ close_tab()\n"
+        
+        await update.message.reply_text(report + "\n🎉 Все функции работают!")
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = f"📊 **Диагностика**\n\n"
     report += f"• Veil: {'✅' if VEIL_OK else '❌'} {VEIL_VER or ''}\n"
-    report += f"• Harness: {'✅' if HARNESS_OK else '❌'} {HARNESS_VER or ''}\n"
     report += f"• Chrome: {'✅' if CHROME_PATH else '❌'}\n"
-    report += f"• Локальный harness: {'✅' if os.path.exists(LOCAL_HARNESS_PATH) else '❌'}\n"
+    report += f"• Harness path: {'✅' if os.path.exists('browser-harness/src') else '❌'}\n"
     report += f"• Браузер: {'✅' if browser_instance else '❌'}\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
     if chrome_process:
         report += f"• PID Chrome: `{chrome_process.pid}`\n"
-    if os.path.exists(LOCAL_HARNESS_PATH):
-        report += f"• Путь harness: `{LOCAL_HARNESS_PATH}`\n"
+    if os.path.exists('browser-harness/src'):
+        report += f"• Harness: `browser-harness/src`\n"
     
     await update.message.reply_text(report)
 
@@ -214,9 +258,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("start_veil", start_veil))
     app.add_handler(CommandHandler("check", check_browser))
+    app.add_handler(CommandHandler("harness", test_harness))
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен!")
+    logger.info("📋 Команды: /start_veil, /check, /harness, /diag")
     app.run_polling()
 
 if __name__ == "__main__":
