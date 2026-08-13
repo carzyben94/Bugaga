@@ -13,6 +13,9 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
+# Устанавливаем флаги для Chrome через переменную окружения (должно быть до импорта Veil)
+os.environ["VEIL_CHROME_FLAGS"] = "--no-sandbox --disable-dev-shm-usage --disable-gpu"
+
 # ============================================
 # ПРОВЕРКА VEIL
 # ============================================
@@ -69,8 +72,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         from veilbrowser import Browser, Fingerprint
         
-        # Правильный запуск Veil 1.3.1 — без дополнительных аргументов
-        # Veil сам добавляет нужные флаги (--no-sandbox и др.)
+        # Veil сам подхватит флаги из переменной окружения VEIL_CHROME_FLAGS
         browser_instance = await Browser.launch(
             headless=True,
             fingerprint=Fingerprint.preset("linux-chrome")
