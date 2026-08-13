@@ -3,6 +3,7 @@ FROM python:3.12-slim
 # Устанавливаем зависимости для работы Chrome в контейнере [citation:1]
 RUN apt-get update && apt-get install -y \
     curl \
+    chromium \
     xvfb \
     git \
     libglib2.0-0 \
