@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Устанавливаем зависимости и banana-browser
+# Устанавливаем зависимости
 RUN apt-get update && apt-get install -y \
     curl \
     xvfb \
@@ -19,34 +19,24 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Node.js (нужен для banana-browser)
+# Устанавливаем Node.js
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем banana-browser глобально
+# КЛЮЧЕВОЙ МОМЕНТ: устанавливаем banana-browser и принудительно скачиваем Chrome
 RUN npm install -g banana-browser && \
-    banana-browser install --with-deps
+    banana-browser install --with-deps --force
+
+# Проверяем, что адаптер скачался
+RUN find /usr/local/lib/node_modules -name "patchright*" -type d 2>/dev/null || echo "⚠️ patchright не найден"
 
 ENV PYTHONUNBUFFERED=1
-ENV BH_DOMAIN_SKILLS=1
-ENV BH_AGENT_WORKSPACE=/app/browser-harness/agent-workspace
 ENV AGENT_BROWSER_ENGINE=patchright
-
-# Динамически находим реальный путь к Chrome
-RUN CHROME_PATH=$(find /root/.cache/banana-browser -name "chrome" -type f 2>/dev/null | head -1) && \
-    if [ -n "$CHROME_PATH" ]; then \
-        echo "✅ Found Chrome at: $CHROME_PATH" && \
-        echo "CHROMIUM_PATH=$CHROME_PATH" >> /etc/environment; \
-    else \
-        echo "❌ Chrome not found!"; \
-    fi
+ENV CHROMIUM_PATH=/root/.agent-browser/browsers/chrome-152.0.7977.42/chrome
 
 WORKDIR /app
 
-RUN mkdir -p /app/logs /app/screenshots /app/browser-harness/agent-workspace
-
-# Устанавливаем browser-harness
 RUN pip install --no-cache-dir browser-harness
 
 COPY requirements.txt .
@@ -54,6 +44,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["xvfb-run", "--auto-servernum"]
+CMD ["bash", "-c", "xvfb-run"]
 
 CMD ["python", "bot.py"]
