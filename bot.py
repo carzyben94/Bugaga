@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import subprocess
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -12,9 +13,6 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
-
-# Устанавливаем флаги для Chrome через переменную окружения (должно быть до импорта Veil)
-os.environ["VEIL_CHROME_FLAGS"] = "--no-sandbox --disable-dev-shm-usage --disable-gpu"
 
 # ============================================
 # ПРОВЕРКА VEIL
@@ -48,6 +46,7 @@ CHROME_PATH = check_chrome()
 # ============================================
 
 browser_instance = None
+chrome_process = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -59,7 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global browser_instance
+    global browser_instance, chrome_process
     await update.message.reply_text("🔄 Запускаю Veil...")
     
     if not VEIL_OK:
@@ -70,34 +69,46 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
+        # 1. Сначала запускаем Chrome вручную с --no-sandbox
+        if not CHROME_PATH:
+            await update.message.reply_text("❌ Chrome не найден в системе!")
+            return
+        
+        await update.message.reply_text("🔄 Запускаю Chrome вручную...")
+        
+        # Запускаем Chrome с нужными флагами
+        chrome_process = subprocess.Popen(
+            [
+                CHROME_PATH,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--remote-debugging-port=9222",
+                "--disable-blink-features=AutomationControlled",
+                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        
+        # Ждём, пока Chrome запустится
+        await asyncio.sleep(2)
+        
+        # 2. Подключаем Veil к запущенному Chrome через CDP
         from veilbrowser import Browser, Fingerprint
         
-        # Veil сам подхватит флаги из переменной окружения VEIL_CHROME_FLAGS
-        browser_instance = await Browser.launch(
-            headless=True,
-            fingerprint=Fingerprint.preset("linux-chrome")
-        )
+        browser_instance = await Browser.connect("http://127.0.0.1:9222")
         
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
             f"🔌 CDP: http://127.0.0.1:9222\n"
-            f"🛡️ Режим: антидетект\n\n"
+            f"🛡️ Режим: антидетект\n"
+            f"🆔 PID Chrome: {chrome_process.pid}\n\n"
             f"Используй /check для проверки"
         )
         
-    except TypeError as e:
-        # Если fingerprint не принимается, пробуем без него
-        try:
-            from veilbrowser import Browser
-            browser_instance = await Browser.launch(headless=True)
-            await update.message.reply_text(
-                f"✅ **Veil запущен!** (без fingerprint)\n\n"
-                f"🔌 CDP: http://127.0.0.1:9222\n\n"
-                f"Используй /check для проверки"
-            )
-        except Exception as e2:
-            await update.message.reply_text(f"❌ Ошибка: {str(e2)[:300]}")
-            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
@@ -144,6 +155,9 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
+    
+    if chrome_process:
+        report += f"• PID Chrome: `{chrome_process.pid}`\n"
     
     if not VEIL_OK:
         report += "\n💡 Установи Veil:\n"
