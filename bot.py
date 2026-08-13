@@ -49,12 +49,14 @@ except ImportError:
 # ============================================
 
 class ZendriverMCPClient:
-    """MCP-клиент для zendriver-mcp (исправленный)"""
+    """MCP-клиент для zendriver-mcp"""
     
     def __init__(self):
         self.session = None
         self._read_stream = None
         self._write_stream = None
+        self._stdio_context = None
+        self._session_context = None
         self.is_ready = False
         self.tools = []
     
@@ -67,43 +69,53 @@ class ZendriverMCPClient:
             return False
         
         try:
-            # ✅ Правильное использование async with
+            # ✅ ПРАВИЛЬНО: сохраняем контексты, чтобы они не закрылись
             server_params = StdioServerParameters(
                 command="zendriver-mcp",
                 args=["--headless"]
             )
             
-            # ✅ Правильно: async with для контекстного менеджера
-            async with stdio_client(server_params) as (read_stream, write_stream):
-                self._read_stream = read_stream
-                self._write_stream = write_stream
-                
-                async with ClientSession(read_stream, write_stream) as session:
-                    self.session = session
-                    await self.session.initialize()
-                    
-                    # Получаем список инструментов
-                    response = await self.session.list_tools()
-                    self.tools = response.tools
-                    self.is_ready = True
-                    
-                    logger.info(f"✅ MCP клиент запущен, {len(self.tools)} инструментов")
-                    return True
-                
+            # Входим в контекст stdio_client
+            self._stdio_context = stdio_client(server_params)
+            self._read_stream, self._write_stream = await self._stdio_context.__aenter__()
+            
+            # Входим в контекст ClientSession
+            self._session_context = ClientSession(self._read_stream, self._write_stream)
+            self.session = await self._session_context.__aenter__()
+            
+            # Инициализируем сессию
+            await self.session.initialize()
+            
+            # Получаем список инструментов
+            response = await self.session.list_tools()
+            self.tools = response.tools
+            self.is_ready = True
+            
+            logger.info(f"✅ MCP клиент запущен, {len(self.tools)} инструментов")
+            return True
+            
         except Exception as e:
             logger.error(f"❌ Ошибка запуска MCP: {e}")
             return False
     
     async def stop(self):
         """Остановка MCP-клиента"""
-        if self.session:
-            await self.session.__aexit__(None, None, None)
+        try:
+            if self._session_context:
+                await self._session_context.__aexit__(None, None, None)
+                self._session_context = None
+            if self._stdio_context:
+                await self._stdio_context.__aexit__(None, None, None)
+                self._stdio_context = None
+            self.session = None
             self.is_ready = False
             logger.info("✅ MCP клиент остановлен")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка остановки: {e}")
     
     async def call_tool(self, tool_name: str, arguments: dict = None) -> dict:
         """Вызвать инструмент MCP"""
-        if not self.is_ready:
+        if not self.is_ready or not self.session:
             return {"error": "MCP-клиент не готов"}
         
         try:
@@ -384,7 +396,6 @@ def run_agent(agent, question: str) -> str:
 # TELEGRAM КОМАНДЫ
 # ============================================
 
-# Глобальные переменные
 mcp_client = None
 dspy_agent = None
 
