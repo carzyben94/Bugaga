@@ -281,13 +281,14 @@ def get_text_from_ax_tree():
     return "\n".join(result) if result else "Нет текста в AX Tree"
 
 # ============================================
-# УНИВЕРСАЛЬНАЯ ОЧИСТКА ВКЛАДОК
+# УНИВЕРСАЛЬНАЯ ОЧИСТКА ВКЛАДОК (БЕЗ СООБЩЕНИЙ В TELEGRAM)
 # ============================================
 
 def cleanup_tabs(keep_one=True):
     """
     Закрывает все вкладки, кроме одной (по умолчанию).
     Если keep_one=True - оставляет одну чистую вкладку.
+    Без сообщений в Telegram, только логи.
     """
     try:
         tabs = list_tabs()
@@ -313,7 +314,6 @@ def cleanup_tabs(keep_one=True):
             # Переключаемся на первую вкладку
             try:
                 switch_tab(tabs[0])
-                # Открываем about:blank для чистоты
                 goto_url("about:blank")
                 wait_for_load()
                 logger.info("✅ Оставлена одна чистая вкладка")
@@ -330,7 +330,6 @@ def cleanup_tabs(keep_one=True):
                 except Exception as e:
                     logger.warning(f"⚠️ Не удалось закрыть {tab}: {e}")
             
-            # Создаем новую чистую вкладку
             new_tab("about:blank")
             wait_for_load()
             logger.info("✅ Все вкладки закрыты, создана новая")
@@ -873,7 +872,7 @@ async def ax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🌳 **Accessibility Tree**\n\n{text}"
         )
         
-        # Очистка
+        # Очистка без сообщения в Telegram
         cleanup_tabs(keep_one=True)
         
     except Exception as e:
@@ -1232,15 +1231,14 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await status_msg.edit_text(f"✅ **Результат:**\n\n{answer}")
         
-        # ✅ ОЧИСТКА ВСЕХ ВКЛАДОК ПОСЛЕ ЗАВЕРШЕНИЯ АГЕНТА
-        await update.message.reply_text("🧹 Закрываю все вкладки...")
+        # ✅ ОЧИСТКА БЕЗ СООБЩЕНИЯ В TELEGRAM (только в логах)
         cleanup_tabs(keep_one=True)
         
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
         
-        # ✅ ДАЖЕ ПРИ ОШИБКЕ - ОЧИСТКА
+        # ✅ ДАЖЕ ПРИ ОШИБКЕ - ОЧИСТКА БЕЗ СООБЩЕНИЯ
         cleanup_tabs(keep_one=True)
 
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
