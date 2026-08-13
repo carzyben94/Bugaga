@@ -1,6 +1,6 @@
 import os
 import sys
-import asyncio 
+import asyncio
 import logging
 import subprocess
 import time
@@ -394,7 +394,7 @@ def set_cookies_via_js():
         return False
 
 # ============================================
-# DSPy ИНТЕГРАЦИЯ
+# DSPy ИНТЕГРАЦИЯ С MLflow TRACING
 # ============================================
 
 try:
@@ -402,11 +402,16 @@ try:
     import httpx
     import dspy
     from dspy import Signature, InputField, OutputField, Module, settings, ReActV2, Tool
+    import mlflow
+    from mlflow import dspy as mlflow_dspy
     warnings.filterwarnings("ignore")
     DSPY_AVAILABLE = True
-except ImportError:
+    MLFLOW_AVAILABLE = True
+except ImportError as e:
     DSPY_AVAILABLE = False
-    logger.warning("⚠️ DSPy не установлен. Установи: pip install dspy httpx")
+    MLFLOW_AVAILABLE = False
+    logger.warning(f"⚠️ Ошибка импорта: {e}")
+    logger.warning("⚠️ Установи: pip install dspy httpx mlflow")
 
 class AgnesLM(dspy.LM):
     """Адаптер для Agnes AI совместимый с DSPy"""
@@ -546,8 +551,8 @@ def create_browser_agent(tools, max_iters=10):
         return None
 
 
-def init_dspy(api_key=None, tools=None, max_iters=10):
-    """Инициализировать DSPy с Agnes AI"""
+def init_dspy(api_key=None, tools=None, max_iters=10, enable_tracing=True):
+    """Инициализировать DSPy с Agnes AI и MLflow Tracing"""
     api_key = api_key or os.environ.get("AGNES_API_KEY")
     
     if not api_key:
@@ -563,6 +568,19 @@ def init_dspy(api_key=None, tools=None, max_iters=10):
         
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
+        
+        # ВКЛЮЧАЕМ MLflow TRACING
+        if enable_tracing and MLFLOW_AVAILABLE:
+            try:
+                # Настраиваем MLflow для логирования в файл (на Railway нет UI, но логи сохраняются)
+                mlflow.set_tracking_uri("file:./mlruns")
+                mlflow.set_experiment("dspy_agent")
+                
+                # Автологирование DSPy
+                mlflow_dspy.autolog()
+                logger.info("✅ MLflow DSPy autolog включен")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось включить MLflow autolog: {e}")
         
         if tools:
             agent = create_browser_agent(tools, max_iters)
@@ -826,7 +844,8 @@ def init_dspy_agent():
         dspy_lm, dspy_agent = init_dspy(
             api_key=AGNES_API_KEY,
             tools=tools,
-            max_iters=10
+            max_iters=10,
+            enable_tracing=True
         )
         
         if dspy_agent:
@@ -853,6 +872,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/harness - тест harness\n"
         "/ax - показать Accessibility Tree\n"
         "/dspy <задача> - задать вопрос агенту\n"
+        "/dspy_debug - показать логи DSPy\n"
         "/diag - диагностика"
     )
 
@@ -943,12 +963,14 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
             f"🍪 Куки X.com: {'✅' if success else '❌'}\n"
-            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
+            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n"
+            f"📊 MLflow: {'✅ Включен' if MLFLOW_AVAILABLE else '❌'}\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
             f"/screen <url> - сделать скриншот\n"
             f"/ax - показать Accessibility Tree\n"
-            f"/dspy <задача> - AI-агент"
+            f"/dspy <задача> - AI-агент\n"
+            f"/dspy_debug - логи DSPy"
         )
         
     except Exception as e:
@@ -1191,7 +1213,8 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• tool_set_x_cookies - установить куки X.com\n\n"
             "Примеры:\n"
             "/dspy открой x.com и покажи заголовок\n"
-            "/dspy установи куки X.com и открой страницу"
+            "/dspy установи куки X.com и открой страницу\n\n"
+            "📊 Логи сохраняются в MLflow (папка ./mlruns)"
         )
         return
     
@@ -1200,7 +1223,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not DSPY_AVAILABLE:
-        await update.message.reply_text("❌ DSPy не установлен!\nУстанови: pip install dspy httpx")
+        await update.message.reply_text("❌ DSPy не установлен!\nУстанови: pip install dspy httpx mlflow")
         return
     
     if not dspy_agent:
@@ -1231,15 +1254,91 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await status_msg.edit_text(f"✅ **Результат:**\n\n{answer}")
         
-        # ✅ ОЧИСТКА БЕЗ СООБЩЕНИЯ В TELEGRAM (только в логах)
+        # ОЧИСТКА БЕЗ СООБЩЕНИЯ В TELEGRAM (только в логах)
         cleanup_tabs(keep_one=True)
         
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
         
-        # ✅ ДАЖЕ ПРИ ОШИБКЕ - ОЧИСТКА БЕЗ СООБЩЕНИЯ
+        # ДАЖЕ ПРИ ОШИБКЕ - ОЧИСТКА БЕЗ СООБЩЕНИЯ
         cleanup_tabs(keep_one=True)
+
+async def dspy_debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /dspy_debug - показать последние логи DSPy"""
+    await update.message.reply_text("🔍 Получаю последние логи DSPy...")
+    
+    if not DSPY_AVAILABLE:
+        await update.message.reply_text("❌ DSPy не доступен")
+        return
+    
+    try:
+        # 1. Проверяем, есть ли MLflow логи
+        if MLFLOW_AVAILABLE:
+            try:
+                from mlflow.tracking import MlflowClient
+                
+                client = MlflowClient()
+                experiment = client.get_experiment_by_name("dspy_agent")
+                
+                if experiment:
+                    runs = client.search_runs(
+                        experiment_ids=[experiment.experiment_id],
+                        order_by=["start_time DESC"],
+                        max_results=5
+                    )
+                    
+                    if runs:
+                        report = "📊 **Последние 5 запусков DSPy (MLflow)**\n\n"
+                        for i, run in enumerate(runs):
+                            report += f"**{i+1}. Запуск {run.info.run_id[:8]}**\n"
+                            report += f"   Время: {run.info.start_time}\n"
+                            report += f"   Статус: {run.info.status}\n"
+                            # Параметры
+                            params = run.data.params
+                            if params:
+                                report += f"   Параметры: {list(params.keys())[:3]}\n"
+                            # Метрики
+                            metrics = run.data.metrics
+                            if metrics:
+                                report += f"   Метрики: {list(metrics.keys())[:3]}\n"
+                            report += "\n"
+                        
+                        if len(report) > 4000:
+                            report = report[:4000] + "\n\n... (обрезано)"
+                        await update.message.reply_text(report)
+                    else:
+                        await update.message.reply_text("ℹ️ Нет запусков в MLflow")
+                else:
+                    await update.message.reply_text("ℹ️ Эксперимент 'dspy_agent' не найден")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка MLflow: {e}")
+                await update.message.reply_text(f"⚠️ Ошибка MLflow: {str(e)[:100]}")
+        
+        # 2. dspy.inspect_history() для последних вызовов
+        try:
+            import io
+            from contextlib import redirect_stdout
+            
+            f = io.StringIO()
+            with redirect_stdout(f):
+                dspy.inspect_history(n=2)  # Последние 2 вызова
+            
+            history_output = f.getvalue()
+            if history_output:
+                if len(history_output) > 3500:
+                    history_output = history_output[:3500] + "\n\n... (обрезано)"
+                await update.message.reply_text(
+                    f"📝 **Последние вызовы DSPy:**\n\n```\n{history_output}\n```"
+                )
+            else:
+                await update.message.reply_text("ℹ️ Нет истории вызовов DSPy")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка inspect_history: {e}")
+            await update.message.reply_text(f"⚠️ Ошибка inspect_history: {str(e)[:100]}")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = f"📊 **Диагностика**\n\n"
@@ -1248,6 +1347,7 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• Harness path: {'✅' if os.path.exists('browser-harness/src') else '❌'}\n"
     report += f"• Браузер: {'✅' if browser_instance else '❌'}\n"
     report += f"• DSPy: {'✅' if dspy_agent else '❌'}\n"
+    report += f"• MLflow: {'✅' if MLFLOW_AVAILABLE else '❌'}\n"
     report += f"• BU_CDP_URL: {os.environ.get('BU_CDP_URL', '❌')}\n"
     report += f"• AGNES_API_KEY: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
     report += f"• Куки X.com: {'✅' if COOKIES else '❌'} ({len(COOKIES)} шт.)\n"
@@ -1283,11 +1383,14 @@ def main():
     app.add_handler(CommandHandler("harness", test_harness))
     app.add_handler(CommandHandler("ax", ax_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
+    app.add_handler(CommandHandler("dspy_debug", dspy_debug_command))
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен (по документации browser-harness)!")
-    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /diag")
+    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /dspy_debug, /diag")
     logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
+    if MLFLOW_AVAILABLE:
+        logger.info("📊 MLflow Tracing включен (логи в ./mlruns)")
     app.run_polling()
 
 if __name__ == "__main__":
