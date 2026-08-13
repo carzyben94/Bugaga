@@ -83,8 +83,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/start_veil - запустить Veil\n"
         "/check - проверить браузер\n"
-        "/diag - диагностика\n"
-        "/harness - тест harness функций"
+        "/harness - тест harness функций\n"
+        "/diag - диагностика"
     )
 
 async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,6 +186,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тест browser-harness через BrowserSession"""
     await update.message.reply_text("🧪 Тестирую browser-harness...")
     
     if not browser_instance:
@@ -193,43 +194,44 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        report = "🧪 **Тест browser-harness**\n\n"
+        from browser_harness import BrowserSession
         
-        await new_tab()
-        report += "✅ new_tab()\n"
-        
-        await goto_url("https://example.com")
-        report += "✅ goto_url()\n"
-        
-        await wait_for_load()
-        report += "✅ wait_for_load()\n"
-        
-        info = await page_info()
-        report += f"✅ page_info(): {info.get('title', '')[:30]}\n"
-        
-        tab = await current_tab()
-        report += f"✅ current_tab(): {tab}\n"
-        
-        tabs = await list_tabs()
-        report += f"✅ list_tabs(): {len(tabs)} вкладок\n"
-        
-        result = await js("navigator.userAgent")
-        report += f"✅ js(): {str(result)[:40]}...\n"
-        
-        await scroll(0, 100)
-        report += "✅ scroll()\n"
-        
-        screenshot = await capture_screenshot()
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="📸 Скриншот через harness"
-        )
-        
-        await close_tab()
-        report += "✅ close_tab()\n"
-        
-        await update.message.reply_text(report + "\n🎉 Все функции работают!")
-        
+        async with BrowserSession(cdp_url=cdp_url) as session:
+            report = "🧪 **Тест BrowserSession**\n\n"
+            
+            # 1. new_page
+            page = await session.new_page()
+            report += "✅ new_page()\n"
+            
+            # 2. goto
+            await page.goto("https://example.com")
+            report += "✅ goto()\n"
+            
+            await asyncio.sleep(1)
+            
+            # 3. screenshot
+            screenshot = await page.screenshot()
+            await update.message.reply_photo(
+                photo=screenshot,
+                caption="📸 Скриншот через BrowserSession"
+            )
+            
+            # 4. evaluate
+            webdriver = await page.evaluate("navigator.webdriver")
+            report += f"✅ navigator.webdriver = {webdriver}\n"
+            
+            # 5. title
+            title = await page.evaluate("document.title")
+            report += f"✅ Title: {title[:50]}\n"
+            
+            # 6. close
+            await page.close()
+            report += "✅ close()\n"
+            
+            await update.message.reply_text(report + "\n🎉 Все работает!")
+            
+    except ImportError as e:
+        await update.message.reply_text(f"❌ browser-harness не импортируется: {str(e)[:100]}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
@@ -246,6 +248,17 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report += f"• PID Chrome: `{chrome_process.pid}`\n"
     if os.path.exists('browser-harness/src'):
         report += f"• Harness: `browser-harness/src`\n"
+    
+    # Проверка CDP
+    try:
+        import requests
+        response = requests.get("http://127.0.0.1:9222/json/version", timeout=2)
+        if response.status_code == 200:
+            report += f"• CDP: ✅ Доступен\n"
+        else:
+            report += f"• CDP: ⚠️ Код {response.status_code}\n"
+    except:
+        report += "• CDP: ❌ Не доступен\n"
     
     await update.message.reply_text(report)
 
