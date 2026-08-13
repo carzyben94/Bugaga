@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 def find_chrome():
-    """Ищет Chrome, установленный banana-browser"""
+    """Ищет Chrome, установленный banana-browser/agent-browser"""
     logger.info("🔍 Поиск браузера...")
     
     # 1. Проверяем переменную окружения
@@ -40,7 +40,34 @@ def find_chrome():
             logger.info(f"✅ Найден браузер: {path}")
             return path
     
-    # 3. Ищем через banana-browser (все возможные пути)
+    # 3. 🔥 Ищем через agent-browser (ОСНОВНОЙ ПУТЬ)
+    agent_dirs = [
+        "/root/.agent-browser/browsers",
+        "/root/.agent-browser",
+        "/home/.agent-browser/browsers"
+    ]
+    
+    for agent_dir in agent_dirs:
+        if os.path.exists(agent_dir):
+            logger.info(f"📁 Проверяем: {agent_dir}")
+            try:
+                # Рекурсивно ищем chrome
+                for root, dirs, files in os.walk(agent_dir):
+                    if "chrome" in files:
+                        chrome_path = os.path.join(root, "chrome")
+                        if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
+                            logger.info(f"✅ Найден agent-browser Chrome: {chrome_path}")
+                            return chrome_path
+                    # Проверяем подпапки chrome-linux64
+                    if "chrome-linux64" in dirs:
+                        chrome_path = os.path.join(root, "chrome-linux64", "chrome")
+                        if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
+                            logger.info(f"✅ Найден agent-browser Chrome: {chrome_path}")
+                            return chrome_path
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка поиска в {agent_dir}: {e}")
+    
+    # 4. Ищем через banana-browser (старые пути)
     cache_dirs = [
         "/root/.cache/banana-browser/chrome",
         "/root/.cache/banana-browser/chromium",
@@ -52,14 +79,12 @@ def find_chrome():
         if os.path.exists(cache_dir):
             logger.info(f"📁 Проверяем: {cache_dir}")
             try:
-                # Рекурсивно ищем chrome
                 for root, dirs, files in os.walk(cache_dir):
                     if "chrome" in files:
                         chrome_path = os.path.join(root, "chrome")
                         if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
                             logger.info(f"✅ Найден banana-browser Chrome: {chrome_path}")
                             return chrome_path
-                    # Проверяем подпапки chrome-linux64
                     if "chrome-linux64" in dirs:
                         chrome_path = os.path.join(root, "chrome-linux64", "chrome")
                         if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
@@ -68,9 +93,25 @@ def find_chrome():
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка поиска в {cache_dir}: {e}")
     
-    # 4. Ищем через системную команду find
+    # 5. Ищем через системную команду find (в обоих местах)
     try:
-        logger.info("🔍 Ищем через find...")
+        logger.info("🔍 Ищем через find в /root/.agent-browser...")
+        result = subprocess.run(
+            ['find', '/root/.agent-browser', '-name', 'chrome', '-type', 'f'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        paths = result.stdout.strip().split('\n')
+        for path in paths:
+            if path and os.path.exists(path) and os.access(path, os.X_OK):
+                logger.info(f"✅ Найден через find: {path}")
+                return path
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка find в .agent-browser: {e}")
+    
+    try:
+        logger.info("🔍 Ищем через find в /root/.cache/banana-browser...")
         result = subprocess.run(
             ['find', '/root/.cache/banana-browser', '-name', 'chrome', '-type', 'f'],
             capture_output=True,
@@ -83,9 +124,9 @@ def find_chrome():
                 logger.info(f"✅ Найден через find: {path}")
                 return path
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка find: {e}")
+        logger.warning(f"⚠️ Ошибка find в .cache/banana-browser: {e}")
     
-    # 5. Проверяем через which
+    # 6. Проверяем через which
     try:
         result = subprocess.run(
             ['which', 'chromium', 'chromium-browser', 'google-chrome'],
@@ -139,7 +180,29 @@ async def find_browser_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     report = "🔎 **Поиск браузера**\n\n"
     
-    # 1. Ищем через find
+    # 1. Ищем через find в .agent-browser
+    try:
+        result = subprocess.run(
+            ['find', '/root/.agent-browser', '-name', 'chrome', '-type', 'f'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        paths = result.stdout.strip().split('\n')
+        if paths and paths[0]:
+            report += "**Найденные пути в .agent-browser:**\n"
+            for i, path in enumerate(paths[:5], 1):
+                report += f"{i}. `{path}`\n"
+                if os.path.exists(path):
+                    report += f"   ✅ Существует\n"
+                    if os.access(path, os.X_OK):
+                        report += f"   ✅ Исполняемый\n"
+        else:
+            report += "❌ Chrome не найден в /root/.agent-browser/\n"
+    except Exception as e:
+        report += f"⚠️ Ошибка поиска: {e}\n"
+    
+    # 2. Ищем через find в .cache/banana-browser
     try:
         result = subprocess.run(
             ['find', '/root/.cache/banana-browser', '-name', 'chrome', '-type', 'f'],
@@ -149,7 +212,7 @@ async def find_browser_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         paths = result.stdout.strip().split('\n')
         if paths and paths[0]:
-            report += "**Найденные пути:**\n"
+            report += "\n**Найденные пути в .cache/banana-browser:**\n"
             for i, path in enumerate(paths[:5], 1):
                 report += f"{i}. `{path}`\n"
                 if os.path.exists(path):
@@ -157,13 +220,18 @@ async def find_browser_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if os.access(path, os.X_OK):
                         report += f"   ✅ Исполняемый\n"
         else:
-            report += "❌ Chrome не найден в /root/.cache/banana-browser/\n"
+            report += "\n❌ Chrome не найден в /root/.cache/banana-browser/\n"
     except Exception as e:
         report += f"⚠️ Ошибка поиска: {e}\n"
     
-    # 2. Проверяем все возможные папки
+    # 3. Проверяем все возможные папки
     report += "\n**Проверка папок:**\n"
-    for dir_path in ['/root/.cache/banana-browser/chrome', '/root/.cache/banana-browser']:
+    for dir_path in [
+        '/root/.agent-browser/browsers',
+        '/root/.agent-browser',
+        '/root/.cache/banana-browser/chrome',
+        '/root/.cache/banana-browser'
+    ]:
         if os.path.exists(dir_path):
             report += f"✅ Существует: {dir_path}\n"
             try:
@@ -174,7 +242,7 @@ async def find_browser_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             report += f"❌ Не существует: {dir_path}\n"
     
-    # 3. Текущий CHROMIUM_PATH
+    # 4. Текущий CHROMIUM_PATH
     report += f"\n**Текущий CHROMIUM_PATH:**\n"
     current = os.environ.get('CHROMIUM_PATH', 'не установлен')
     report += f"`{current}`\n"
