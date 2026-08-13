@@ -24,7 +24,7 @@ if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
 # ============================================
-# ИМПОРТЫ MCP И ZENDRIVER
+# ИМПОРТЫ
 # ============================================
 
 try:
@@ -45,15 +45,14 @@ except ImportError:
     logger.error("❌ MCP не установлен!")
 
 # ============================================
-# MCP КЛИЕНТ ДЛЯ ZENDRIVER
+# MCP КЛИЕНТ ДЛЯ ZENDRIVER (ИСПРАВЛЕННЫЙ)
 # ============================================
 
 class ZendriverMCPClient:
-    """MCP-клиент для zendriver-mcp"""
+    """MCP-клиент для zendriver-mcp (исправленный)"""
     
     def __init__(self):
         self.session = None
-        self._client = None
         self._read_stream = None
         self._write_stream = None
         self.is_ready = False
@@ -61,34 +60,36 @@ class ZendriverMCPClient:
     
     async def start(self):
         """Запуск MCP-сервера zendriver-mcp"""
-        logger.info("🔄 Запускаю zendriver-mcp через MCP...")
+        logger.info("🔄 Запускаю zendriver-mcp...")
         
         if not MCP_AVAILABLE:
             logger.error("❌ MCP не доступен")
             return False
         
         try:
-            # Создаём параметры сервера
+            # ✅ Правильное использование async with
             server_params = StdioServerParameters(
                 command="zendriver-mcp",
                 args=["--headless"]
             )
             
-            # Подключаемся к серверу
-            self._read_stream, self._write_stream = await stdio_client(server_params)
-            self.session = await ClientSession(self._read_stream, self._write_stream)
-            
-            # Инициализация
-            await self.session.initialize()
-            
-            # Получаем список инструментов
-            response = await self.session.list_tools()
-            self.tools = response.tools
-            self.is_ready = True
-            
-            logger.info(f"✅ MCP клиент запущен, {len(self.tools)} инструментов")
-            return True
-            
+            # ✅ Правильно: async with для контекстного менеджера
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                self._read_stream = read_stream
+                self._write_stream = write_stream
+                
+                async with ClientSession(read_stream, write_stream) as session:
+                    self.session = session
+                    await self.session.initialize()
+                    
+                    # Получаем список инструментов
+                    response = await self.session.list_tools()
+                    self.tools = response.tools
+                    self.is_ready = True
+                    
+                    logger.info(f"✅ MCP клиент запущен, {len(self.tools)} инструментов")
+                    return True
+                
         except Exception as e:
             logger.error(f"❌ Ошибка запуска MCP: {e}")
             return False
@@ -107,7 +108,9 @@ class ZendriverMCPClient:
         
         try:
             result = await self.session.call_tool(tool_name, arguments or {})
-            return result.content[0].text if result.content else {}
+            if result.content:
+                return {"result": result.content[0].text}
+            return {"result": "✅ Выполнено"}
         except Exception as e:
             logger.error(f"❌ Ошибка вызова {tool_name}: {e}")
             return {"error": str(e)}
@@ -256,8 +259,8 @@ class BrowserTask(Signature):
     • get_text() — получить текст страницы
     • get_html() — получить HTML
     • click(selector) — кликнуть по элементу
-    • type(selector, text) — ввести текст
-    • find(text) — найти элемент по тексту
+    • type_text(selector, text) — ввести текст
+    • find_element(text) — найти элемент по тексту
     • get_title() — заголовок страницы
     • get_url() — текущий URL
     • scroll(dx, dy) — прокрутка
@@ -265,7 +268,7 @@ class BrowserTask(Signature):
     • human_click(selector) — клик как человек
     • human_type(selector, text) — ввод как человек
     • ax_snapshot() — Accessibility Tree
-    • list_cookies() / import_cookies(cookies) / clear_cookies()
+    • get_cookies() / set_cookies(cookies) / clear_cookies()
     • console_logs() — логи консоли
     • wait_for_request(url, timeout) — ждать сетевой запрос
     
@@ -296,6 +299,8 @@ def create_tool(client, method_name: str, description: str):
             if isinstance(result, dict):
                 if "error" in result:
                     return f"❌ Ошибка: {result['error']}"
+                if "result" in result:
+                    return str(result["result"])
                 return str(result)
             return str(result)
         
@@ -316,7 +321,6 @@ def init_dspy_agent(client):
         return None
     
     try:
-        # Список инструментов из MCP
         tool_names = [
             ("navigate", "Перейти на URL"),
             ("screenshot", "Сделать скриншот"),
