@@ -67,19 +67,12 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        from veilbrowser import Browser
+        from veilbrowser import Browser, Fingerprint
         
-        # Исправленный запуск — через options
+        # Правильный запуск Veil 1.3.1
         browser_instance = await Browser.launch(
             headless=True,
-            options={
-                "args": [
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--remote-debugging-port=9222",
-                    "--disable-blink-features=AutomationControlled"
-                ]
-            }
+            fingerprint=Fingerprint.preset("linux-chrome")
         )
         
         await update.message.reply_text(
@@ -89,6 +82,19 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Используй /check для проверки"
         )
         
+    except TypeError as e:
+        # Если fingerprint не принимается, пробуем без него
+        try:
+            from veilbrowser import Browser
+            browser_instance = await Browser.launch(headless=True)
+            await update.message.reply_text(
+                f"✅ **Veil запущен!** (без fingerprint)\n\n"
+                f"🔌 CDP: http://127.0.0.1:9222\n\n"
+                f"Используй /check для проверки"
+            )
+        except Exception as e2:
+            await update.message.reply_text(f"❌ Ошибка: {str(e2)[:300]}")
+            
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
