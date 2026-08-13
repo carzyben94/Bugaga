@@ -9,8 +9,9 @@ import base64
 import io
 import random
 import math
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, asynccontextmanager
 from datetime import datetime
+from typing import Optional, Union, List, Dict, Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -21,7 +22,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 sys.path.insert(0, "browser-harness/src")
 
 # ============================================
-# ИМПОРТЫ BROWSER HARNESS (ПО ДОКУМЕНТАЦИИ)
+# ИМПОРТЫ BROWSER HARNESS
 # ============================================
 
 from browser_harness.helpers import (
@@ -205,6 +206,167 @@ VEIL_OK, VEIL_VER = check_veil()
 CHROME_PATH = check_chrome()
 
 # ============================================
+# УМНОЕ ОЖИДАНИЕ (АДАПТИРОВАНО ИЗ PYDoll)
+# ============================================
+
+class SmartWait:
+    """Умное ожидание с несколькими стратегиями"""
+    
+    DEFAULT_TIMEOUT = 30  # секунд
+    RETRY_INTERVAL = 0.5   # секунд
+    
+    @staticmethod
+    async def wait_for_load(timeout: int = DEFAULT_TIMEOUT):
+        """Ожидание document.readyState === 'complete'"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                state = js("document.readyState")
+                if state == "complete":
+                    logger.info(f"✅ Страница загружена (readyState: complete)")
+                    return True
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при проверке readyState: {e}")
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+        
+        logger.warning(f"⏰ Таймаут загрузки страницы ({timeout}с)")
+        return False
+    
+    @staticmethod
+    async def wait_for_network_idle(timeout: int = DEFAULT_TIMEOUT, idle_time: float = 1.0):
+        """Ожидание завершения сетевой активности"""
+        start = time.time()
+        active_requests = 0
+        
+        while time.time() - start < timeout:
+            try:
+                # Получаем количество активных запросов через CDP
+                result = cdp("Network.getActiveRequests")
+                if result and result.get("count", 0) == 0:
+                    # Проверяем, что запросов нет в течение idle_time
+                    await asyncio.sleep(idle_time)
+                    result = cdp("Network.getActiveRequests")
+                    if result and result.get("count", 0) == 0:
+                        logger.info(f"✅ Сеть проста ({idle_time}с без запросов)")
+                        return True
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при проверке сети: {e}")
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+        
+        logger.warning(f"⏰ Таймаут ожидания сети ({timeout}с)")
+        return False
+    
+    @staticmethod
+    async def wait_for_selector(selector: str, timeout: int = DEFAULT_TIMEOUT):
+        """Ожидание появления элемента по CSS-селектору"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                exists = js(f"!!document.querySelector('{selector}')")
+                if exists:
+                    logger.info(f"✅ Элемент найден: {selector}")
+                    return True
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при поиске {selector}: {e}")
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+        
+        logger.warning(f"⏰ Таймаут ожидания элемента {selector} ({timeout}с)")
+        return False
+    
+    @staticmethod
+    async def wait_for_text(text: str, timeout: int = DEFAULT_TIMEOUT):
+        """Ожидание появления текста на странице"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                body = js("document.body.innerText")
+                if text in body:
+                    logger.info(f"✅ Текст найден: {text[:50]}...")
+                    return True
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при поиске текста: {e}")
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+        
+        logger.warning(f"⏰ Таймаут ожидания текста ({timeout}с)")
+        return False
+    
+    @staticmethod
+    async def wait_for_condition(condition: str, timeout: int = DEFAULT_TIMEOUT):
+        """Ожидание выполнения JavaScript условия"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = js(condition)
+                if result:
+                    logger.info(f"✅ Условие выполнено: {condition[:50]}...")
+                    return True
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при проверке условия: {e}")
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+        
+        logger.warning(f"⏰ Таймаут ожидания условия ({timeout}с)")
+        return False
+    
+    @staticmethod
+    async def wait_for_visible(selector: str, timeout: int = DEFAULT_TIMEOUT):
+        """Ожидание видимости элемента"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                visible = js(f"""
+                    (() => {{
+                        const el = document.querySelector('{selector}');
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    }})()
+                """)
+                if visible:
+                    logger.info(f"✅ Элемент видим: {selector}")
+                    return True
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при проверке видимости: {e}")
+                await asyncio.sleep(SmartWait.RETRY_INTERVAL)
+        
+        logger.warning(f"⏰ Таймаут ожидания видимости {selector} ({timeout}с)")
+        return False
+
+class Retry:
+    """Декоратор для повторных попыток"""
+    
+    def __init__(self, max_retries: int = 3, delay: float = 1.0, backoff: float = 2.0):
+        self.max_retries = max_retries
+        self.delay = delay
+        self.backoff = backoff
+    
+    def __call__(self, func):
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            current_delay = self.delay
+            
+            for attempt in range(self.max_retries + 1):
+                try:
+                    if attempt > 0:
+                        logger.info(f"🔄 Попытка {attempt}/{self.max_retries} для {func.__name__}")
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < self.max_retries:
+                        wait_time = current_delay * (self.backoff ** attempt)
+                        logger.warning(f"⚠️ Ошибка: {e}. Повтор через {wait_time:.2f}с")
+                        await asyncio.sleep(wait_time)
+            
+            logger.error(f"❌ Все {self.max_retries} попыток провалились для {func.__name__}")
+            raise last_exception
+        return wrapper
+
+# ============================================
 # ПОМОЩНИКИ ДЛЯ РАБОТЫ С ACCESSIBILITY TREE
 # ============================================
 
@@ -315,7 +477,7 @@ def cleanup_tabs(keep_one=True):
 def set_cookies_via_js():
     try:
         new_tab("https://x.com")
-        wait_for_load()
+        SmartWait.wait_for_load(timeout=30)
         
         js_code = """
         (function() {
@@ -366,7 +528,7 @@ def set_cookies_via_js():
         return False
 
 # ============================================
-# ЭМУЛЯЦИЯ ЧЕЛОВЕЧЕСКОГО ПОВЕДЕНИЯ
+# ЭМУЛЯЦИЯ ЧЕЛОВЕЧЕСКОГО ПОВЕДЕНИЯ (УЛУЧШЕННАЯ)
 # ============================================
 
 def random_delay(min_ms: int = 500, max_ms: int = 3000):
@@ -495,6 +657,66 @@ async def human_type_text(text: str):
         
         # Вводим правильный символ
         await js(f"document.activeElement.value += '{char}'")
+
+# ============================================
+# УМНЫЙ ГОТУ (АДАПТИРОВАН ИЗ PYDoll)
+# ============================================
+
+class SmartGo:
+    """Умная навигация с ожиданием"""
+    
+    @staticmethod
+    @Retry(max_retries=3, delay=1.0)
+    async def go_to(url: str, timeout: int = 30, wait_network: bool = True):
+        """Умный переход с ожиданием загрузки"""
+        logger.info(f"🌐 Переход на {url}")
+        
+        # 1. Переходим
+        goto_url(url)
+        
+        # 2. Ждём загрузку DOM
+        await SmartWait.wait_for_load(timeout=timeout)
+        
+        # 3. Ждём сеть, если нужно
+        if wait_network:
+            await SmartWait.wait_for_network_idle(timeout=timeout)
+        
+        # 4. Случайная пауза (имитация человека)
+        await async_random_delay(1000, 3000)
+        
+        logger.info(f"✅ Страница загружена: {url}")
+        return True
+    
+    @staticmethod
+    @Retry(max_retries=3, delay=1.0)
+    async def click_selector(selector: str, timeout: int = 30):
+        """Умный клик с ожиданием видимости"""
+        # 1. Ждём появления элемента
+        await SmartWait.wait_for_selector(selector, timeout=timeout)
+        
+        # 2. Ждём видимости
+        await SmartWait.wait_for_visible(selector, timeout=timeout)
+        
+        # 3. Получаем координаты
+        result = js(f"""
+            (() => {{
+                const el = document.querySelector('{selector}');
+                const rect = el.getBoundingClientRect();
+                return {{
+                    x: rect.left + rect.width/2,
+                    y: rect.top + rect.height/2
+                }};
+            }})()
+        """)
+        
+        # 4. Человеческий клик
+        await human_click(int(result['x']), int(result['y']))
+        
+        # 5. Ждём реакции страницы
+        await async_random_delay(500, 1500)
+        
+        logger.info(f"✅ Клик по {selector}")
+        return True
 
 # ============================================
 # DSPy ИНТЕГРАЦИЯ
@@ -651,7 +873,6 @@ dspy_lm = None
 # ============================================
 
 def save_dspy_log(question: str, answer: str, history: str = "", llm_history: str = "", username: str = "unknown"):
-    """Сохраняет полную траекторию DSPy в файл"""
     try:
         log_file = "dspy.log"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -702,24 +923,22 @@ def init_dspy_agent():
         def tool_new_tab(url: str = "https://example.com") -> str:
             try:
                 new_tab(url)
-                wait_for_load()
-                random_delay(1000, 3000)  # Эмуляция человека
+                SmartWait.wait_for_load(timeout=30)
+                random_delay(1000, 3000)
                 return f"✅ Открыта вкладка: {url}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_goto_url(url: str) -> str:
             try:
-                goto_url(url)
-                wait_for_load()
-                random_delay(1000, 3000)
+                SmartGo.go_to(url, timeout=30)
                 return f"✅ Перешел на {url}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_wait_for_load() -> str:
             try:
-                wait_for_load()
+                SmartWait.wait_for_load(timeout=30)
                 random_delay(500, 2000)
                 return "✅ Страница загружена"
             except Exception as e:
@@ -759,7 +978,6 @@ def init_dspy_agent():
                 x, y = get_element_coords(backend_id)
                 if x is None or y is None:
                     return "❌ Не удалось получить координаты"
-                # Человеческий клик
                 asyncio.run(human_click(int(x), int(y)))
                 random_delay(500, 1500)
                 return f"✅ Человеческий клик по {role}: {name or 'без имени'}"
@@ -901,7 +1119,7 @@ def init_dspy_agent():
         dspy_lm, dspy_agent = init_dspy(
             api_key=AGNES_API_KEY,
             tools=tools,
-            max_iters=15  # Увеличили с 10 до 15
+            max_iters=15
         )
         
         if dspy_agent:
@@ -1023,8 +1241,8 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             init_dspy_agent()
         
         new_tab("https://x.com")
-        wait_for_load()
-        random_delay(2000, 5000)  # Пауза после открытия X.com
+        SmartWait.wait_for_load(timeout=30)
+        random_delay(2000, 5000)
         
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
@@ -1032,7 +1250,8 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🆔 PID: {chrome_process.pid}\n"
             f"🍪 Куки X.com: {'✅' if success else '❌'}\n"
             f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n"
-            f"👤 Эмуляция человека: ✅\n\n"
+            f"👤 Эмуляция человека: ✅\n"
+            f"⏰ Умное ожидание: ✅\n\n"
             f"📋 Команды:\n"
             f"/checkxcom - проверить авторизацию на X.com\n"
             f"/screen <url> - сделать скриншот\n"
@@ -1053,7 +1272,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         new_tab("https://bot.sannysoft.com")
-        wait_for_load()
+        SmartWait.wait_for_load(timeout=30)
         random_delay(1000, 3000)
         
         screenshot_path = capture_screenshot()
@@ -1099,7 +1318,7 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         new_tab("https://x.com")
-        wait_for_load()
+        SmartWait.wait_for_load(timeout=30)
         random_delay(2000, 5000)
         
         screenshot_path = capture_screenshot()
@@ -1176,7 +1395,7 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         new_tab(url)
-        wait_for_load()
+        SmartWait.wait_for_load(timeout=30)
         random_delay(1000, 3000)
         
         timestamp = int(time.time())
@@ -1216,7 +1435,7 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report = "🧪 **Тест browser-harness (по документации)**\n\n"
         
         new_tab("https://example.com")
-        wait_for_load()
+        SmartWait.wait_for_load(timeout=30)
         random_delay(1000, 3000)
         report += "✅ new_tab()\n"
         
@@ -1350,6 +1569,7 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• Куки X.com: {'✅' if COOKIES else '❌'} ({len(COOKIES)} шт.)\n"
     report += f"• DSPy лог: {'✅' if os.path.exists('dspy.log') else '❌'}\n"
     report += f"• Эмуляция человека: {'✅' if DSPY_AVAILABLE else '❌'}\n"
+    report += f"• Умное ожидание: ✅\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
@@ -1389,6 +1609,7 @@ def main():
     logger.info("📋 Команды: /start_veil, /check, /checkxcom, /screen, /harness, /ax, /dspy, /dspy_log, /diag")
     logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
     logger.info("👤 Эмуляция человека: включена")
+    logger.info("⏰ Умное ожидание: включено")
     app.run_polling()
 
 if __name__ == "__main__":
