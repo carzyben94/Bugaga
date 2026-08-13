@@ -12,9 +12,7 @@ RUN apt-get update && apt-get install -y \
     # ... и другие зависимости
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Veil из GitHub [citation:2]
-RUN pip install git+https://github.com/acunningham-ship-it/veilbrowser.git#subdirectory=python
-
+FROM cloakhq/cloakbrowser
 
 WORKDIR /app
 
