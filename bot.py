@@ -69,14 +69,14 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # 1. Сначала запускаем Chrome вручную с --no-sandbox
+        # 1. Запускаем Chrome вручную с максимальной маскировкой
         if not CHROME_PATH:
             await update.message.reply_text("❌ Chrome не найден в системе!")
             return
         
-        await update.message.reply_text("🔄 Запускаю Chrome вручную...")
+        await update.message.reply_text("🔄 Запускаю Chrome с эмуляцией GPU...")
         
-        # Запускаем Chrome с нужными флагами
+        # Максимальный набор флагов для маскировки
         chrome_process = subprocess.Popen(
             [
                 CHROME_PATH,
@@ -85,8 +85,28 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--remote-debugging-port=9222",
+                "--use-gl=angle",                       # Эмуляция GPU через ANGLE
+                "--use-angle=gl-egl",                   # Бэкенд для Linux
                 "--disable-blink-features=AutomationControlled",
-                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-web-security",
+                "--disable-features=BlockInsecurePrivateNetworkRequests",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-plugins",
+                "--disable-translate",
+                "--disable-sync",
+                "--disable-background-networking",
+                "--disable-client-side-phishing-detection",
+                "--disable-hang-monitor",
+                "--disable-prompt-on-repost",
+                "--disable-speech-api",
+                "--disable-voice-input",
+                "--disable-print-preview",
+                "--disable-bundled-ppapi-flash",
+                "--disable-setuid-sandbox",
+                f"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -104,7 +124,7 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
             f"🔌 CDP: http://127.0.0.1:9222\n"
-            f"🛡️ Режим: антидетект\n"
+            f"🛡️ Режим: антидетект (с эмуляцией GPU)\n"
             f"🆔 PID Chrome: {chrome_process.pid}\n\n"
             f"Используй /check для проверки"
         )
