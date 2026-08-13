@@ -54,5 +54,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# ✅ ОДНА КОМАНДА CMD: запускаем xvfb и бота вместе
-CMD ["bash", "-c", "xvfb-run --auto-servernum python bot.py"]
+CMD ["xvfb-run", "--auto-servernum"]
+
+CMD ["python", "bot.py"]
