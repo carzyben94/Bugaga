@@ -1,38 +1,11 @@
-FROM python:3.12-slim 
 
-# Устанавливаем зависимости для Firefox и Camoufox
-RUN apt-get update && apt-get install -y \
-    wget \
-    curl \
-    git \
-    unzip \
-    libxtst6 \
-    libxrandr2 \
-    libxrender1 \
-    libcups2 \
-    libdbus-glib-1-2 \
-    libx11-xcb1 \
-    libxcb-shm0 \
-    libxcb-shape0 \
-    libxcb-xfixes0 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libasound2 \
-    libpulse0 \
-    libvdpau1 \
-    libva2 \
-    libgl1-mesa-dri \
-    libglib2.0-0 \
-    libnss3 \
-    libnspr4 \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.12-slim
 
-FROM psyb0t/stealthy-auto-browse:latest
+RUN apt-get update && apt-get install -y libgtk-3-0 libx11-xcb1 libasound2 xvfb && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --force-reinstall playwright==1.46.0
+RUN pip install --no-cache-dir "playwright==1.53.0" "camoufox[geoip]==0.4.11"
+RUN python -m camoufox fetch
 
 WORKDIR /app
 
