@@ -4,7 +4,9 @@ import asyncio
 import logging
 import json
 import io
+import time
 import random
+import glob
 from contextlib import redirect_stdout
 from datetime import datetime
 from telegram import Update
@@ -31,22 +33,14 @@ try:
     logger.info("✅ Zendriver импортирован")
 except ImportError:
     ZENDRIVER_AVAILABLE = False
-    logger.error("❌ Zendriver не установлен! Установи: pip install zendriver")
-
-# ============================================
-# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-# ============================================
-
-browser_instance = None
-page_instance = None
-cdp_url = "http://127.0.0.1:9222"
+    logger.error("❌ Zendriver не установлен!")
 
 # ============================================
 # КЛАСС ZENDRIVER MCP СЕРВЕР
 # ============================================
 
 class ZendriverMCP:
-    """MCP-сервер для Zendriver с 96 инструментами"""
+    """MCP-сервер для Zendriver"""
     
     def __init__(self):
         self.browser = None
@@ -82,12 +76,7 @@ class ZendriverMCP:
             self.is_ready = False
             logger.info("✅ Zendriver остановлен")
     
-    # ============================================================
-    # ИНСТРУМЕНТЫ ДЛЯ MCP
-    # ============================================================
-    
     async def navigate(self, url: str) -> str:
-        """Перейти на URL"""
         if not self.is_ready:
             return "❌ Браузер не запущен"
         try:
@@ -98,7 +87,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def screenshot(self, filename: str = None) -> str:
-        """Сделать скриншот"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -111,7 +99,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def get_text(self) -> str:
-        """Получить весь текст страницы"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -121,7 +108,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def get_html(self) -> str:
-        """Получить HTML страницы"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -131,7 +117,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def click(self, selector: str) -> str:
-        """Кликнуть по элементу"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -142,7 +127,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def type_text(self, selector: str, text: str) -> str:
-        """Ввести текст в поле"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -153,17 +137,16 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def find_by_text(self, text: str) -> str:
-        """Найти элемент по тексту"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
             element = await self.page.find(text).one()
-            return f"✅ Найден элемент: {await element.text()}"
+            elem_text = await element.text()
+            return f"✅ Найден элемент: {elem_text[:100]}"
         except Exception as e:
             return f"❌ Ошибка: {e}"
     
     async def get_title(self) -> str:
-        """Получить заголовок страницы"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -173,7 +156,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def get_url(self) -> str:
-        """Получить текущий URL"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -182,7 +164,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def scroll(self, dx: int = 0, dy: int = 300) -> str:
-        """Прокрутить страницу"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -192,18 +173,15 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def solve_turnstile(self) -> str:
-        """Обойти Cloudflare Turnstile"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
-            # В Zendriver есть встроенный решатель
             result = await self.page.solve_turnstile()
             return "✅ Turnstile решён" if result else "⚠️ Turnstile не найден"
         except Exception as e:
             return f"❌ Ошибка: {e}"
     
     async def get_cookies(self) -> str:
-        """Получить все куки"""
         if not self.is_ready or not self.page:
             return "❌ Браузер или страница не активны"
         try:
@@ -213,7 +191,6 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
     
     async def set_cookies(self, cookies_json: str) -> str:
-        """Установить куки из JSON"""
         if not self.is_ready:
             return "❌ Браузер не запущен"
         try:
@@ -225,7 +202,7 @@ class ZendriverMCP:
             return f"❌ Ошибка: {e}"
 
 # ============================================
-# DSPy ИНТЕГРАЦИЯ С MCP
+# DSPy ИНТЕГРАЦИЯ
 # ============================================
 
 try:
@@ -237,13 +214,12 @@ try:
     DSPY_AVAILABLE = True
 except ImportError:
     DSPY_AVAILABLE = False
-    logger.warning("⚠️ DSPy не установлен. Установи: pip install dspy httpx")
+    logger.warning("⚠️ DSPy не установлен")
 
 class AgnesLM(dspy.LM):
     def __init__(self, model="agnes-2.0-flash", api_key=None, **kwargs):
         self.api_key = api_key or os.environ.get("AGNES_API_KEY")
         self.model = model
-        
         super().__init__(
             model=model, 
             model_type="chat",
@@ -251,33 +227,27 @@ class AgnesLM(dspy.LM):
             max_tokens=kwargs.get("max_tokens", 2000),
             cache=False
         )
-        
         self.provider = "agnes-ai"
         self.forward_contract = "legacy"
     
     def forward(self, prompt=None, messages=None, **kwargs):
         if not self.api_key:
             return ["Ошибка: API ключ не задан"]
-        
         params = {**self.kwargs, **kwargs}
-        
         if messages:
             api_messages = messages
         else:
             api_messages = [{"role": "user", "content": prompt or ""}]
-        
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
         payload = {
             "model": self.model,
             "messages": api_messages,
             "temperature": params.get("temperature", 0.3),
             "max_tokens": params.get("max_tokens", 2000)
         }
-        
         try:
             with httpx.Client(timeout=60.0) as client:
                 response = client.post(
@@ -287,53 +257,119 @@ class AgnesLM(dspy.LM):
                 )
                 response.raise_for_status()
                 data = response.json()
-                
                 if "choices" in data and len(data["choices"]) > 0:
-                    result = data["choices"][0]["message"]["content"]
-                    return [result]
+                    return [data["choices"][0]["message"]["content"]]
                 return ["Ошибка: пустой ответ от API"]
-                
         except Exception as e:
             logger.error(f"❌ Ошибка Agnes API: {e}")
             return [f"Ошибка: {str(e)}"]
     
     def __call__(self, prompt=None, messages=None, **kwargs):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
+
+# ============================================
+# СИГНАТУРА ДЛЯ АГЕНТА
+# ============================================
+
+class BrowserTask(Signature):
+    """
+    Ты агент с доступом к невидимому браузеру через Zendriver (CDP).
+    Работай как опытный пользователь, который умеет обходить антибот-системы.
     
-    async def aforward(self, prompt=None, messages=None, **kwargs):
-        return self.forward(prompt=prompt, messages=messages, **kwargs)
+    ДОСТУПНЫЕ ИНСТРУМЕНТЫ (13 функций):
+    
+    1. Навигация:
+       - navigate(url: str) -> str — перейти на URL и дождаться загрузки
+       - get_url() -> str — получить текущий URL
+       - get_title() -> str — получить заголовок страницы
+    
+    2. Получение данных:
+       - get_text() -> str — получить весь текст страницы (первые 5000 символов)
+       - get_html() -> str — получить HTML страницы (первые 5000 символов)
+       - screenshot(filename: str = None) -> str — сделать скриншот
+       - get_cookies() -> str — получить все куки в формате JSON
+       - set_cookies(cookies_json: str) -> str — установить куки из JSON
+    
+    3. Взаимодействие с элементами (CSS-селекторы):
+       - click(selector: str) -> str — кликнуть по элементу
+       - type_text(selector: str, text: str) -> str — ввести текст в поле
+       - find_by_text(text: str) -> str — найти элемент по тексту (автоповтор)
+       - scroll(dx: int = 0, dy: int = 300) -> str — прокрутить страницу
+    
+    4. Обход защит:
+       - solve_turnstile() -> str — обойти Cloudflare Turnstile (встроенный решатель)
+    
+    ПРАВИЛА РАБОТЫ:
+    1. Сначала используй navigate(url) для перехода на сайт
+    2. Всегда проверяй, что страница загрузилась (get_title или get_text)
+    3. Для поиска элемента используй find_by_text(text), а затем click() или type_text()
+    4. Для заполнения форм: find_by_text() → click() → type_text()
+    5. Если видишь Cloudflare — вызови solve_turnstile()
+    6. Делай скриншоты для проверки результата
+    7. При работе с X.com используй куки и избегай частых запросов
+    
+    СТРАТЕГИЯ ПО УМОЛЧАНИЮ:
+    1. navigate(url) — открыть страницу
+    2. get_title() — проверить загрузку
+    3. find_by_text(ключевое_слово) — найти элемент
+    4. click() или type_text() — взаимодействовать
+    5. screenshot() — проверить результат
+    """
+    
+    question = InputField(desc="Задача пользователя на естественном языке")
+    answer = OutputField(desc="Результат выполнения задачи с использованием Zendriver")
 
 # ============================================
 # СОЗДАНИЕ АГЕНТА
 # ============================================
 
-class BrowserTask(Signature):
-    question = InputField(desc="Задача пользователя")
-    answer = OutputField(desc="Ответ с использованием Zendriver Browser")
+def create_tool(func, name: str, description: str):
+    """Создать dspy.Tool из асинхронной функции"""
+    def sync_wrapper(**kwargs):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        async def run():
+            return await func(**kwargs)
+        
+        return loop.run_until_complete(run())
+    
+    sync_wrapper.__name__ = name
+    sync_wrapper.__doc__ = description
+    return Tool(sync_wrapper)
 
-def create_browser_agent(tools, max_iters=10):
-    try:
-        agent = ReActV2(
-            signature=BrowserTask,
-            tools=tools,
-            max_iters=max_iters,
-        )
-        logger.info("✅ ReActV2 агент создан")
-        return agent
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания агента: {e}")
+def init_dspy_agent(mcp_server):
+    """Инициализация DSPy агента с инструментами Zendriver"""
+    if not DSPY_AVAILABLE or not mcp_server:
         return None
-
-def init_dspy(api_key=None, tools=None, max_iters=10):
-    api_key = api_key or os.environ.get("AGNES_API_KEY")
     
-    if not api_key:
+    AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+    if not AGNES_API_KEY:
         logger.warning("⚠️ AGNES_API_KEY не задан")
-        return None, None
+        return None
     
     try:
+        tools = [
+            create_tool(mcp_server.navigate, "navigate", "Перейти на URL"),
+            create_tool(mcp_server.screenshot, "screenshot", "Сделать скриншот"),
+            create_tool(mcp_server.get_text, "get_text", "Получить текст страницы"),
+            create_tool(mcp_server.get_html, "get_html", "Получить HTML страницы"),
+            create_tool(mcp_server.click, "click", "Кликнуть по элементу (CSS селектор)"),
+            create_tool(mcp_server.type_text, "type_text", "Ввести текст в поле (CSS селектор)"),
+            create_tool(mcp_server.find_by_text, "find_by_text", "Найти элемент по тексту"),
+            create_tool(mcp_server.get_title, "get_title", "Получить заголовок страницы"),
+            create_tool(mcp_server.get_url, "get_url", "Получить текущий URL"),
+            create_tool(mcp_server.scroll, "scroll", "Прокрутить страницу"),
+            create_tool(mcp_server.solve_turnstile, "solve_turnstile", "Обойти Cloudflare Turnstile"),
+            create_tool(mcp_server.get_cookies, "get_cookies", "Получить все куки"),
+            create_tool(mcp_server.set_cookies, "set_cookies", "Установить куки из JSON"),
+        ]
+        
         lm = AgnesLM(
-            api_key=api_key,
+            api_key=AGNES_API_KEY,
             temperature=0.3,
             max_tokens=2000
         )
@@ -341,103 +377,21 @@ def init_dspy(api_key=None, tools=None, max_iters=10):
         settings.configure(lm=lm)
         logger.info("✅ DSPy настроен с AgnesLM")
         
-        if tools:
-            agent = create_browser_agent(tools, max_iters)
-        else:
-            agent = None
-        
-        return lm, agent
+        agent = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=10,
+        )
+        logger.info(f"✅ DSPy агент создан с {len(tools)} инструментами")
+        return agent
         
     except Exception as e:
         logger.error(f"❌ Ошибка инициализации DSPy: {e}")
-        return None, None
-
-# ============================================
-# ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
-# ============================================
-
-mcp_server = None
-dspy_agent = None
-dspy_lm = None
-
-# ============================================
-# ИНИЦИАЛИЗАЦИЯ MCP + DSPy
-# ============================================
-
-def init_dspy_agent():
-    global dspy_agent, dspy_lm, mcp_server
-    
-    if not DSPY_AVAILABLE:
-        logger.warning("⚠️ DSPy не доступен")
-        return
-    
-    if not ZENDRIVER_AVAILABLE:
-        logger.warning("⚠️ Zendriver не доступен")
-        return
-    
-    AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-    if not AGNES_API_KEY:
-        logger.warning("⚠️ AGNES_API_KEY не задан")
-        return
-    
-    try:
-        # Создаем MCP-сервер
-        mcp_server = ZendriverMCP()
-        
-        # Создаем инструменты из методов MCP-сервера
-        def make_tool(func_name: str, description: str):
-            def tool_func(**kwargs):
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                
-                async def run():
-                    func = getattr(mcp_server, func_name)
-                    return await func(**kwargs)
-                
-                return loop.run_until_complete(run())
-            
-            tool_func.__name__ = func_name
-            tool_func.__doc__ = description
-            return tool_func
-        
-        tools = [
-            Tool(make_tool("navigate", "Перейти на URL")),
-            Tool(make_tool("screenshot", "Сделать скриншот")),
-            Tool(make_tool("get_text", "Получить текст страницы")),
-            Tool(make_tool("get_html", "Получить HTML страницы")),
-            Tool(make_tool("click", "Кликнуть по элементу (CSS селектор)")),
-            Tool(make_tool("type_text", "Ввести текст в поле (CSS селектор)")),
-            Tool(make_tool("find_by_text", "Найти элемент по тексту")),
-            Tool(make_tool("get_title", "Получить заголовок страницы")),
-            Tool(make_tool("get_url", "Получить текущий URL")),
-            Tool(make_tool("scroll", "Прокрутить страницу")),
-            Tool(make_tool("solve_turnstile", "Обойти Cloudflare Turnstile")),
-            Tool(make_tool("get_cookies", "Получить все куки")),
-            Tool(make_tool("set_cookies", "Установить куки из JSON")),
-        ]
-        
-        dspy_lm, dspy_agent = init_dspy(
-            api_key=AGNES_API_KEY,
-            tools=tools,
-            max_iters=10
-        )
-        
-        if dspy_agent:
-            logger.info(f"✅ DSPy агент инициализирован с {len(tools)} инструментами")
-        else:
-            logger.warning("⚠️ Не удалось создать DSPy агента")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка инициализации: {e}")
-        dspy_agent = None
+        return None
 
 def run_agent(agent, question: str) -> str:
     if not agent:
         return "❌ Агент не инициализирован"
-    
     try:
         result = agent(question=question)
         answer = getattr(result, 'answer', str(result))
@@ -463,7 +417,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def start_zd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global mcp_server, dspy_agent
     await update.message.reply_text("🔄 Запускаю Zendriver...")
     
     if not ZENDRIVER_AVAILABLE:
@@ -471,47 +424,71 @@ async def start_zd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        if mcp_server and mcp_server.is_ready:
-            await mcp_server.stop()
+        # Создаём и запускаем MCP сервер
+        mcp = ZendriverMCP()
+        await mcp.start(headless=True)
         
-        mcp_server = ZendriverMCP()
-        await mcp_server.start(headless=True)
+        # Сохраняем в bot_data
+        context.bot_data['mcp_server'] = mcp
         
+        # Инициализируем DSPy агента
         if DSPY_AVAILABLE:
-            await update.message.reply_text("🧠 Инициализирую DSPy агента...")
-            init_dspy_agent()
+            agent = init_dspy_agent(mcp)
+            context.bot_data['dspy_agent'] = agent
         
         await update.message.reply_text(
             f"✅ **Zendriver запущен!**\n\n"
-            f"🔌 CDP: {cdp_url}\n"
-            f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
+            f"🔌 CDP: http://127.0.0.1:9222\n"
+            f"🧠 DSPy: {'✅ Активен' if context.bot_data.get('dspy_agent') else '❌ Отключен'}\n\n"
             f"📋 Команды:\n"
             f"/screen <url> - сделать скриншот\n"
             f"/dspy <задача> - AI-агент\n"
-            f"/dspy_log - скачать лог"
+            f"/diag - диагностика"
         )
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
+async def stop_zd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔄 Останавливаю Zendriver...")
+    
+    mcp = context.bot_data.get('mcp_server')
+    if mcp:
+        await mcp.stop()
+        context.bot_data['mcp_server'] = None
+        context.bot_data['dspy_agent'] = None
+        await update.message.reply_text("✅ Zendriver остановлен")
+    else:
+        await update.message.reply_text("ℹ️ Zendriver не запущен")
+
 async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Проверяю маскировку...")
     
-    if not mcp_server or not mcp_server.is_ready:
+    mcp = context.bot_data.get('mcp_server')
+    if not mcp or not mcp.is_ready:
         await update.message.reply_text("❌ Сначала запусти Zendriver: /start_zd")
         return
     
     try:
-        await mcp_server.navigate("https://bot.sannysoft.com")
-        result = await mcp_server.get_text()
+        await mcp.navigate("https://bot.sannysoft.com")
+        await asyncio.sleep(2)
         
-        # Проверяем webdriver
-        webdriver = await mcp_server.page.execute_script("navigator.webdriver")
+        # Проверяем webdriver через JS
+        webdriver = await mcp.page.execute_script("navigator.webdriver")
         
         if webdriver is None or webdriver is False:
             verdict = "✅ **Браузер НЕОТЛИЧИМ!** 🎉"
         else:
             verdict = "⚠️ **Браузер как бот**"
+        
+        # Делаем скриншот
+        screenshot_path = await mcp.screenshot()
+        if screenshot_path and os.path.exists(screenshot_path.split(": ")[-1]):
+            with open(screenshot_path.split(": ")[-1], 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption=f"📸 Проверка маскировки"
+                )
         
         await update.message.reply_text(
             f"🔍 **Результат**\n\n"
@@ -534,16 +511,16 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"🔄 Открываю `{url}`...")
     
-    if not mcp_server or not mcp_server.is_ready:
+    mcp = context.bot_data.get('mcp_server')
+    if not mcp or not mcp.is_ready:
         await update.message.reply_text("❌ Сначала запусти Zendriver: /start_zd")
         return
     
     try:
-        await mcp_server.navigate(url)
-        result = await mcp_server.screenshot()
+        await mcp.navigate(url)
+        result = await mcp.screenshot()
         
         # Находим файл скриншота
-        import glob
         files = glob.glob("screenshot_*.png")
         if files:
             latest = max(files, key=os.path.getctime)
@@ -552,8 +529,8 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     photo=f,
                     caption=f"📸 **Скриншот:** `{url}`"
                 )
-            info = await mcp_server.get_title()
-            await update.message.reply_text(f"✅ **Готово!**\n\n{info}")
+            title = await mcp.get_title()
+            await update.message.reply_text(f"✅ **Готово!**\n\n{title}")
         else:
             await update.message.reply_text("❌ Не удалось сохранить скриншот")
         
@@ -577,15 +554,13 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if not mcp_server or not mcp_server.is_ready:
+    mcp = context.bot_data.get('mcp_server')
+    if not mcp or not mcp.is_ready:
         await update.message.reply_text("❌ Сначала запусти Zendriver: /start_zd")
         return
     
-    if not DSPY_AVAILABLE:
-        await update.message.reply_text("❌ DSPy не установлен!")
-        return
-    
-    if not dspy_agent:
+    agent = context.bot_data.get('dspy_agent')
+    if not agent:
         await update.message.reply_text("❌ DSPy агент не инициализирован!\nПроверь AGNES_API_KEY")
         return
     
@@ -597,7 +572,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         loop = asyncio.get_running_loop()
-        answer = await loop.run_in_executor(None, run_agent, dspy_agent, user_query)
+        answer = await loop.run_in_executor(None, run_agent, agent, user_query)
         
         if not answer or answer.strip() == "":
             await status_msg.edit_text("❌ Агент вернул пустой ответ")
@@ -628,16 +603,19 @@ async def dspy_log_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mcp = context.bot_data.get('mcp_server')
+    agent = context.bot_data.get('dspy_agent')
+    
     report = f"📊 **Диагностика**\n\n"
     report += f"• Zendriver: {'✅' if ZENDRIVER_AVAILABLE else '❌'}\n"
     report += f"• DSPy: {'✅' if DSPY_AVAILABLE else '❌'}\n"
-    report += f"• Браузер: {'✅' if mcp_server and mcp_server.is_ready else '❌'}\n"
-    report += f"• Агент: {'✅' if dspy_agent else '❌'}\n"
+    report += f"• Браузер: {'✅' if mcp and mcp.is_ready else '❌'}\n"
+    report += f"• Агент: {'✅' if agent else '❌'}\n"
     report += f"• AGNES_API_KEY: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
     
-    if mcp_server and mcp_server.is_ready and mcp_server.page:
+    if mcp and mcp.is_ready and mcp.page:
         try:
-            title = await mcp_server.get_title()
+            title = await mcp.get_title()
             report += f"• Текущая страница: {title}\n"
         except:
             pass
@@ -652,6 +630,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("start_zd", start_zd))
+    app.add_handler(CommandHandler("stop_zd", stop_zd))
     app.add_handler(CommandHandler("check", check_browser))
     app.add_handler(CommandHandler("screen", screen_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
@@ -659,7 +638,7 @@ def main():
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен!")
-    logger.info("📋 Команды: /start_zd, /check, /screen, /dspy, /dspy_log, /diag")
+    logger.info("📋 Команды: /start_zd, /stop_zd, /check, /screen, /dspy, /dspy_log, /diag")
     app.run_polling()
 
 if __name__ == "__main__":
