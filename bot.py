@@ -3,6 +3,7 @@ import sys
 import asyncio
 import logging
 import subprocess
+import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -13,7 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 sys.path.insert(0, "browser-harness/src")
 
 # ============================================
-# ИМПОРТЫ BROWSER HARNESS
+# ИМПОРТЫ BROWSER HARNESS (ТОЛЬКО ТО, ЧТО ЕСТЬ)
 # ============================================
 
 from browser_harness.helpers import (
@@ -33,6 +34,7 @@ from browser_harness.helpers import (
     press_key,
     scroll,
 )
+from browser_harness.admin import ensure_daemon
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -126,6 +128,13 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await asyncio.sleep(2)
         
+        # Устанавливаем переменную для browser-harness
+        os.environ["BU_CDP_URL"] = cdp_url
+        
+        # Запускаем daemon browser-harness
+        ensure_daemon()
+        logger.info("✅ Daemon browser-harness запущен")
+        
         from veilbrowser import Browser
         browser_instance = await Browser.connect(cdp_url)
         
@@ -186,7 +195,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тест browser-harness через BrowserSession"""
+    """Тест browser-harness через helpers"""
     await update.message.reply_text("🧪 Тестирую browser-harness...")
     
     if not browser_instance:
@@ -194,44 +203,53 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        from browser_harness import BrowserSession
+        report = "🧪 **Тест browser-harness helpers**\n\n"
         
-        async with BrowserSession(cdp_url=cdp_url) as session:
-            report = "🧪 **Тест BrowserSession**\n\n"
-            
-            # 1. new_page
-            page = await session.new_page()
-            report += "✅ new_page()\n"
-            
-            # 2. goto
-            await page.goto("https://example.com")
-            report += "✅ goto()\n"
-            
-            await asyncio.sleep(1)
-            
-            # 3. screenshot
-            screenshot = await page.screenshot()
-            await update.message.reply_photo(
-                photo=screenshot,
-                caption="📸 Скриншот через BrowserSession"
-            )
-            
-            # 4. evaluate
-            webdriver = await page.evaluate("navigator.webdriver")
-            report += f"✅ navigator.webdriver = {webdriver}\n"
-            
-            # 5. title
-            title = await page.evaluate("document.title")
-            report += f"✅ Title: {title[:50]}\n"
-            
-            # 6. close
-            await page.close()
-            report += "✅ close()\n"
-            
-            await update.message.reply_text(report + "\n🎉 Все работает!")
-            
-    except ImportError as e:
-        await update.message.reply_text(f"❌ browser-harness не импортируется: {str(e)[:100]}")
+        # 1. new_tab
+        await new_tab()
+        report += "✅ new_tab()\n"
+        
+        # 2. goto_url
+        await goto_url("https://example.com")
+        report += "✅ goto_url()\n"
+        
+        # 3. wait_for_load
+        await wait_for_load()
+        report += "✅ wait_for_load()\n"
+        
+        # 4. page_info
+        info = await page_info()
+        report += f"✅ page_info(): {info.get('title', 'N/A')[:30]}\n"
+        
+        # 5. current_tab
+        tab = await current_tab()
+        report += f"✅ current_tab(): {tab}\n"
+        
+        # 6. list_tabs
+        tabs = await list_tabs()
+        report += f"✅ list_tabs(): {len(tabs)} вкладок\n"
+        
+        # 7. js
+        result = await js("navigator.userAgent")
+        report += f"✅ js(): {str(result)[:40]}...\n"
+        
+        # 8. scroll
+        await scroll(0, 100)
+        report += "✅ scroll()\n"
+        
+        # 9. screenshot
+        screenshot = await capture_screenshot()
+        await update.message.reply_photo(
+            photo=screenshot,
+            caption="📸 Скриншот через harness"
+        )
+        
+        # 10. close_tab
+        await close_tab()
+        report += "✅ close_tab()\n"
+        
+        await update.message.reply_text(report + "\n🎉 Все функции работают!")
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
@@ -241,6 +259,7 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• Chrome: {'✅' if CHROME_PATH else '❌'}\n"
     report += f"• Harness path: {'✅' if os.path.exists('browser-harness/src') else '❌'}\n"
     report += f"• Браузер: {'✅' if browser_instance else '❌'}\n"
+    report += f"• BU_CDP_URL: {os.environ.get('BU_CDP_URL', '❌ не установлена')}\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
