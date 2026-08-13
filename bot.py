@@ -49,6 +49,130 @@ if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
 
 # ============================================
+# КУКИ ДЛЯ X.COM (TWITTER)
+# ============================================
+
+COOKIES = [
+    {
+        "name": "__cuid",
+        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "personalization_id",
+        "value": "\"v1_VL5PDSWqcwv7LNBV75SiLA==\"",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "g_state",
+        "value": "{\"i_l\":0,\"i_ll\":1786493441069,\"i_b\":\"GK5KqYSRaGCT7CvSxBv3wqY6m7ne53iSPqkYW+ROGIo\",\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786493441069}",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "lang",
+        "value": "ru",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "dnt",
+        "value": "1",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "gt",
+        "value": "2087858962263671253",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "guest_id",
+        "value": "v1%3A178661934178349765",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "twid",
+        "value": "u%3D2075158859295997952",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "auth_token",
+        "value": "c67259d770166a76598c693d9536c5356f521343",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "guest_id_ads",
+        "value": "v1%3A178661934178349765",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "guest_id_marketing",
+        "value": "v1%3A178661934178349765",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "ct0",
+        "value": "a7588aaf794885b9e039dc7b81874e17e2786d50a7ba5794412780256f819111535e58b52f13fd571176e7b3d3ceb79a95aa722288c8811a4cfb02ff4a9ecf2f36e0ab11032d6aab77df44902a0d2715",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    },
+    {
+        "name": "__cf_bm",
+        "value": ".WtFBy2_JUO1VAFxh4adk0Ke7.8T0w0MZNBftx1Y7Og-1786619407.2810972-1.0.1.1-V7njqiTJRq5SKwLgiqsE6SGR1qScNXtusMEP1ii5Ai24nxQMM76kNpVeVXYPE4zyY4gLtQKmQCdFCgdsuocz2NxkGJq.ku2bfEopXW73Ywm6wVrXxc0LnxPRWbV.vXZI",
+        "domain": ".x.com",
+        "path": "/",
+        "secure": False,
+        "httpOnly": False,
+        "sameSite": "unspecified"
+    }
+]
+
+# ============================================
 # ПРОВЕРКА КОМПОНЕНТОВ
 # ============================================
 
@@ -155,6 +279,33 @@ def get_text_from_ax_tree():
         if name:
             result.append(f"[{role}] {name}")
     return "\n".join(result) if result else "Нет текста в AX Tree"
+
+def set_cookies_via_cdp():
+    """Установить все куки через Network.setCookies"""
+    try:
+        cookies_list = []
+        for cookie in COOKIES:
+            cookie_data = {
+                "name": cookie.get("name"),
+                "value": cookie.get("value"),
+                "domain": cookie.get("domain", ""),
+                "path": cookie.get("path", "/"),
+                "secure": cookie.get("secure", False),
+                "httpOnly": cookie.get("httpOnly", False),
+            }
+            same_site = cookie.get("sameSite", "unspecified")
+            if same_site in ("Lax", "Strict", "None"):
+                cookie_data["sameSite"] = same_site
+            if "expires" in cookie:
+                cookie_data["expires"] = cookie["expires"]
+            cookies_list.append(cookie_data)
+        
+        cdp("Network.setCookies", {"cookies": cookies_list})
+        logger.info(f"✅ Установлено {len(cookies_list)} кук")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки кук: {e}")
+        return False
 
 # ============================================
 # DSPy ИНТЕГРАЦИЯ
@@ -549,6 +700,17 @@ def init_dspy_agent():
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
+        # 6. Куки для X.com
+        def tool_set_x_cookies() -> str:
+            """Установить куки для X.com (авторизация)"""
+            try:
+                success = set_cookies_via_cdp()
+                if success:
+                    return "✅ Куки X.com установлены"
+                return "❌ Ошибка установки кук"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
         # ============================================================
         # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ
         # ============================================================
@@ -571,6 +733,7 @@ def init_dspy_agent():
             Tool(tool_current_tab),
             Tool(tool_switch_tab),
             Tool(tool_close_tab),
+            Tool(tool_set_x_cookies),
         ]
         
         # Инициализируем DSPy с инструментами
@@ -595,10 +758,11 @@ def init_dspy_agent():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛡️ **Veil + browser-harness (по документации)**\n\n"
+        "🛡️ **Veil + browser-harness + X.com**\n\n"
         "Команды:\n"
-        "/start_veil - запустить Veil\n"
-        "/check - проверить браузер\n"
+        "/start_veil - запустить Veil с куками X.com\n"
+        "/check - проверить маскировку\n"
+        "/checkxcom - проверить авторизацию на X.com\n"
         "/harness - тест harness\n"
         "/ax - показать Accessibility Tree\n"
         "/dspy <задача> - задать вопрос агенту\n"
@@ -666,21 +830,31 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from veilbrowser import Browser
         browser_instance = await Browser.connect(cdp_url)
         
+        # УСТАНАВЛИВАЕМ КУКИ X.COM СРАЗУ ПОСЛЕ ПОДКЛЮЧЕНИЯ
+        await update.message.reply_text("🍪 Устанавливаю куки X.com...")
+        success = set_cookies_via_cdp()
+        if success:
+            await update.message.reply_text(f"✅ Установлено {len(COOKIES)} кук X.com!")
+        else:
+            await update.message.reply_text("⚠️ Не удалось установить куки")
+        
         # Инициализируем DSPy агента
         if DSPY_AVAILABLE:
             await update.message.reply_text("🧠 Инициализирую DSPy агента...")
             init_dspy_agent()
         
         # Открываем тестовую страницу
-        new_tab("https://example.com")
+        new_tab("https://x.com")
         wait_for_load()
         
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
+            f"🍪 Куки X.com: {'✅' if success else '❌'} ({len(COOKIES)} шт.)\n"
             f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
             f"📋 Команды:\n"
+            f"/checkxcom - проверить авторизацию на X.com\n"
             f"/ax - показать Accessibility Tree\n"
             f"/dspy <задача> - AI-агент"
         )
@@ -702,7 +876,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
             with open(screenshot_path, 'rb') as f:
-                await update.message.reply_photo(photo=f, caption="📸 Проверка")
+                await update.message.reply_photo(photo=f, caption="📸 Проверка маскировки")
         
         result = js("""
             () => ({
@@ -725,6 +899,84 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• platform: `{result.get('platform')}`\n\n"
             f"💡 `None` или `false` — идеально!"
         )
+        
+        close_tab()
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
+
+async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверяет авторизацию на X.com через куки"""
+    await update.message.reply_text("🔍 Проверяю X.com...")
+    
+    if not browser_instance:
+        await update.message.reply_text("❌ Сначала запусти Veil: /start_veil")
+        return
+    
+    try:
+        # Открываем новую вкладку с X.com
+        new_tab("https://x.com")
+        wait_for_load()
+        
+        # Делаем скриншот
+        screenshot_path = capture_screenshot()
+        if screenshot_path and os.path.exists(screenshot_path):
+            with open(screenshot_path, 'rb') as f:
+                await update.message.reply_photo(photo=f, caption="📸 X.com после загрузки")
+        
+        # Проверяем, авторизованы ли мы
+        result = js("""
+            () => {
+                // Проверяем наличие элементов
+                const signUp = document.querySelector('[data-testid="signUpButton"]');
+                const logIn = document.querySelector('[data-testid="loginButton"]');
+                const profile = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                const home = document.querySelector('[data-testid="AppTabBar_Home_Link"]');
+                
+                // Проверяем куки
+                const hasAuth = document.cookie.includes('auth_token');
+                const hasTwid = document.cookie.includes('twid');
+                
+                return {
+                    hasAuthToken: hasAuth,
+                    hasTwid: hasTwid,
+                    hasSignUp: !!signUp,
+                    hasLogIn: !!logIn,
+                    hasProfile: !!profile,
+                    hasHome: !!home,
+                    title: document.title,
+                    url: window.location.href
+                };
+            }
+        """)
+        
+        # Формируем отчет
+        report = "🔍 **Проверка X.com**\n\n"
+        
+        # Куки
+        report += "🍪 **Куки:**\n"
+        report += f"• auth_token: {'✅' if result.get('hasAuthToken') else '❌'}\n"
+        report += f"• twid: {'✅' if result.get('hasTwid') else '❌'}\n\n"
+        
+        # UI элементы
+        report += "🖥️ **UI элементы:**\n"
+        report += f"• Кнопка 'Sign up': {'❌' if result.get('hasSignUp') else '✅ (скрыта)'}\n"
+        report += f"• Кнопка 'Log in': {'❌' if result.get('hasLogIn') else '✅ (скрыта)'}\n"
+        report += f"• Профиль: {'✅' if result.get('hasProfile') else '❌'}\n"
+        report += f"• Домой: {'✅' if result.get('hasHome') else '❌'}\n\n"
+        
+        # Статус авторизации
+        report += "**📊 Статус:**\n"
+        if result.get('hasProfile') or result.get('hasHome'):
+            report += "✅ **АВТОРИЗОВАН!** Вы вошли в X.com\n"
+        elif result.get('hasSignUp') or result.get('hasLogIn'):
+            report += "⚠️ **НЕ АВТОРИЗОВАН!** Куки не работают или истекли\n"
+        else:
+            report += "❓ **НЕИЗВЕСТНО** - страница загрузилась, но статус не определен\n"
+        
+        report += f"\n📌 Title: {result.get('title', 'N/A')[:100]}"
+        
+        await update.message.reply_text(report)
         
         close_tab()
         
@@ -785,11 +1037,11 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• tool_get_ax_tree - Accessibility Tree (РЕКОМЕНДУЕТСЯ)\n"
             "• tool_click_by_role / tool_click_by_coords\n"
             "• tool_capture_screenshot - для проверки\n"
-            "• tool_js - fallback для сложных случаев\n\n"
+            "• tool_js - fallback для сложных случаев\n"
+            "• tool_set_x_cookies - установить куки X.com\n\n"
             "Примеры:\n"
-            "/dspy открой example.com и покажи заголовок\n"
-            "/dspy найди кнопку Login и кликни на неё\n"
-            "/dspy сделай скриншот google.com"
+            "/dspy открой x.com и покажи заголовок\n"
+            "/dspy установи куки X.com и открой страницу"
         )
         return
     
@@ -842,6 +1094,7 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report += f"• DSPy: {'✅' if dspy_agent else '❌'}\n"
     report += f"• BU_CDP_URL: {os.environ.get('BU_CDP_URL', '❌')}\n"
     report += f"• AGNES_API_KEY: {'✅' if os.environ.get('AGNES_API_KEY') else '❌'}\n"
+    report += f"• Куки X.com: {'✅' if COOKIES else '❌'} ({len(COOKIES)} шт.)\n"
     
     if CHROME_PATH:
         report += f"• Путь Chrome: `{CHROME_PATH}`\n"
@@ -869,13 +1122,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("start_veil", start_veil))
     app.add_handler(CommandHandler("check", check_browser))
+    app.add_handler(CommandHandler("checkxcom", check_xcom))
     app.add_handler(CommandHandler("harness", test_harness))
     app.add_handler(CommandHandler("ax", ax_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     app.add_handler(CommandHandler("diag", diag))
     
     logger.info("🤖 Бот запущен (по документации browser-harness)!")
-    logger.info("📋 Команды: /start_veil, /check, /harness, /ax, /dspy, /diag")
+    logger.info("📋 Команды: /start_veil, /check, /checkxcom, /harness, /ax, /dspy, /diag")
+    logger.info(f"🍪 Загружено {len(COOKIES)} кук X.com")
     app.run_polling()
 
 if __name__ == "__main__":
