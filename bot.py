@@ -21,7 +21,13 @@ def find_chrome():
     """Ищет Chrome, установленный banana-browser"""
     logger.info("🔍 Поиск браузера...")
     
-    # 1. Проверяем стандартные пути
+    # 1. Проверяем переменную окружения
+    env_path = os.environ.get('CHROMIUM_PATH')
+    if env_path and os.path.exists(env_path):
+        logger.info(f"✅ Найден из CHROMIUM_PATH: {env_path}")
+        return env_path
+    
+    # 2. Проверяем стандартные пути
     possible_paths = [
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
@@ -34,52 +40,66 @@ def find_chrome():
             logger.info(f"✅ Найден браузер: {path}")
             return path
     
-    # 2. Ищем через banana-browser
+    # 3. Ищем через banana-browser (все возможные пути)
     cache_dirs = [
         "/root/.cache/banana-browser/chrome",
         "/root/.cache/banana-browser/chromium",
-        "/home/.cache/banana-browser/chrome"
+        "/home/.cache/banana-browser/chrome",
+        "/root/.cache/banana-browser"
     ]
     
     for cache_dir in cache_dirs:
         if os.path.exists(cache_dir):
+            logger.info(f"📁 Проверяем: {cache_dir}")
             try:
-                # Ищем все папки с версиями
-                for item in os.listdir(cache_dir):
-                    chrome_path = os.path.join(cache_dir, item, "chrome-linux64", "chrome")
-                    if os.path.exists(chrome_path):
-                        logger.info(f"✅ Найден banana-browser Chrome: {chrome_path}")
-                        return chrome_path
-                    
-                    # Альтернативный путь
-                    chrome_path = os.path.join(cache_dir, item, "chrome")
-                    if os.path.exists(chrome_path):
-                        logger.info(f"✅ Найден banana-browser Chrome: {chrome_path}")
-                        return chrome_path
+                # Рекурсивно ищем chrome
+                for root, dirs, files in os.walk(cache_dir):
+                    if "chrome" in files:
+                        chrome_path = os.path.join(root, "chrome")
+                        if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
+                            logger.info(f"✅ Найден banana-browser Chrome: {chrome_path}")
+                            return chrome_path
+                    # Проверяем подпапки chrome-linux64
+                    if "chrome-linux64" in dirs:
+                        chrome_path = os.path.join(root, "chrome-linux64", "chrome")
+                        if os.path.exists(chrome_path) and os.access(chrome_path, os.X_OK):
+                            logger.info(f"✅ Найден banana-browser Chrome: {chrome_path}")
+                            return chrome_path
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка поиска в {cache_dir}: {e}")
     
-    # 3. Ищем через системную команду find
+    # 4. Ищем через системную команду find
     try:
+        logger.info("🔍 Ищем через find...")
         result = subprocess.run(
             ['find', '/root/.cache/banana-browser', '-name', 'chrome', '-type', 'f'],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=10
         )
         paths = result.stdout.strip().split('\n')
         for path in paths:
-            if path and os.path.exists(path):
+            if path and os.path.exists(path) and os.access(path, os.X_OK):
                 logger.info(f"✅ Найден через find: {path}")
                 return path
     except Exception as e:
         logger.warning(f"⚠️ Ошибка find: {e}")
     
-    # 4. Проверяем переменную окружения
-    env_path = os.environ.get('CHROMIUM_PATH')
-    if env_path and os.path.exists(env_path):
-        logger.info(f"✅ Найден из CHROMIUM_PATH: {env_path}")
-        return env_path
+    # 5. Проверяем через which
+    try:
+        result = subprocess.run(
+            ['which', 'chromium', 'chromium-browser', 'google-chrome'],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        paths = result.stdout.strip().split('\n')
+        for path in paths:
+            if path and os.path.exists(path):
+                logger.info(f"✅ Найден через which: {path}")
+                return path
+    except:
+        pass
     
     logger.error("❌ Браузер НЕ НАЙДЕН!")
     return None
@@ -109,8 +129,61 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check_browser - проверить браузер\n"
         "/check_install - проверить установленные компоненты\n"
         "/diagnostic - полная диагностика системы\n"
-        "/browser_info - информация о браузере"
+        "/browser_info - информация о браузере\n"
+        "/find_browser - найти браузер в системе"
     )
+
+async def find_browser_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ищет реальный путь к браузеру"""
+    await update.message.reply_text("🔍 Ищу браузер...")
+    
+    report = "🔎 **Поиск браузера**\n\n"
+    
+    # 1. Ищем через find
+    try:
+        result = subprocess.run(
+            ['find', '/root/.cache/banana-browser', '-name', 'chrome', '-type', 'f'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        paths = result.stdout.strip().split('\n')
+        if paths and paths[0]:
+            report += "**Найденные пути:**\n"
+            for i, path in enumerate(paths[:5], 1):
+                report += f"{i}. `{path}`\n"
+                if os.path.exists(path):
+                    report += f"   ✅ Существует\n"
+                    if os.access(path, os.X_OK):
+                        report += f"   ✅ Исполняемый\n"
+        else:
+            report += "❌ Chrome не найден в /root/.cache/banana-browser/\n"
+    except Exception as e:
+        report += f"⚠️ Ошибка поиска: {e}\n"
+    
+    # 2. Проверяем все возможные папки
+    report += "\n**Проверка папок:**\n"
+    for dir_path in ['/root/.cache/banana-browser/chrome', '/root/.cache/banana-browser']:
+        if os.path.exists(dir_path):
+            report += f"✅ Существует: {dir_path}\n"
+            try:
+                items = os.listdir(dir_path)
+                report += f"   Содержимое: {', '.join(items[:5])}\n"
+            except:
+                pass
+        else:
+            report += f"❌ Не существует: {dir_path}\n"
+    
+    # 3. Текущий CHROMIUM_PATH
+    report += f"\n**Текущий CHROMIUM_PATH:**\n"
+    current = os.environ.get('CHROMIUM_PATH', 'не установлен')
+    report += f"`{current}`\n"
+    if current and os.path.exists(current):
+        report += "✅ Путь существует\n"
+    else:
+        report += "❌ Путь НЕ существует\n"
+    
+    await update.message.reply_text(report)
 
 async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверяет установленные компоненты"""
@@ -145,7 +218,7 @@ async def check_install(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         report += f"⚠️ Ошибка: {str(e)[:50]}\n"
     
-    # 3. Проверка Chromium
+    # 3. Проверка браузера
     report += "\n**🌐 Браузер:**\n"
     if CHROME_PATH and os.path.exists(CHROME_PATH):
         report += f"✅ Найден: {CHROME_PATH}\n"
@@ -316,7 +389,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Открываем тестовый сайт
                 await page.goto("https://bot.sannysoft.com")
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
                 
                 # Делаем скриншот
                 screenshot = await page.screenshot()
@@ -381,6 +454,7 @@ def main():
     app.add_handler(CommandHandler("check_install", check_install))
     app.add_handler(CommandHandler("diagnostic", diagnostic))
     app.add_handler(CommandHandler("browser_info", browser_info))
+    app.add_handler(CommandHandler("find_browser", find_browser_path))
     
     logger.info("🤖 Бот запущен!")
     logger.info("📋 Доступные команды:")
@@ -389,6 +463,7 @@ def main():
     logger.info("  /check_install - проверить установку")
     logger.info("  /diagnostic - полная диагностика")
     logger.info("  /browser_info - информация о браузере")
+    logger.info("  /find_browser - найти браузер в системе")
     
     app.run_polling()
 
