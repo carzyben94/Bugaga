@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 sys.path.insert(0, "browser-harness/src")
 
 # ============================================
-# ИМПОРТЫ BROWSER HARNESS (ВСЕ СИНХРОННЫЕ)
+# ИМПОРТЫ BROWSER HARNESS (ПО ДОКУМЕНТАЦИИ)
 # ============================================
 
 from browser_harness.helpers import (
@@ -35,6 +35,8 @@ from browser_harness.helpers import (
     type_text,
     press_key,
     scroll,
+    cdp,
+    ensure_real_tab,
 )
 from browser_harness.admin import ensure_daemon
 
@@ -74,7 +76,88 @@ VEIL_OK, VEIL_VER = check_veil()
 CHROME_PATH = check_chrome()
 
 # ============================================
-# DSPy ИНТЕГРАЦИЯ (ЧИСТЫЙ DSPy 3.3.0b1)
+# ПОМОЩНИКИ ДЛЯ РАБОТЫ С ACCESSIBILITY TREE (ПО ДОКЕ)
+# ============================================
+
+def get_ax_tree():
+    """
+    Получить полное Accessibility Tree страницы.
+    Строго по документации: cdp("Accessibility.getFullAXTree")["nodes"]
+    """
+    try:
+        result = cdp("Accessibility.getFullAXTree")
+        return result.get("nodes", [])
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения AX Tree: {e}")
+        return []
+
+def find_element_by_role(nodes, role, name=None):
+    """
+    Найти элемент по роли и имени в AX Tree.
+    Возвращает узел с backendDOMNodeId.
+    """
+    for node in nodes:
+        if node.get("role") == role:
+            if name is None or node.get("name") == name:
+                return node
+    return None
+
+def get_element_coords(backend_node_id):
+    """
+    Получить координаты центра элемента по backendDOMNodeId.
+    Строго по документации: cdp("DOM.getBoxModel", backendNodeId=n)["model"]["content"]
+    """
+    try:
+        result = cdp("DOM.getBoxModel", backendNodeId=backend_node_id)
+        if result and "model" in result and "content" in result["model"]:
+            box = result["model"]["content"]
+            # content = [x1, y1, x2, y2, x3, y3, x4, y4]
+            x = sum(box[0::2]) / 4
+            y = sum(box[1::2]) / 4
+            return x, y
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения координат: {e}")
+    return None, None
+
+def click_element_by_role(role, name=None):
+    """
+    Найти элемент по роли/имени и кликнуть по его центру.
+    """
+    nodes = get_ax_tree()
+    target = find_element_by_role(nodes, role, name)
+    if not target:
+        logger.warning(f"⚠️ Элемент не найден: role={role}, name={name}")
+        return False
+    
+    backend_id = target.get("backendDOMNodeId")
+    if not backend_id:
+        logger.warning("⚠️ Нет backendDOMNodeId")
+        return False
+    
+    x, y = get_element_coords(backend_id)
+    if x is None or y is None:
+        return False
+    
+    click_at_xy(x, y)
+    logger.info(f"✅ Клик по {role}:{name} at ({x:.0f}, {y:.0f})")
+    return True
+
+def get_text_from_ax_tree():
+    """
+    Получить текст из Accessibility Tree.
+    Собирает все текстовые узлы с их ролью.
+    """
+    nodes = get_ax_tree()
+    result = []
+    for node in nodes:
+        role = node.get("role", "unknown")
+        name = node.get("name", "")
+        if name:
+            result.append(f"[{role}] {name}")
+    return "\n".join(result) if result else "Нет текста в AX Tree"
+
+# ============================================
+# DSPy ИНТЕГРАЦИЯ
 # ============================================
 
 try:
@@ -158,36 +241,53 @@ class AgnesLM(dspy.LM):
 class BrowserTask(Signature):
     """
     Ты агент с доступом к браузеру через Browser Harness.
+    Работай строго по документации browser-harness.
     
-    ДОСТУПНЫЕ ИНСТРУМЕНТЫ BROWSER HARNESS:
+    ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
     
     1. Навигация:
-       - tool_new_tab(url) - открыть новую вкладку с URL
-       - tool_goto_url(url) - перейти на URL
-       - tool_wait_for_load() - дождаться загрузки
-       - tool_close_tab() - закрыть вкладку
+       - tool_new_tab(url) -> str — ПЕРВАЯ НАВИГАЦИЯ ТОЛЬКО ЧЕРЕЗ НЕЁ!
+       - tool_goto_url(url) -> str — для навигации в активной вкладке
+       - tool_wait_for_load() -> str — ВСЕГДА после навигации
+       - tool_ensure_real_tab() -> str — если вкладка устарела
     
-    2. Информация о странице:
-       - tool_page_info() - URL и заголовок
-       - tool_get_text() - весь текст на странице
-       - tool_get_links() - все ссылки
-       - tool_get_buttons() - все кнопки
-       - tool_get_headings() - все заголовки
+    2. Поиск элементов (РЕКОМЕНДУЕМЫЙ СПОСОБ):
+       - tool_get_ax_tree() -> str — всё дерево с role, name, backendDOMNodeId
+       - tool_click_by_role(role, name) -> str — клик по центру элемента
+       - tool_click_by_coords(x, y) -> str — клик по координатам
+       - tool_get_coords_by_role(role, name) -> str — координаты элемента
     
-    3. Взаимодействие:
-       - tool_js(expression) - выполнить JavaScript
-       - tool_fill_input(selector, text) - заполнить поле
-       - tool_click_at_xy(x, y) - кликнуть по координатам
-       - tool_scroll(x, y) - прокрутить страницу
+    3. Информация о странице:
+       - tool_page_info() -> str — URL, title, viewport
+       - tool_capture_screenshot() -> str — ТОЛЬКО ДЛЯ ПРОВЕРКИ
     
-    4. Скриншоты:
-       - tool_capture_screenshot(filename) - сделать скриншот
+    4. Fallback (когда AX Tree не помогает):
+       - tool_js(expression) -> str — выполнить JavaScript (canvas, виджеты)
+       - tool_fill_input(selector, text) -> str — заполнить поле
+       - tool_scroll(dx, dy) -> str — прокрутить страницу
     
-    ПРАВИЛА:
-    - Всегда используй инструменты Browser Harness
-    - Для получения текста используй tool_get_text
-    - Для кликов используй tool_click_at_xy
-    - Для заполнения форм используй tool_fill_input
+    5. Управление вкладками:
+       - tool_list_tabs() -> str
+       - tool_current_tab() -> str
+       - tool_switch_tab(tab_id) -> str
+       - tool_close_tab() -> str
+    
+    ПРАВИЛА ИЗ ДОКУМЕНТАЦИИ:
+    1. Первая навигация — ТОЛЬКО tool_new_tab(url), НЕ tool_goto_url(url)
+    2. Всегда вызывай tool_wait_for_load() после любой навигации
+    3. Для поиска используй tool_get_ax_tree(), НЕ скриншоты
+    4. Для кликов — tool_click_by_role() или tool_click_by_coords()
+    5. Скриншоты — только для проверки результата
+    6. Если AX Tree не хватает — используй tool_js() как fallback
+    7. Если вкладка устарела — tool_ensure_real_tab()
+    
+    СТРАТЕГИЯ ПО УМОЛЧАНИЮ:
+    1. tool_new_tab(url) — открыть страницу
+    2. tool_wait_for_load() — дождаться загрузки
+    3. tool_get_ax_tree() — получить структуру страницы
+    4. Найти элемент по role/name в AX Tree
+    5. tool_click_by_role(role, name) — кликнуть
+    6. tool_capture_screenshot() — проверить результат
     """
     
     question = InputField(desc="Задача пользователя")
@@ -263,11 +363,11 @@ dspy_agent = None
 dspy_lm = None
 
 # ============================================
-# ИНИЦИАЛИЗАЦИЯ DSPy С ИНСТРУМЕНТАМИ
+# ИНИЦИАЛИЗАЦИЯ DSPy С ИНСТРУМЕНТАМИ (ПО ДОКЕ)
 # ============================================
 
 def init_dspy_agent():
-    """Инициализация DSPy агента с инструментами Browser Harness"""
+    """Инициализация DSPy агента с инструментами Browser Harness по документации"""
     global dspy_agent, dspy_lm
     
     if not DSPY_AVAILABLE:
@@ -281,11 +381,12 @@ def init_dspy_agent():
     
     try:
         # ============================================================
-        # ВСЕ ИНСТРУМЕНТЫ BROWSER HARNESS ДЛЯ DSPy
+        # ВСЕ ИНСТРУМЕНТЫ ПО ДОКУМЕНТАЦИИ
         # ============================================================
         
+        # 1. Навигация
         def tool_new_tab(url: str = "https://example.com") -> str:
-            """Открыть новую вкладку с URL"""
+            """Открыть новую вкладку с URL (ПЕРВАЯ НАВИГАЦИЯ ТОЛЬКО ЧЕРЕЗ НЕЁ)"""
             try:
                 new_tab(url)
                 wait_for_load()
@@ -294,7 +395,7 @@ def init_dspy_agent():
                 return f"❌ Ошибка: {e}"
         
         def tool_goto_url(url: str) -> str:
-            """Перейти на URL"""
+            """Перейти на URL (для навигации в активной вкладке)"""
             try:
                 goto_url(url)
                 wait_for_load()
@@ -310,16 +411,77 @@ def init_dspy_agent():
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        def tool_js(expression: str) -> str:
-            """Выполнить JavaScript на странице"""
+        def tool_ensure_real_tab() -> str:
+            """Восстановить вкладку, если она устарела"""
             try:
-                result = js(expression)
-                return str(result) if result is not None else "✅ JavaScript выполнен"
+                ensure_real_tab()
+                return "✅ Вкладка восстановлена"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        # 2. Accessibility Tree (РЕКОМЕНДУЕМЫЙ СПОСОБ)
+        def tool_get_ax_tree() -> str:
+            """Получить Accessibility Tree страницы (role, name, backendDOMNodeId)"""
+            try:
+                nodes = get_ax_tree()
+                if not nodes:
+                    return "❌ AX Tree пуст"
+                result = []
+                for node in nodes[:50]:  # Ограничиваем для LLM
+                    role = node.get("role", "unknown")
+                    name = node.get("name", "")
+                    if name:
+                        result.append(f"[{role}] {name}")
+                return "\n".join(result) if result else "Нет текста в AX Tree"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_click_by_role(role: str, name: str = None) -> str:
+            """Кликнуть по элементу по его роли и имени"""
+            try:
+                success = click_element_by_role(role, name)
+                if success:
+                    return f"✅ Клик по {role}: {name or 'без имени'}"
+                return f"❌ Элемент не найден: {role}: {name or 'без имени'}"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_click_by_coords(x: int, y: int) -> str:
+            """Кликнуть по координатам"""
+            try:
+                click_at_xy(x, y)
+                return f"✅ Клик по ({x}, {y})"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        def tool_get_coords_by_role(role: str, name: str = None) -> str:
+            """Получить координаты элемента по роли и имени"""
+            try:
+                nodes = get_ax_tree()
+                target = find_element_by_role(nodes, role, name)
+                if not target:
+                    return f"❌ Элемент не найден: {role}: {name or 'без имени'}"
+                backend_id = target.get("backendDOMNodeId")
+                if not backend_id:
+                    return "❌ Нет backendDOMNodeId"
+                x, y = get_element_coords(backend_id)
+                if x is None or y is None:
+                    return "❌ Не удалось получить координаты"
+                return f"Координаты: ({x:.0f}, {y:.0f})"
+            except Exception as e:
+                return f"❌ Ошибка: {e}"
+        
+        # 3. Информация о странице
+        def tool_page_info() -> str:
+            """Получить информацию о странице (URL, title, viewport)"""
+            try:
+                info = page_info()
+                return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
         def tool_capture_screenshot(filename: str = None) -> str:
-            """Сделать скриншот страницы"""
+            """Сделать скриншот страницы (ТОЛЬКО ДЛЯ ПРОВЕРКИ)"""
             try:
                 if not filename:
                     timestamp = int(time.time())
@@ -329,57 +491,32 @@ def init_dspy_agent():
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        def tool_page_info() -> str:
-            """Получить информацию о странице"""
+        # 4. Fallback (когда AX Tree не помогает)
+        def tool_js(expression: str) -> str:
+            """Выполнить JavaScript на странице (fallback)"""
             try:
-                info = page_info()
-                return f"URL: {info.get('url', 'unknown')}\nTitle: {info.get('title', 'unknown')}"
+                result = js(expression)
+                return str(result) if result is not None else "✅ JS выполнен"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        def tool_get_text() -> str:
-            """Получить весь текст на странице"""
+        def tool_fill_input(selector: str, text: str) -> str:
+            """Заполнить поле ввода по CSS селектору"""
             try:
-                result = js('document.body.innerText')
-                if result and len(result) > 10:
-                    return result[:5000]
-                return "❌ Текст не найден"
+                fill_input(selector, text)
+                return f"✅ Заполнено: {selector}"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        def tool_get_links() -> str:
-            """Получить все ссылки на странице"""
+        def tool_scroll(dx: int, dy: int) -> str:
+            """Прокрутить страницу"""
             try:
-                result = js('Array.from(document.querySelectorAll("a")).map(el => el.href).filter(h => h)')
-                if isinstance(result, list) and result:
-                    links = [str(item) for item in result if item]
-                    return f"Ссылки ({len(links)}): {links[:20]}"
-                return "❌ Ссылок не найдено"
+                scroll(dx, dy)
+                return f"✅ Прокрутка на ({dx}, {dy})"
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        def tool_get_buttons() -> str:
-            """Получить все кнопки на странице"""
-            try:
-                result = js('Array.from(document.querySelectorAll("button, input[type=submit]")).map(el => el.innerText || el.value || el.type).filter(t => t && t.trim())')
-                if isinstance(result, list) and result:
-                    buttons = [str(item).strip() for item in result if item and str(item).strip()]
-                    return f"Кнопки: {buttons[:20]}"
-                return "❌ Кнопок не найдено"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
-        def tool_get_headings() -> str:
-            """Получить все заголовки на странице"""
-            try:
-                result = js('Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).map(el => `${el.tagName}: ${el.innerText}`).filter(t => t && t.trim())')
-                if isinstance(result, list) and result:
-                    headings = [str(item).strip() for item in result if item and str(item).strip()]
-                    return "Заголовки:\n" + "\n".join(headings)
-                return "❌ Заголовков не найдено"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
+        # 5. Управление вкладками
         def tool_list_tabs() -> str:
             """Список всех открытых вкладок"""
             try:
@@ -412,30 +549,6 @@ def init_dspy_agent():
             except Exception as e:
                 return f"❌ Ошибка: {e}"
         
-        def tool_fill_input(selector: str, text: str) -> str:
-            """Заполнить поле ввода по CSS селектору"""
-            try:
-                fill_input(selector, text)
-                return f"✅ Заполнено: {selector}"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
-        def tool_click_at_xy(x: int, y: int) -> str:
-            """Кликнуть по координатам"""
-            try:
-                click_at_xy(x, y)
-                return f"✅ Клик по ({x}, {y})"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
-        def tool_scroll(dx: int, dy: int) -> str:
-            """Прокрутить страницу"""
-            try:
-                scroll(dx, dy)
-                return f"✅ Прокрутка на ({dx}, {dy})"
-            except Exception as e:
-                return f"❌ Ошибка: {e}"
-        
         # ============================================================
         # СОБИРАЕМ ВСЕ ИНСТРУМЕНТЫ
         # ============================================================
@@ -444,20 +557,20 @@ def init_dspy_agent():
             Tool(tool_new_tab),
             Tool(tool_goto_url),
             Tool(tool_wait_for_load),
-            Tool(tool_js),
-            Tool(tool_capture_screenshot),
+            Tool(tool_ensure_real_tab),
+            Tool(tool_get_ax_tree),
+            Tool(tool_click_by_role),
+            Tool(tool_click_by_coords),
+            Tool(tool_get_coords_by_role),
             Tool(tool_page_info),
-            Tool(tool_get_text),
-            Tool(tool_get_links),
-            Tool(tool_get_buttons),
-            Tool(tool_get_headings),
+            Tool(tool_capture_screenshot),
+            Tool(tool_js),
+            Tool(tool_fill_input),
+            Tool(tool_scroll),
             Tool(tool_list_tabs),
             Tool(tool_current_tab),
             Tool(tool_switch_tab),
             Tool(tool_close_tab),
-            Tool(tool_fill_input),
-            Tool(tool_click_at_xy),
-            Tool(tool_scroll),
         ]
         
         # Инициализируем DSPy с инструментами
@@ -468,7 +581,7 @@ def init_dspy_agent():
         )
         
         if dspy_agent:
-            logger.info(f"✅ DSPy агент инициализирован с {len(tools)} инструментами")
+            logger.info(f"✅ DSPy агент инициализирован с {len(tools)} инструментами (по документации)")
         else:
             logger.warning("⚠️ Не удалось создать DSPy агента")
             
@@ -476,27 +589,46 @@ def init_dspy_agent():
         logger.error(f"❌ Ошибка инициализации DSPy: {e}")
         dspy_agent = None
 
+# ============================================
+# TELEGRAM КОМАНДЫ
+# ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛡️ **Veil + browser-harness + DSPy**\n\n"
+        "🛡️ **Veil + browser-harness (по документации)**\n\n"
         "Команды:\n"
         "/start_veil - запустить Veil\n"
         "/check - проверить браузер\n"
         "/harness - тест harness\n"
+        "/ax - показать Accessibility Tree\n"
         "/dspy <задача> - задать вопрос агенту\n"
         "/diag - диагностика"
     )
+
+async def ax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать Accessibility Tree страницы"""
+    await update.message.reply_text("🌳 Получаю Accessibility Tree...")
+    
+    if not browser_instance:
+        await update.message.reply_text("❌ Сначала запусти Veil: /start_veil")
+        return
+    
+    try:
+        text = get_text_from_ax_tree()
+        if text and len(text) > 4000:
+            text = text[:4000] + "\n\n... (обрезано)"
+        await update.message.reply_text(
+            f"🌳 **Accessibility Tree**\n\n{text}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global browser_instance, chrome_process
     await update.message.reply_text("🔄 Запускаю Veil...")
     
     if not VEIL_OK:
-        await update.message.reply_text(
-            "❌ Veil не установлен!\n"
-            "Установи: pip install git+https://github.com/acunningham-ship-it/veilbrowser.git#subdirectory=python"
-        )
+        await update.message.reply_text("❌ Veil не установлен!")
         return
     
     try:
@@ -534,17 +666,23 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from veilbrowser import Browser
         browser_instance = await Browser.connect(cdp_url)
         
-        # Инициализируем DSPy агента после запуска браузера
+        # Инициализируем DSPy агента
         if DSPY_AVAILABLE:
             await update.message.reply_text("🧠 Инициализирую DSPy агента...")
             init_dspy_agent()
+        
+        # Открываем тестовую страницу
+        new_tab("https://example.com")
+        wait_for_load()
         
         await update.message.reply_text(
             f"✅ **Veil запущен!**\n\n"
             f"🔌 CDP: {cdp_url}\n"
             f"🆔 PID: {chrome_process.pid}\n"
             f"🧠 DSPy: {'✅ Активен' if dspy_agent else '❌ Отключен'}\n\n"
-            f"Используй /dspy <задача> для AI-агента"
+            f"📋 Команды:\n"
+            f"/ax - показать Accessibility Tree\n"
+            f"/dspy <задача> - AI-агент"
         )
         
     except Exception as e:
@@ -574,7 +712,8 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             })
         """)
         
-        if result.get('webdriver') is False:
+        webdriver = result.get('webdriver')
+        if webdriver in (False, None):
             verdict = "✅ **Браузер НЕОТЛИЧИМ!** 🎉"
         else:
             verdict = "⚠️ **Браузер как бот**"
@@ -582,8 +721,9 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🔍 **Результат**\n\n"
             f"{verdict}\n"
-            f"• webdriver: `{result.get('webdriver')}`\n"
-            f"• platform: `{result.get('platform')}`"
+            f"• webdriver: `{webdriver}`\n"
+            f"• platform: `{result.get('platform')}`\n\n"
+            f"💡 `None` или `false` — идеально!"
         )
         
         close_tab()
@@ -599,7 +739,7 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        report = "🧪 **Тест browser-harness helpers**\n\n"
+        report = "🧪 **Тест browser-harness (по документации)**\n\n"
         
         new_tab("https://example.com")
         report += "✅ new_tab()\n"
@@ -607,31 +747,30 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wait_for_load()
         report += "✅ wait_for_load()\n"
         
-        info = page_info()
-        report += f"✅ page_info(): {info.get('title', 'N/A')[:30]}\n"
+        # 1. AX Tree
+        ax = get_text_from_ax_tree()
+        report += f"✅ AX Tree: {len(ax)} символов\n"
         
-        tab = current_tab()
-        report += f"✅ current_tab(): {tab.get('title', 'N/A')[:30]}\n"
-        
-        tabs = list_tabs()
-        report += f"✅ list_tabs(): {len(tabs)} вкладок\n"
-        
-        ua = js("navigator.userAgent")
-        report += f"✅ js(): {str(ua)[:40]}...\n"
-        
-        scroll(0, 100)
-        report += "✅ scroll()\n"
+        # 2. Координатный клик
+        nodes = get_ax_tree()
+        link = find_element_by_role(nodes, "link", "More information...")
+        if link:
+            x, y = get_element_coords(link.get("backendDOMNodeId"))
+            click_at_xy(x, y)
+            report += f"✅ Клик по ссылке 'More information...'\n"
+        else:
+            report += "ℹ️ Ссылка 'More information...' не найдена\n"
         
         screenshot_path = capture_screenshot()
         if screenshot_path and os.path.exists(screenshot_path):
             with open(screenshot_path, 'rb') as f:
-                await update.message.reply_photo(photo=f, caption="📸 Скриншот")
+                await update.message.reply_photo(photo=f, caption="📸 После клика")
             report += "✅ capture_screenshot()\n"
         
         close_tab()
         report += "✅ close_tab()\n"
         
-        await update.message.reply_text(report + "\n🎉 Все функции работают!")
+        await update.message.reply_text(report + "\n🎉 Все функции работают по документации!")
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -640,15 +779,17 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /dspy"""
     if not context.args:
         await update.message.reply_text(
-            "🧠 **DSPy Agent**\n\n"
-            "Отправь задачу агенту:\n"
-            "`/dspy открой google.com и сделай скриншот`\n\n"
+            "🧠 **DSPy Agent (по документации browser-harness)**\n\n"
             "Доступные инструменты:\n"
-            "• new_tab / goto_url\n"
-            "• get_text / get_links / get_buttons\n"
-            "• fill_input / click_at_xy\n"
-            "• capture_screenshot / js\n"
-            "• scroll / list_tabs / close_tab"
+            "• tool_new_tab / tool_goto_url\n"
+            "• tool_get_ax_tree - Accessibility Tree (РЕКОМЕНДУЕТСЯ)\n"
+            "• tool_click_by_role / tool_click_by_coords\n"
+            "• tool_capture_screenshot - для проверки\n"
+            "• tool_js - fallback для сложных случаев\n\n"
+            "Примеры:\n"
+            "/dspy открой example.com и покажи заголовок\n"
+            "/dspy найди кнопку Login и кликни на неё\n"
+            "/dspy сделай скриншот google.com"
         )
         return
     
@@ -657,22 +798,15 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not DSPY_AVAILABLE:
-        await update.message.reply_text(
-            "❌ **DSPy не установлен!**\n\n"
-            "Установи:\n"
-            "```bash\n"
-            "pip install dspy httpx\n"
-            "```"
-        )
+        await update.message.reply_text("❌ DSPy не установлен!\nУстанови: pip install dspy httpx")
         return
     
     if not dspy_agent:
         await update.message.reply_text(
-            "❌ **DSPy агент не инициализирован!**\n\n"
+            "❌ DSPy агент не инициализирован!\n\n"
             "Проверьте:\n"
             "1. Переменную AGNES_API_KEY\n"
-            "2. Интернет-соединение\n\n"
-            "Перезапусти бота: /start_veil"
+            "2. Перезапустите /start_veil"
         )
         return
     
@@ -693,9 +827,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(answer) > 4000:
             answer = answer[:4000] + "\n\n... (обрезано)"
         
-        await status_msg.edit_text(
-            f"✅ **Результат:**\n\n{answer}"
-        )
+        await status_msg.edit_text(f"✅ **Результат:**\n\n{answer}")
         
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
@@ -722,7 +854,7 @@ async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.status_code == 200:
             report += f"• CDP: ✅ Доступен\n"
         else:
-            report += f"• CDP: ⚠️ Код {response.status_code}\n"
+            report += f"• CDP: ⚠️ {response.status_code}\n"
     except:
         report += "• CDP: ❌ Не доступен\n"
     
@@ -738,11 +870,12 @@ def main():
     app.add_handler(CommandHandler("start_veil", start_veil))
     app.add_handler(CommandHandler("check", check_browser))
     app.add_handler(CommandHandler("harness", test_harness))
+    app.add_handler(CommandHandler("ax", ax_command))
     app.add_handler(CommandHandler("dspy", dspy_command))
     app.add_handler(CommandHandler("diag", diag))
     
-    logger.info("🤖 Бот запущен!")
-    logger.info("📋 Команды: /start_veil, /check, /harness, /dspy, /diag")
+    logger.info("🤖 Бот запущен (по документации browser-harness)!")
+    logger.info("📋 Команды: /start_veil, /check, /harness, /ax, /dspy, /diag")
     app.run_polling()
 
 if __name__ == "__main__":
