@@ -14,7 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 sys.path.insert(0, "browser-harness/src")
 
 # ============================================
-# ИМПОРТЫ BROWSER HARNESS (ТОЛЬКО ТО, ЧТО ЕСТЬ)
+# ИМПОРТЫ BROWSER HARNESS (ВСЕ СИНХРОННЫЕ)
 # ============================================
 
 from browser_harness.helpers import (
@@ -149,24 +149,26 @@ async def start_veil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Проверяю браузер через harness...")
+    await update.message.reply_text("🔄 Проверяю браузер...")
     
     if not browser_instance:
         await update.message.reply_text("❌ Сначала запусти Veil: /start_veil")
         return
     
     try:
-        await new_tab()
-        await goto_url("https://bot.sannysoft.com")
-        await wait_for_load()
+        # ВСЕ ФУНКЦИИ СИНХРОННЫЕ — БЕЗ AWAIT
+        new_tab("https://bot.sannysoft.com")
+        wait_for_load()
         
-        screenshot = await capture_screenshot()
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="📸 Проверка через harness"
-        )
+        screenshot_path = capture_screenshot()
+        if screenshot_path and os.path.exists(screenshot_path):
+            with open(screenshot_path, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption="📸 Проверка через harness"
+                )
         
-        result = await js("""
+        result = js("""
             () => ({
                 webdriver: navigator.webdriver,
                 userAgent: navigator.userAgent,
@@ -189,13 +191,13 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💡 Если `false` — всё работает!"
         )
         
-        await close_tab()
+        close_tab()
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
 async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тест browser-harness через helpers"""
+    """Тест browser-harness — ВСЕ ФУНКЦИИ СИНХРОННЫЕ"""
     await update.message.reply_text("🧪 Тестирую browser-harness...")
     
     if not browser_instance:
@@ -205,47 +207,48 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         report = "🧪 **Тест browser-harness helpers**\n\n"
         
+        # ✅ ВСЕ ВЫЗОВЫ БЕЗ AWAIT — ОНИ СИНХРОННЫЕ
+        
         # 1. new_tab
-        await new_tab()
+        new_tab("https://example.com")
         report += "✅ new_tab()\n"
         
-        # 2. goto_url
-        await goto_url("https://example.com")
-        report += "✅ goto_url()\n"
-        
-        # 3. wait_for_load
-        await wait_for_load()
+        # 2. wait_for_load
+        wait_for_load()
         report += "✅ wait_for_load()\n"
         
-        # 4. page_info
-        info = await page_info()
+        # 3. page_info
+        info = page_info()
         report += f"✅ page_info(): {info.get('title', 'N/A')[:30]}\n"
         
-        # 5. current_tab
-        tab = await current_tab()
+        # 4. current_tab
+        tab = current_tab()
         report += f"✅ current_tab(): {tab}\n"
         
-        # 6. list_tabs
-        tabs = await list_tabs()
+        # 5. list_tabs
+        tabs = list_tabs()
         report += f"✅ list_tabs(): {len(tabs)} вкладок\n"
         
-        # 7. js
-        result = await js("navigator.userAgent")
-        report += f"✅ js(): {str(result)[:40]}...\n"
+        # 6. js
+        ua = js("navigator.userAgent")
+        report += f"✅ js(): {str(ua)[:40]}...\n"
         
-        # 8. scroll
-        await scroll(0, 100)
+        # 7. scroll
+        scroll(0, 100)
         report += "✅ scroll()\n"
         
-        # 9. screenshot
-        screenshot = await capture_screenshot()
-        await update.message.reply_photo(
-            photo=screenshot,
-            caption="📸 Скриншот через harness"
-        )
+        # 8. capture_screenshot
+        screenshot_path = capture_screenshot()
+        if screenshot_path and os.path.exists(screenshot_path):
+            with open(screenshot_path, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption="📸 Скриншот через harness"
+                )
+            report += "✅ capture_screenshot()\n"
         
-        # 10. close_tab
-        await close_tab()
+        # 9. close_tab
+        close_tab()
         report += "✅ close_tab()\n"
         
         await update.message.reply_text(report + "\n🎉 Все функции работают!")
