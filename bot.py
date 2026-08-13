@@ -2,15 +2,13 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from cloakbrowser.sync import launch  # ← синхронный импорт
+from cloakbrowser import launch  # ✅ синхронный, без await
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не установлен!")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Используй /check <url>")
+    await update.message.reply_text("👋 Используй /check <url>")
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -18,25 +16,20 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     url = context.args[0]
-    await update.message.reply_text("⏳ Загружаю страницу через CloakBrowser...")
+    await update.message.reply_text("⏳ Загружаю...")
     
     try:
-        # 🔥 Синхронный запуск (не async/await)
-        browser = launch(
-            headless=True,
-            fingerprint=True
-        )
+        # ✅ launch — синхронный, НЕ await
+        browser = launch(headless=True, fingerprint=True)
         page = browser.new_page()
         page.goto(url, wait_until="networkidle")
         title = page.title()
         content = page.content()
         browser.close()
         
-        response = f"✅ {title}\n\n{content[:500]}..."
-        await update.message.reply_text(response[:4096])
-        
+        await update.message.reply_text(f"✅ {title}\n\n{content[:500]}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ {str(e)[:200]}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
