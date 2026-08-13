@@ -70,7 +70,9 @@ if not TELEGRAM_TOKEN:
 SCREENSHOTS_DIR = '/app/screenshots'
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
-browser_instance = None
+# ✅ ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+browser_instance = None  # Здесь будет храниться объект браузера
+browser_context = None   # Здесь будет храниться контекст
 harness_ready = False
 dspy_agent_instance = None
 
@@ -164,14 +166,13 @@ async def init_browser_and_harness():
     logger.info("🚀 Запускаем Camoufox...")
     
     try:
-        # ✅ ПРАВИЛЬНЫЙ СПОСОБ — сохраняем браузер через __aenter__()
-        # persistent_context=True — браузер не закроется при выходе
-        browser = AsyncCamoufox(
+        # ✅ Создаём браузер
+        # ВАЖНО: persistent_context=True - браузер не закроется
+        browser_instance = await AsyncCamoufox(
             headless=True,
             fingerprint=True,
-            persistent_context=True  # 👈 КЛЮЧЕВОЙ ПАРАМЕТР
-        )
-        browser_instance = await browser.__aenter__()
+            persistent_context=True
+        ).__aenter__()
         
         logger.info("✅ Camoufox запущен и сохранён")
         await asyncio.sleep(2)
@@ -188,6 +189,7 @@ async def init_browser_and_harness():
         
     except Exception as e:
         logger.error(f"❌ Ошибка запуска Camoufox: {e}")
+        browser_instance = None
         return False
 
 # ============================================================
@@ -317,13 +319,20 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Camoufox не установлен")
             return
         
-        # Создаём НОВЫЙ экземпляр для команды /check
-        async with AsyncCamoufox(headless=True, fingerprint=True) as browser:
-            page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
-            title = await page.title()
-            content = await page.content()
-            
+        # ✅ ИСПОЛЬЗУЕМ ГЛОБАЛЬНЫЙ browser_instance
+        global browser_instance
+        
+        if browser_instance is None:
+            await msg.edit_text("❌ Браузер не запущен. Используйте /status для проверки.")
+            return
+        
+        # Создаём страницу в существующем браузере
+        page = await browser_instance.new_page()
+        await page.goto(url, wait_until="networkidle")
+        title = await page.title()
+        content = await page.content()
+        await page.close()
+        
         await msg.edit_text(f"✅ {title}\n\n{content[:500]}")
         
     except Exception as e:
@@ -336,14 +345,13 @@ async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text("❌ Camoufox не установлен")
             return
         
-        # ИСПОЛЬЗУЕМ СОХРАНЁННЫЙ ЭКЗЕМПЛЯР браузера
         global browser_instance
         
         if browser_instance is None:
             await msg.edit_text("❌ Браузер не запущен. Используйте /status для проверки.")
             return
         
-        # Создаём новую страницу в существующем браузере
+        # Используем существующий браузер
         page = await browser_instance.new_page()
         await page.goto("https://example.com", wait_until="networkidle")
         screenshot_bytes = await page.screenshot()
@@ -439,6 +447,7 @@ async def main():
     logger.info(f"🦊 Camoufox: {'✅' if CAMOUFOX_AVAILABLE else '❌'}")
     logger.info(f"🔧 Harness: {'✅' if harness_ready else '❌'}")
     logger.info(f"🧠 DSPy: {'✅' if dspy_agent_instance else '❌'}")
+    logger.info(f"🌐 Браузер: {'✅' if browser_instance else '❌'}")
     logger.info("📋 Команды: /start, /check, /screenshot, /status, /dspy")
     
     try:
