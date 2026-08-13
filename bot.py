@@ -1,5 +1,5 @@
 import os
-import sys 
+import sys
 import asyncio
 import logging
 import subprocess
@@ -279,6 +279,64 @@ def get_text_from_ax_tree():
         if name:
             result.append(f"[{role}] {name}")
     return "\n".join(result) if result else "Нет текста в AX Tree"
+
+# ============================================
+# УНИВЕРСАЛЬНАЯ ОЧИСТКА ВКЛАДОК
+# ============================================
+
+def cleanup_tabs(keep_one=True):
+    """
+    Закрывает все вкладки, кроме одной (по умолчанию).
+    Если keep_one=True - оставляет одну чистую вкладку.
+    """
+    try:
+        tabs = list_tabs()
+        if not tabs:
+            logger.info("ℹ️ Нет открытых вкладок")
+            return
+        
+        logger.info(f"🧹 Очистка: {len(tabs)} вкладок")
+        
+        # Если нужно оставить одну вкладку
+        if keep_one and len(tabs) > 1:
+            # Закрываем все, кроме первой
+            for i, tab in enumerate(tabs):
+                if i == 0:
+                    continue
+                try:
+                    switch_tab(tab)
+                    close_tab()
+                    logger.info(f"✅ Закрыта вкладка: {tab}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось закрыть {tab}: {e}")
+            
+            # Переключаемся на первую вкладку
+            try:
+                switch_tab(tabs[0])
+                # Открываем about:blank для чистоты
+                goto_url("about:blank")
+                wait_for_load()
+                logger.info("✅ Оставлена одна чистая вкладка")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось переключиться: {e}")
+        
+        # Если keep_one=False - закрываем все
+        else:
+            for tab in tabs:
+                try:
+                    switch_tab(tab)
+                    close_tab()
+                    logger.info(f"✅ Закрыта вкладка: {tab}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось закрыть {tab}: {e}")
+            
+            # Создаем новую чистую вкладку
+            new_tab("about:blank")
+            wait_for_load()
+            logger.info("✅ Все вкладки закрыты, создана новая")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка очистки: {e}")
 
 def set_cookies_via_js():
     """Установить куки через JavaScript (наиболее надёжный способ)"""
@@ -814,6 +872,10 @@ async def ax_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🌳 **Accessibility Tree**\n\n{text}"
         )
+        
+        # Очистка
+        cleanup_tabs(keep_one=True)
+        
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
 
@@ -932,6 +994,7 @@ async def check_browser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         close_tab()
+        cleanup_tabs(keep_one=True)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -1010,6 +1073,7 @@ async def check_xcom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(report)
         
         close_tab()
+        cleanup_tabs(keep_one=True)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -1065,6 +1129,7 @@ async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось сохранить скриншот")
         
         close_tab()
+        cleanup_tabs(keep_one=True)
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:300]}")
@@ -1106,7 +1171,7 @@ async def test_harness(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += "✅ capture_screenshot()\n"
         
         close_tab()
-        report += "✅ close_tab()\n"
+        cleanup_tabs(keep_one=True)
         
         await update.message.reply_text(report + "\n🎉 Все функции работают по документации!")
         
@@ -1167,9 +1232,16 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await status_msg.edit_text(f"✅ **Результат:**\n\n{answer}")
         
+        # ✅ ОЧИСТКА ВСЕХ ВКЛАДОК ПОСЛЕ ЗАВЕРШЕНИЯ АГЕНТА
+        await update.message.reply_text("🧹 Закрываю все вкладки...")
+        cleanup_tabs(keep_one=True)
+        
     except Exception as e:
         logger.error(f"❌ DSPy ошибка: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)[:300]}")
+        
+        # ✅ ДАЖЕ ПРИ ОШИБКЕ - ОЧИСТКА
+        cleanup_tabs(keep_one=True)
 
 async def diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = f"📊 **Диагностика**\n\n"
