@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y \
 
 FROM psyb0t/stealthy-auto-browse:latest
 
+RUN pip install --force-reinstall playwright==1.46.0
+
 WORKDIR /app
 
 RUN mkdir -p /app/logs /app/screenshots /app/browser-harness/agent-workspace
