@@ -4,8 +4,6 @@ import logging
 import time
 import signal
 
-import httpx
-
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -159,7 +157,6 @@ async def check_x_auth():
         )
 
         current_url = page.url
-
         title = await page.title()
 
         logger.info(
@@ -267,15 +264,7 @@ async def init_browser():
             "✅ BrowserContext создан"
         )
 
-        # ====================================================
-        # COOKIES ПОДГРУЖАЮТСЯ ЗДЕСЬ
-        # ====================================================
-
         await install_x_cookies()
-
-        # ====================================================
-        # TEST BROWSER
-        # ====================================================
 
         page = await browser_context.new_page()
 
@@ -297,10 +286,6 @@ async def init_browser():
             await page.close()
 
         browser_ready = True
-
-        # ====================================================
-        # TEST X
-        # ====================================================
 
         await check_x_auth()
 
@@ -685,125 +670,6 @@ def create_browser_tools():
 
 
 # ============================================================
-# AGNES
-# ============================================================
-
-class AgnesLM(dspy.LM):
-
-    def __init__(
-        self,
-        model="agnes-2.0-flash",
-        api_key=None,
-        **kwargs,
-    ):
-
-        self.api_key = (
-            api_key
-            or os.environ.get(
-                "AGNES_API_KEY"
-            )
-        )
-
-        self.model = model
-
-        super().__init__(
-            model=model,
-            model_type="chat",
-            temperature=kwargs.get(
-                "temperature",
-                0.3,
-            ),
-            max_tokens=kwargs.get(
-                "max_tokens",
-                2000,
-            ),
-            cache=False,
-        )
-
-        self.provider = "agnes-ai"
-
-    def forward(
-        self,
-        prompt=None,
-        messages=None,
-        **kwargs,
-    ):
-
-        if not self.api_key:
-
-            return [
-                "AGNES_API_KEY не задан"
-            ]
-
-        params = {
-            **self.kwargs,
-            **kwargs,
-        }
-
-        api_messages = (
-            messages
-            or [
-                {
-                    "role": "user",
-                    "content": prompt or "",
-                }
-            ]
-        )
-
-        payload = {
-            "model": self.model,
-            "messages": api_messages,
-            "temperature": params.get(
-                "temperature",
-                0.3,
-            ),
-            "max_tokens": params.get(
-                "max_tokens",
-                2000,
-            ),
-        }
-
-        headers = {
-            "Authorization":
-                f"Bearer {self.api_key}",
-            "Content-Type":
-                "application/json",
-        }
-
-        try:
-
-            with httpx.Client(
-                timeout=60
-            ) as client:
-
-                response = client.post(
-                    "https://apihub.agnes-ai.com/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                )
-
-                response.raise_for_status()
-
-                data = response.json()
-
-                return [
-                    data["choices"][0]
-                    ["message"]
-                    ["content"]
-                ]
-
-        except Exception as e:
-
-            logger.exception(
-                "❌ Agnes API"
-            )
-
-            return [
-                f"Ошибка: {e}"
-            ]
-
-
-# ============================================================
 # INIT DSPY
 # ============================================================
 
@@ -813,14 +679,27 @@ def init_dspy():
 
     if not AGNES_API_KEY:
 
+        logger.error(
+            "❌ AGNES_API_KEY не задан"
+        )
+
         return False
 
     try:
 
-        lm = AgnesLM(
+        # ====================================================
+        # Agnes API должен быть OpenAI-compatible
+        # ====================================================
+
+        lm = dspy.LM(
+            "openai/agnes-2.0-flash",
+            api_base=(
+                "https://apihub.agnes-ai.com/v1"
+            ),
             api_key=AGNES_API_KEY,
             temperature=0.3,
             max_tokens=2000,
+            cache=False,
         )
 
         settings.configure(
@@ -842,7 +721,7 @@ def init_dspy():
     except Exception as e:
 
         logger.exception(
-            f"❌ DSPy: {e}"
+            f"❌ DSPy ошибка: {e}"
         )
 
         return False
