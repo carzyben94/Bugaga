@@ -26,30 +26,43 @@ from dspy import (
 
 from camoufox.async_api import AsyncCamoufox
 
+from cookies import X_COOKIES
+
 
 # ============================================================
-# 1. LOGGER
+# LOGGER
 # ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 2. SETTINGS
+# SETTINGS
 # ============================================================
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
+TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN"
+)
+
+AGNES_API_KEY = os.environ.get(
+    "AGNES_API_KEY"
+)
 
 if not TELEGRAM_TOKEN:
     raise ValueError(
         "TELEGRAM_BOT_TOKEN не задан!"
     )
+
 
 SCREENSHOTS_DIR = "/app/screenshots"
 CAMOUFOX_PROFILE = "/app/camoufox-profile"
@@ -66,7 +79,7 @@ os.makedirs(
 
 
 # ============================================================
-# 3. GLOBAL STATE
+# GLOBAL STATE
 # ============================================================
 
 camoufox_manager = None
@@ -81,72 +94,7 @@ dspy_agent_instance = None
 
 
 # ============================================================
-# 4. X COOKIES
-# ============================================================
-
-def get_x_cookies():
-
-    cookie_values = {
-        "__cuid": os.getenv("X_CUID"),
-        "personalization_id": os.getenv(
-            "X_PERSONALIZATION_ID"
-        ),
-        "g_state": os.getenv(
-            "X_G_STATE"
-        ),
-        "lang": "ru",
-        "dnt": "1",
-        "guest_id": os.getenv(
-            "X_GUEST_ID"
-        ),
-        "twid": os.getenv(
-            "X_TWID"
-        ),
-        "auth_token": os.getenv(
-            "X_AUTH_TOKEN"
-        ),
-        "guest_id_ads": os.getenv(
-            "X_GUEST_ID_ADS"
-        ),
-        "guest_id_marketing": os.getenv(
-            "X_GUEST_ID_MARKETING"
-        ),
-        "ct0": os.getenv(
-            "X_CT0"
-        ),
-        "__cf_bm": os.getenv(
-            "X_CF_BM"
-        ),
-    }
-
-    cookies = []
-
-    for name, value in cookie_values.items():
-
-        if not value:
-            continue
-
-        cookie = {
-            "name": name,
-            "value": value,
-            "domain": ".x.com",
-            "path": "/",
-            "secure": True,
-        }
-
-        if name in {
-            "auth_token",
-            "__cf_bm",
-        }:
-            cookie["httpOnly"] = True
-
-        cookies.append(cookie)
-
-    return cookies
-
-
-# ============================================================
-# 5. INSTALL X COOKIES
+# INSTALL COOKIES
 # ============================================================
 
 async def install_x_cookies():
@@ -156,12 +104,10 @@ async def install_x_cookies():
             "BrowserContext не создан"
         )
 
-    cookies = get_x_cookies()
-
-    if not cookies:
+    if not X_COOKIES:
 
         logger.warning(
-            "🍪 X cookies не заданы"
+            "🍪 X_COOKIES пустой"
         )
 
         return False
@@ -169,12 +115,12 @@ async def install_x_cookies():
     try:
 
         await browser_context.add_cookies(
-            cookies
+            X_COOKIES
         )
 
         logger.info(
-            f"🍪 X cookies установлены: "
-            f"{len(cookies)}"
+            f"🍪 Установлено X cookies: "
+            f"{len(X_COOKIES)}"
         )
 
         return True
@@ -182,22 +128,19 @@ async def install_x_cookies():
     except Exception as e:
 
         logger.exception(
-            f"❌ Ошибка установки X cookies: {e}"
+            f"❌ Ошибка установки cookies: {e}"
         )
 
         return False
 
 
 # ============================================================
-# 6. CHECK X AUTH
+# CHECK X AUTH
 # ============================================================
 
 async def check_x_auth():
 
     global x_authenticated
-
-    if browser_context is None:
-        return False
 
     page = None
 
@@ -211,7 +154,9 @@ async def check_x_auth():
             timeout=30000,
         )
 
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(
+            3000
+        )
 
         current_url = page.url
 
@@ -234,7 +179,7 @@ async def check_x_auth():
             x_authenticated = False
 
             logger.warning(
-                "❌ X: авторизация не подтверждена"
+                "❌ X авторизация не подтверждена"
             )
 
             return False
@@ -243,17 +188,17 @@ async def check_x_auth():
             "https://x.com"
         )
 
-        names = {
+        cookie_names = {
             cookie["name"]
             for cookie in cookies
         }
 
-        if "auth_token" in names:
+        if "auth_token" in cookie_names:
 
             x_authenticated = True
 
             logger.info(
-                "✅ X: auth_token найден"
+                "✅ X auth_token найден"
             )
 
             return True
@@ -261,7 +206,7 @@ async def check_x_auth():
         x_authenticated = False
 
         logger.warning(
-            "⚠️ X открыт, но auth_token не найден"
+            "⚠️ auth_token отсутствует"
         )
 
         return False
@@ -271,7 +216,7 @@ async def check_x_auth():
         x_authenticated = False
 
         logger.exception(
-            f"❌ X auth check: {e}"
+            f"❌ Проверка X: {e}"
         )
 
         return False
@@ -287,7 +232,7 @@ async def check_x_auth():
 
 
 # ============================================================
-# 7. INIT CAMOUFOX
+# INIT CAMOUFOX
 # ============================================================
 
 async def init_browser():
@@ -313,6 +258,7 @@ async def init_browser():
         )
 
         if browser_context is None:
+
             raise RuntimeError(
                 "Camoufox вернул None"
             )
@@ -321,11 +267,16 @@ async def init_browser():
             "✅ BrowserContext создан"
         )
 
-        # ВАЖНО:
-        # cookies устанавливаются ДО X
+        # ====================================================
+        # COOKIES ПОДГРУЖАЮТСЯ ЗДЕСЬ
+        # ====================================================
+
         await install_x_cookies()
 
-        # Проверяем браузер
+        # ====================================================
+        # TEST BROWSER
+        # ====================================================
+
         page = await browser_context.new_page()
 
         try:
@@ -337,7 +288,7 @@ async def init_browser():
             )
 
             logger.info(
-                f"🌐 Browser OK: "
+                "🌐 Browser OK: "
                 f"{await page.title()}"
             )
 
@@ -347,7 +298,10 @@ async def init_browser():
 
         browser_ready = True
 
-        # Проверяем X
+        # ====================================================
+        # TEST X
+        # ====================================================
+
         await check_x_auth()
 
         logger.info(
@@ -355,12 +309,12 @@ async def init_browser():
         )
 
         logger.info(
-            f"🦊 Camoufox: "
+            "🦊 Camoufox: "
             f"{'✅' if browser_ready else '❌'}"
         )
 
         logger.info(
-            f"🐦 X auth: "
+            "🐦 X: "
             f"{'✅' if x_authenticated else '❌'}"
         )
 
@@ -373,7 +327,7 @@ async def init_browser():
     except Exception as e:
 
         logger.exception(
-            f"❌ Ошибка запуска Camoufox: {e}"
+            f"❌ Camoufox ошибка: {e}"
         )
 
         browser_ready = False
@@ -382,7 +336,7 @@ async def init_browser():
 
 
 # ============================================================
-# 8. NEW PAGE
+# NEW PAGE
 # ============================================================
 
 async def new_page():
@@ -391,6 +345,7 @@ async def new_page():
         not browser_ready
         or browser_context is None
     ):
+
         raise RuntimeError(
             "Camoufox не запущен"
         )
@@ -399,7 +354,7 @@ async def new_page():
 
 
 # ============================================================
-# 9. CLOSE BROWSER
+# CLOSE BROWSER
 # ============================================================
 
 async def close_browser():
@@ -424,10 +379,6 @@ async def close_browser():
             None,
         )
 
-        logger.info(
-            "✅ Camoufox закрыт"
-        )
-
     except Exception as e:
 
         logger.warning(
@@ -443,12 +394,10 @@ async def close_browser():
 
 
 # ============================================================
-# 10. BROWSER GOTO
+# BROWSER GOTO
 # ============================================================
 
-async def browser_goto(
-    url: str,
-):
+async def browser_goto(url):
 
     async with browser_lock:
 
@@ -462,12 +411,10 @@ async def browser_goto(
                 timeout=30000,
             )
 
-            title = await page.title()
-
             return (
                 "✅ Открыто\n"
                 f"URL: {page.url}\n"
-                f"Title: {title}"
+                f"Title: {await page.title()}"
             )
 
         finally:
@@ -476,7 +423,7 @@ async def browser_goto(
 
 
 # ============================================================
-# 11. PAGE INFO
+# PAGE INFO
 # ============================================================
 
 async def browser_page_info():
@@ -498,7 +445,7 @@ async def browser_page_info():
 
 
 # ============================================================
-# 12. GET TEXT
+# TEXT
 # ============================================================
 
 async def browser_get_text():
@@ -515,9 +462,6 @@ async def browser_get_text():
                 timeout=10000
             )
 
-            if not text:
-                return "Текст не найден"
-
             return text[:15000]
 
         finally:
@@ -526,7 +470,7 @@ async def browser_get_text():
 
 
 # ============================================================
-# 13. GET LINKS
+# LINKS
 # ============================================================
 
 async def browser_get_links():
@@ -548,14 +492,8 @@ async def browser_get_links():
                 """
             )
 
-            links = links[:100]
-
-            if not links:
-                return "Ссылки не найдены"
-
             return "\n".join(
-                str(link)
-                for link in links
+                links[:100]
             )
 
         finally:
@@ -564,11 +502,11 @@ async def browser_get_links():
 
 
 # ============================================================
-# 14. GET HTML
+# HTML
 # ============================================================
 
 async def browser_get_html(
-    selector: str = "body",
+    selector="body"
 ):
 
     async with browser_lock:
@@ -591,12 +529,10 @@ async def browser_get_html(
 
 
 # ============================================================
-# 15. JAVASCRIPT
+# JAVASCRIPT
 # ============================================================
 
-async def browser_js(
-    expression: str,
-):
+async def browser_js(expression):
 
     async with browser_lock:
 
@@ -616,7 +552,7 @@ async def browser_js(
 
 
 # ============================================================
-# 16. SCREENSHOT
+# SCREENSHOT
 # ============================================================
 
 async def browser_screenshot():
@@ -628,7 +564,7 @@ async def browser_screenshot():
         try:
 
             filename = (
-                f"screenshot_"
+                "screenshot_"
                 f"{int(time.time())}.png"
             )
 
@@ -650,7 +586,7 @@ async def browser_screenshot():
 
 
 # ============================================================
-# 17. ASYNC BRIDGE FOR DSPY
+# DSPY ASYNC BRIDGE
 # ============================================================
 
 def run_async_from_dspy(coro):
@@ -668,36 +604,30 @@ def run_async_from_dspy(coro):
 
 
 # ============================================================
-# 18. DSPY SIGNATURE
+# DSPY SIGNATURE
 # ============================================================
 
 class BrowserTask(Signature):
 
     question = InputField(
-        desc=(
-            "Задача пользователя. "
-            "Используй браузерные инструменты "
-            "для выполнения задачи."
-        )
+        desc="Задача пользователя"
     )
 
     answer = OutputField(
         desc=(
-            "Краткий результат выполнения задачи. "
-            "Не возвращай внутренний Prediction."
+            "Итоговый результат выполнения "
+            "задачи"
         )
     )
 
 
 # ============================================================
-# 19. DSPY TOOLS
+# DSPY TOOLS
 # ============================================================
 
 def create_browser_tools():
 
-    def tool_goto(
-        url: str,
-    ):
+    def tool_goto(url: str):
 
         return run_async_from_dspy(
             browser_goto(url)
@@ -722,7 +652,7 @@ def create_browser_tools():
         )
 
     def tool_get_html(
-        selector: str = "body",
+        selector: str = "body"
     ):
 
         return run_async_from_dspy(
@@ -730,7 +660,7 @@ def create_browser_tools():
         )
 
     def tool_js(
-        expression: str,
+        expression: str
     ):
 
         return run_async_from_dspy(
@@ -755,7 +685,7 @@ def create_browser_tools():
 
 
 # ============================================================
-# 20. AGNES LM
+# AGNES
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -802,7 +732,7 @@ class AgnesLM(dspy.LM):
         if not self.api_key:
 
             return [
-                "Ошибка: AGNES_API_KEY не задан"
+                "AGNES_API_KEY не задан"
             ]
 
         params = {
@@ -820,6 +750,19 @@ class AgnesLM(dspy.LM):
             ]
         )
 
+        payload = {
+            "model": self.model,
+            "messages": api_messages,
+            "temperature": params.get(
+                "temperature",
+                0.3,
+            ),
+            "max_tokens": params.get(
+                "max_tokens",
+                2000,
+            ),
+        }
+
         headers = {
             "Authorization":
                 f"Bearer {self.api_key}",
@@ -827,25 +770,10 @@ class AgnesLM(dspy.LM):
                 "application/json",
         }
 
-        payload = {
-            "model": self.model,
-            "messages": api_messages,
-            "temperature":
-                params.get(
-                    "temperature",
-                    0.3,
-                ),
-            "max_tokens":
-                params.get(
-                    "max_tokens",
-                    2000,
-                ),
-        }
-
         try:
 
             with httpx.Client(
-                timeout=60.0
+                timeout=60
             ) as client:
 
                 response = client.post(
@@ -871,12 +799,12 @@ class AgnesLM(dspy.LM):
             )
 
             return [
-                f"Ошибка Agnes: {e}"
+                f"Ошибка: {e}"
             ]
 
 
 # ============================================================
-# 21. INIT DSPY
+# INIT DSPY
 # ============================================================
 
 def init_dspy():
@@ -884,10 +812,6 @@ def init_dspy():
     global dspy_agent_instance
 
     if not AGNES_API_KEY:
-
-        logger.warning(
-            "⚠️ AGNES_API_KEY не задан"
-        )
 
         return False
 
@@ -903,17 +827,14 @@ def init_dspy():
             lm=lm
         )
 
-        tools = create_browser_tools()
-
         dspy_agent_instance = ReActV2(
             signature=BrowserTask,
-            tools=tools,
+            tools=create_browser_tools(),
             max_iters=12,
         )
 
         logger.info(
-            f"🧠 DSPy готов: "
-            f"{len(tools)} tools"
+            "🧠 DSPy готов"
         )
 
         return True
@@ -921,19 +842,17 @@ def init_dspy():
     except Exception as e:
 
         logger.exception(
-            f"❌ DSPy init: {e}"
+            f"❌ DSPy: {e}"
         )
 
         return False
 
 
 # ============================================================
-# 22. RUN DSPY
+# RUN AGENT
 # ============================================================
 
-def run_agent(
-    question: str,
-):
+def run_agent(question):
 
     if not dspy_agent_instance:
 
@@ -954,10 +873,11 @@ def run_agent(
             None,
         )
 
-        if answer:
-            return str(answer)
-
-        return str(result)
+        return (
+            str(answer)
+            if answer
+            else str(result)
+        )
 
     except Exception as e:
 
@@ -969,7 +889,7 @@ def run_agent(
 
 
 # ============================================================
-# 23. /START
+# /START
 # ============================================================
 
 async def start(
@@ -988,7 +908,7 @@ async def start(
 
 
 # ============================================================
-# 24. /CHECK
+# /CHECK
 # ============================================================
 
 async def check(
@@ -1032,17 +952,14 @@ async def check(
                     timeout=10000
                 )
 
-                text = text[:2000]
-
             finally:
 
                 await page.close()
 
         await msg.edit_text(
-            f"✅ Открыто\n"
-            f"URL: {url}\n"
+            "✅ Открыто\n\n"
             f"Title: {title}\n\n"
-            f"{text}"
+            f"{text[:2000]}"
         )
 
     except Exception as e:
@@ -1057,7 +974,7 @@ async def check(
 
 
 # ============================================================
-# 25. /STATUS
+# /STATUS
 # ============================================================
 
 async def status(
@@ -1079,7 +996,7 @@ async def status(
 
 
 # ============================================================
-# 26. /SCREENSHOT
+# /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -1109,17 +1026,13 @@ async def screenshot(
 
     except Exception as e:
 
-        logger.exception(
-            "❌ /screenshot"
-        )
-
         await msg.edit_text(
             f"❌ Ошибка:\n{str(e)[:500]}"
         )
 
 
 # ============================================================
-# 27. /DSPY
+# /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -1130,12 +1043,11 @@ async def dspy_command(
     if not context.args:
 
         await update.message.reply_text(
-            "🧠 Пример:\n\n"
+            "Пример:\n\n"
             "/dspy открой https://example.com "
             "и покажи заголовок\n\n"
             "/dspy найди новости про Трампа "
-            "на BBC\n\n"
-            "/dspy открой мой профиль X"
+            "на BBC"
         )
 
         return
@@ -1206,7 +1118,7 @@ async def dspy_command(
 
 
 # ============================================================
-# 28. MAIN
+# MAIN
 # ============================================================
 
 async def main():
@@ -1267,6 +1179,11 @@ async def main():
     )
 
     logger.info(
+        f"🐦 X: "
+        f"{'✅' if x_authenticated else '❌'}"
+    )
+
+    logger.info(
         f"🧠 DSPy: "
         f"{'✅' if dspy_ok else '❌'}"
     )
@@ -1274,9 +1191,7 @@ async def main():
     try:
 
         await app.initialize()
-
         await app.start()
-
         await app.updater.start_polling()
 
         logger.info(
@@ -1286,11 +1201,6 @@ async def main():
         stop_signal = asyncio.Event()
 
         def signal_handler():
-
-            logger.info(
-                "🛑 Получен сигнал остановки"
-            )
-
             stop_signal.set()
 
         try:
@@ -1311,7 +1221,6 @@ async def main():
             NotImplementedError,
             RuntimeError,
         ):
-
             pass
 
         while not stop_signal.is_set():
@@ -1319,22 +1228,10 @@ async def main():
             await asyncio.sleep(60)
 
             logger.info(
-                "💓 Bot alive | "
-                f"X: "
-                f"{'✅' if x_authenticated else '❌'}"
+                "💓 Bot alive"
             )
 
-    except Exception as e:
-
-        logger.exception(
-            f"❌ Основной цикл: {e}"
-        )
-
     finally:
-
-        logger.info(
-            "🛑 Завершение..."
-        )
 
         try:
             await app.updater.stop()
@@ -1355,7 +1252,7 @@ async def main():
 
 
 # ============================================================
-# 29. ENTRYPOINT
+# ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
