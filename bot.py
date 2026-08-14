@@ -1,10 +1,10 @@
 import os
-import sys
 import asyncio
 import logging
 import time
 import signal
 import warnings
+from html import escape
 
 import httpx
 
@@ -18,7 +18,7 @@ from telegram.helpers import escape_markdown
 
 
 # ============================================================
-# 1. ЛОГГЕР
+# 1. LOGGER
 # ============================================================
 
 logging.basicConfig(
@@ -32,17 +32,7 @@ warnings.filterwarnings("ignore")
 
 
 # ============================================================
-# 2. PATH К BROWSER HARNESS
-# ============================================================
-
-sys.path.insert(
-    0,
-    "/app/browser-harness/src"
-)
-
-
-# ============================================================
-# 3. ИМПОРТ DSPY
+# 2. DSPY
 # ============================================================
 
 import dspy
@@ -58,7 +48,7 @@ from dspy import (
 
 
 # ============================================================
-# 4. CAMOUFOX
+# 3. CAMOUFOX
 # ============================================================
 
 try:
@@ -78,48 +68,7 @@ except ImportError as e:
 
 
 # ============================================================
-# 5. BROWSER HARNESS
-# ============================================================
-
-try:
-
-    from browser_harness.helpers import (
-        new_tab,
-        goto_url,
-        wait_for_load,
-        close_tab,
-        page_info,
-        current_tab,
-        capture_screenshot,
-        js,
-        list_tabs,
-        switch_tab,
-        fill_input,
-        click_at_xy,
-        type_text,
-        press_key,
-        scroll,
-    )
-
-    from browser_harness.admin import ensure_daemon
-
-    HARNESS_AVAILABLE = True
-
-    logger.info(
-        "✅ Browser Harness загружен"
-    )
-
-except ImportError as e:
-
-    HARNESS_AVAILABLE = False
-
-    logger.warning(
-        f"⚠️ Browser Harness не найден: {e}"
-    )
-
-
-# ============================================================
-# 6. НАСТРОЙКИ
+# 4. ENV
 # ============================================================
 
 TELEGRAM_TOKEN = os.environ.get(
@@ -127,7 +76,6 @@ TELEGRAM_TOKEN = os.environ.get(
 )
 
 if not TELEGRAM_TOKEN:
-
     raise ValueError(
         "TELEGRAM_BOT_TOKEN не задан!"
     )
@@ -147,24 +95,39 @@ os.makedirs(
 
 
 # ============================================================
-# 7. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
+# 5. GLOBAL BROWSER STATE
 # ============================================================
 
-# Это именно BrowserContext, полученный
-# из AsyncCamoufox.__aenter__()
+# ВАЖНО:
+#
+# browser_instance = Browser
+#
+# НЕ AsyncCamoufox manager.
+#
+# AsyncCamoufox manager живёт внутри main().
+#
 browser_instance = None
 
-# Сам менеджер AsyncCamoufox.
-# Его нужно сохранить, чтобы корректно вызвать __aexit__().
-camoufox_manager = None
+# Текущая страница.
+#
+# Это позволяет DSPy использовать одну вкладку
+# между несколькими инструментами.
+#
+current_page = None
 
-harness_ready = False
+# Lock, чтобы два Telegram запроса одновременно
+# не ломали одну и ту же страницу.
+browser_lock = asyncio.Lock()
 
+# DSPy
 dspy_agent_instance = None
+
+# LM
+agnes_lm = None
 
 
 # ============================================================
-# 8. AGNES LM ДЛЯ DSPY
+# 6. AGNES LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -285,13 +248,16 @@ class AgnesLM(dspy.LM):
                 data = response.json()
 
 
-                if (
-                    "choices" in data
-                    and len(data["choices"]) > 0
-                ):
+                choices = data.get(
+                    "choices",
+                    []
+                )
+
+
+                if choices:
 
                     return [
-                        data["choices"][0]["message"]["content"]
+                        choices[0]["message"]["content"]
                     ]
 
 
@@ -326,127 +292,89 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# 9. DSPY SIGNATURE
+# 7. BROWSER HELPERS
 # ============================================================
 
-class BrowserTask(Signature):
-
-    """
-    Ты агент с доступом к браузеру Camoufox.
-
-    Доступные инструменты:
-
-    tool_goto_url(url)
-    tool_page_info()
-    tool_get_text()
-    tool_get_links()
-    tool_screenshot()
-    tool_js(expression)
-    """
-
-    question = InputField(
-        desc="Задача пользователя"
-    )
-
-    answer = OutputField(
-        desc="Результат выполнения задачи"
-    )
-
-
-# ============================================================
-# 10. ИНИЦИАЛИЗАЦИЯ CAMOUFOX
-# ============================================================
-
-async def init_browser_and_harness():
+def get_browser():
 
     global browser_instance
-    global camoufox_manager
-    global harness_ready
 
+    if browser_instance is None:
 
-    if not CAMOUFOX_AVAILABLE:
-
-        logger.error(
-            "❌ Camoufox недоступен"
+        raise RuntimeError(
+            "Camoufox не запущен"
         )
 
-        return False
+    if not hasattr(
+        browser_instance,
+        "new_page"
+    ):
 
-
-    try:
-
-        logger.info(
-            "🚀 Запускаем Camoufox..."
-        )
-
-
-        # ----------------------------------------------------
-        # ВАЖНО
-        #
-        # Не сохраняем AsyncCamoufox как browser_instance.
-        #
-        # AsyncCamoufox -> менеджер
-        # __aenter__() -> BrowserContext
-        #
-        # Именно BrowserContext имеет new_page().
-        # ----------------------------------------------------
-
-        camoufox_manager = AsyncCamoufox(
-
-            headless=True,
-
-            fingerprint=True,
-
-        )
-
-
-        browser_instance = (
-            await camoufox_manager.__aenter__()
-        )
-
-
-        logger.info(
-            "✅ Camoufox запущен: "
+        raise RuntimeError(
+            "Объект Camoufox не является Browser: "
             f"{type(browser_instance).__name__}"
         )
 
-
-        # ----------------------------------------------------
-        # ПРОВЕРКА
-        # ----------------------------------------------------
-
-        if not hasattr(
-            browser_instance,
-            "new_page"
-        ):
-
-            logger.error(
-                "❌ Полученный объект не имеет new_page()"
-            )
-
-            logger.error(
-                f"Тип: {type(browser_instance)}"
-            )
-
-            return False
+    return browser_instance
 
 
-        logger.info(
-            "🔍 Проверяем браузер..."
+async def get_current_page():
+
+    global current_page
+
+    if current_page is None:
+
+        browser = get_browser()
+
+        current_page = (
+            await browser.new_page()
         )
 
+    return current_page
 
-        page = None
 
+# ============================================================
+# 8. OPEN URL
+# ============================================================
+
+async def browser_open(
+    url: str
+) -> str:
+
+    global current_page
+
+    if not url.startswith(
+        ("http://", "https://")
+    ):
+
+        url = "https://" + url
+
+
+    async with browser_lock:
 
         try:
 
-            page = await browser_instance.new_page()
+            browser = get_browser()
 
 
-            await page.goto(
+            if current_page is not None:
 
-                "https://example.com",
+                try:
+                    await current_page.close()
+                except Exception:
+                    pass
+
+                current_page = None
+
+
+            current_page = (
+                await browser.new_page()
+            )
+
+
+            await current_page.goto(
+
+                url,
 
                 wait_until="domcontentloaded",
 
@@ -454,120 +382,50 @@ async def init_browser_and_harness():
             )
 
 
-            title = await page.title()
+            await asyncio.sleep(1)
 
 
-            logger.info(
-                f"✅ Браузер работает. "
+            title = await current_page.title()
+
+
+            return (
+                f"✅ Открыта страница\n"
+                f"URL: {url}\n"
                 f"Title: {title}"
             )
 
 
-        finally:
+        except Exception as e:
 
-            if page is not None:
+            logger.exception(
+                f"❌ browser_open: {e}"
+            )
 
-                try:
-                    await page.close()
-
-                except Exception:
-                    pass
-
-
-        # ----------------------------------------------------
-        # HARNESS
-        # ----------------------------------------------------
-
-        if HARNESS_AVAILABLE:
-
-            try:
-
-                logger.info(
-                    "🔗 Подключаем Browser Harness..."
-                )
-
-
-                ensure_daemon()
-
-
-                new_tab(
-                    "about:blank"
-                )
-
-
-                wait_for_load()
-
-
-                harness_ready = True
-
-
-                logger.info(
-                    "✅ Browser Harness готов"
-                )
-
-
-            except Exception as e:
-
-                harness_ready = False
-
-                logger.warning(
-                    f"⚠️ Harness не подключился: {e}"
-                )
-
-
-        return True
-
-
-    except Exception as e:
-
-        logger.exception(
-            f"❌ Ошибка запуска Camoufox: {e}"
-        )
-
-
-        browser_instance = None
-
-        camoufox_manager = None
-
-        harness_ready = False
-
-
-        return False
+            return (
+                f"❌ Ошибка открытия страницы: {e}"
+            )
 
 
 # ============================================================
-# 11. DSPY TOOLS
+# 9. PAGE INFO
 # ============================================================
 
-def create_harness_tools():
+async def browser_page_info() -> str:
 
-    tools = []
-
-
-    # --------------------------------------------------------
-    # GOTO
-    # --------------------------------------------------------
-
-    def tool_goto_url(
-        url: str
-    ) -> str:
+    async with browser_lock:
 
         try:
 
-            if not url.startswith(
-                ("http://", "https://")
-            ):
+            page = await get_current_page()
 
-                url = "https://" + url
+            url = page.url
 
-
-            goto_url(url)
-
-            wait_for_load()
+            title = await page.title()
 
 
             return (
-                f"✅ Перешел на {url}"
+                f"URL: {url}\n"
+                f"Title: {title}"
             )
 
 
@@ -578,83 +436,34 @@ def create_harness_tools():
             )
 
 
-    tools.append(
-        Tool(tool_goto_url)
-    )
+# ============================================================
+# 10. GET PAGE TEXT
+# ============================================================
 
+async def browser_get_text() -> str:
 
-    # --------------------------------------------------------
-    # PAGE INFO
-    # --------------------------------------------------------
-
-    def tool_page_info() -> str:
+    async with browser_lock:
 
         try:
 
-            info = page_info()
+            page = await get_current_page()
 
 
-            return (
-                f"URL: "
-                f"{info.get('url', 'unknown')}\n"
-                f"Title: "
-                f"{info.get('title', 'unknown')}"
+            text = await page.locator(
+                "body"
+            ).inner_text(
+                timeout=10000
             )
 
 
-        except Exception as e:
-
-            return (
-                f"❌ Ошибка: {e}"
-            )
-
-
-    tools.append(
-        Tool(tool_page_info)
-    )
-
-
-    # --------------------------------------------------------
-    # GET TEXT
-    # --------------------------------------------------------
-
-    def tool_get_text() -> str:
-
-        try:
-
-            result = js(
-                "() => document.body.innerText"
-            )
-
-
-            if isinstance(
-                result,
-                dict
-            ):
-
-                text = str(
-                    result.get(
-                        "result",
-                        ""
-                    )
-                )
-
-            else:
-
-                text = str(result)
-
-
-            if (
-                not text
-                or len(text) < 2
-            ):
+            if not text:
 
                 return (
-                    "❌ Текст не найден"
+                    "❌ Текст страницы не найден"
                 )
 
 
-            return text[:10000]
+            return text[:12000]
 
 
         except Exception as e:
@@ -664,54 +473,35 @@ def create_harness_tools():
             )
 
 
-    tools.append(
-        Tool(tool_get_text)
-    )
+# ============================================================
+# 11. GET LINKS
+# ============================================================
 
+async def browser_get_links() -> str:
 
-    # --------------------------------------------------------
-    # GET LINKS
-    # --------------------------------------------------------
-
-    def tool_get_links() -> str:
+    async with browser_lock:
 
         try:
 
-            result = js(
+            page = await get_current_page()
 
-                '() => Array.from('
-                'document.querySelectorAll("a")'
-                ').map(el => el.href)'
-                '.filter(h => h)'
 
+            links = await page.locator(
+                "a"
+            ).evaluate_all(
+                """
+                elements => elements
+                    .map(el => el.href)
+                    .filter(Boolean)
+                """
             )
 
 
-            if isinstance(
-                result,
-                dict
-            ):
-
-                result = result.get(
-                    "result",
-                    result
-                )
-
-
-            if isinstance(
-                result,
-                list
-            ):
-
-                links = [
-                    str(x)
-                    for x in result
-                    if x
-                ]
-
-            else:
-
-                links = []
+            links = [
+                str(x)
+                for x in links
+                if x
+            ]
 
 
             if not links:
@@ -721,17 +511,17 @@ def create_harness_tools():
                 )
 
 
-            result_text = (
+            result = (
                 f"Ссылки ({len(links)}):\n"
             )
 
 
-            result_text += "\n".join(
-                links[:50]
+            result += "\n".join(
+                links[:100]
             )
 
 
-            return result_text[:10000]
+            return result[:12000]
 
 
         except Exception as e:
@@ -741,18 +531,48 @@ def create_harness_tools():
             )
 
 
-    tools.append(
-        Tool(tool_get_links)
-    )
+# ============================================================
+# 12. JAVASCRIPT
+# ============================================================
 
+async def browser_js(
+    expression: str
+) -> str:
 
-    # --------------------------------------------------------
-    # SCREENSHOT
-    # --------------------------------------------------------
-
-    def tool_screenshot() -> str:
+    async with browser_lock:
 
         try:
+
+            page = await get_current_page()
+
+
+            result = await page.evaluate(
+                expression
+            )
+
+
+            return str(result)
+
+
+        except Exception as e:
+
+            return (
+                f"❌ Ошибка JavaScript: {e}"
+            )
+
+
+# ============================================================
+# 13. SCREENSHOT
+# ============================================================
+
+async def browser_screenshot() -> str:
+
+    async with browser_lock:
+
+        try:
+
+            page = await get_current_page()
+
 
             timestamp = int(
                 time.time()
@@ -765,20 +585,19 @@ def create_harness_tools():
 
 
             full_path = os.path.join(
-
                 SCREENSHOTS_DIR,
-
                 filename
             )
 
 
-            capture_screenshot(
-                path=full_path
+            await page.screenshot(
+                path=full_path,
+                full_page=True
             )
 
 
             return (
-                f"✅ Скриншот сохранен: "
+                f"✅ Скриншот сохранён: "
                 f"{filename}"
             )
 
@@ -790,72 +609,183 @@ def create_harness_tools():
             )
 
 
-    tools.append(
-        Tool(tool_screenshot)
-    )
+# ============================================================
+# 14. CLICK
+# ============================================================
 
+async def browser_click(
+    selector: str
+) -> str:
 
-    # --------------------------------------------------------
-    # JAVASCRIPT
-    # --------------------------------------------------------
-
-    def tool_js(
-        expression: str
-    ) -> str:
+    async with browser_lock:
 
         try:
 
-            result = js(
-                expression
+            page = await get_current_page()
+
+
+            await page.locator(
+                selector
+            ).click(
+                timeout=10000
             )
 
 
-            if isinstance(
-                result,
-                dict
-            ):
-
-                return str(
-                    result.get(
-                        "result",
-                        result
-                    )
-                )
+            await asyncio.sleep(1)
 
 
-            return str(result)
+            return (
+                f"✅ Нажат элемент: {selector}"
+            )
 
 
         except Exception as e:
 
             return (
-                f"❌ Ошибка: {e}"
+                f"❌ Ошибка клика: {e}"
             )
 
 
-    tools.append(
-        Tool(tool_js)
-    )
+# ============================================================
+# 15. TYPE
+# ============================================================
+
+async def browser_type(
+    selector: str,
+    text: str
+) -> str:
+
+    async with browser_lock:
+
+        try:
+
+            page = await get_current_page()
 
 
-    return tools
+            await page.locator(
+                selector
+            ).fill(
+                text,
+                timeout=10000
+            )
+
+
+            return (
+                f"✅ Введён текст в {selector}"
+            )
+
+
+        except Exception as e:
+
+            return (
+                f"❌ Ошибка ввода: {e}"
+            )
 
 
 # ============================================================
-# 12. ИНИЦИАЛИЗАЦИЯ DSPY
+# 16. DSPY SIGNATURE
+# ============================================================
+
+class BrowserTask(Signature):
+
+    """
+    Ты автономный браузерный AI-агент.
+
+    Ты управляешь браузером Camoufox напрямую.
+
+    Доступные инструменты:
+
+    browser_open(url)
+    browser_page_info()
+    browser_get_text()
+    browser_get_links()
+    browser_js(expression)
+    browser_screenshot()
+    browser_click(selector)
+    browser_type(selector, text)
+
+    Сначала используй инструменты для получения
+    реальных данных страницы.
+
+    Не выдумывай содержимое страницы.
+
+    Если пользователь просит открыть сайт —
+    используй browser_open.
+
+    Если пользователь просит прочитать страницу —
+    используй browser_get_text.
+
+    Если пользователь просит ссылки —
+    используй browser_get_links.
+
+    Если нужно взаимодействовать со страницей —
+    используй browser_click или browser_type.
+
+    В конце дай короткий понятный ответ пользователю.
+    """
+
+    question = InputField(
+        desc="Задача пользователя"
+    )
+
+    answer = OutputField(
+        desc="Результат выполнения задачи"
+    )
+
+
+# ============================================================
+# 17. DSPY TOOLS
+# ============================================================
+
+def create_dspy_tools():
+
+    return [
+
+        Tool(
+            browser_open
+        ),
+
+        Tool(
+            browser_page_info
+        ),
+
+        Tool(
+            browser_get_text
+        ),
+
+        Tool(
+            browser_get_links
+        ),
+
+        Tool(
+            browser_js
+        ),
+
+        Tool(
+            browser_screenshot
+        ),
+
+        Tool(
+            browser_click
+        ),
+
+        Tool(
+            browser_type
+        ),
+    ]
+
+
+# ============================================================
+# 18. INIT DSPY
 # ============================================================
 
 def init_dspy():
 
     global dspy_agent_instance
+    global agnes_lm
 
 
-    api_key = os.environ.get(
-        "AGNES_API_KEY"
-    )
-
-
-    if not api_key:
+    if not AGNES_API_KEY:
 
         logger.warning(
             "⚠️ AGNES_API_KEY не задан"
@@ -866,9 +796,9 @@ def init_dspy():
 
     try:
 
-        lm = AgnesLM(
+        agnes_lm = AgnesLM(
 
-            api_key=api_key,
+            api_key=AGNES_API_KEY,
 
             temperature=0.3,
 
@@ -877,11 +807,11 @@ def init_dspy():
 
 
         settings.configure(
-            lm=lm
+            lm=agnes_lm
         )
 
 
-        tools = create_harness_tools()
+        tools = create_dspy_tools()
 
 
         dspy_agent_instance = ReActV2(
@@ -895,8 +825,8 @@ def init_dspy():
 
 
         logger.info(
-            f"✅ DSPy агент создан "
-            f"с {len(tools)} инструментами"
+            "✅ DSPy агент создан: %d tools",
+            len(tools)
         )
 
 
@@ -915,7 +845,7 @@ def init_dspy():
 
 
 # ============================================================
-# 13. RUN DSPY
+# 19. RUN DSPY
 # ============================================================
 
 def run_agent(
@@ -931,10 +861,14 @@ def run_agent(
 
     try:
 
-        result = (
-            dspy_agent_instance(
-                question=question
-            )
+        # DSPy Tool'ы async.
+        #
+        # ReActV2 умеет работать с инструментами,
+        # а здесь запускаем агент в текущем execution context.
+        #
+
+        result = dspy_agent_instance(
+            question=question
         )
 
 
@@ -945,10 +879,7 @@ def run_agent(
         )
 
 
-        if (
-            answer
-            and answer.strip()
-        ):
+        if answer and answer.strip():
 
             return answer
 
@@ -970,7 +901,7 @@ def run_agent(
 
 
 # ============================================================
-# 14. /START
+# 20. /START
 # ============================================================
 
 async def start(
@@ -982,23 +913,25 @@ async def start(
 
         "👋 Привет!\n\n"
 
-        "🦊 Camoufox + Browser Harness + DSPy\n\n"
+        "🦊 Camoufox + 🧠 DSPy\n\n"
+
+        "Browser Harness полностью удалён.\n\n"
 
         "Команды:\n"
 
         "/check <url> — открыть сайт\n"
 
-        "/dspy <запрос> — DSPy агент\n"
+        "/dspy <запрос> — AI браузерный агент\n"
 
         "/status — статус системы\n"
 
-        "/screenshot — сделать скриншот"
+        "/screenshot — скриншот текущей страницы"
 
     )
 
 
 # ============================================================
-# 15. /CHECK
+# 21. /CHECK
 # ============================================================
 
 async def check(
@@ -1025,21 +958,17 @@ async def check(
         ("http://", "https://")
     ):
 
-        url = (
-            "https://" + url
-        )
+        url = "https://" + url
 
 
     msg = await update.message.reply_text(
-
         "⏳ Открываю через Camoufox..."
-
     )
 
 
     try:
 
-        global browser_instance
+        global current_page
 
 
         if not CAMOUFOX_AVAILABLE:
@@ -1054,71 +983,51 @@ async def check(
         if browser_instance is None:
 
             await msg.edit_text(
-
-                "❌ Браузер не запущен.\n"
-                "Используйте /status"
-
+                "❌ Camoufox не запущен"
             )
 
             return
 
 
-        if not hasattr(
-            browser_instance,
-            "new_page"
-        ):
+        async with browser_lock:
 
-            await msg.edit_text(
+            if current_page is not None:
 
-                "❌ Неверный объект браузера.\n"
-                f"Тип: "
-                f"{type(browser_instance).__name__}"
+                try:
+                    await current_page.close()
+                except Exception:
+                    pass
 
+                current_page = None
+
+
+            current_page = (
+                await browser_instance.new_page()
             )
 
-            return
 
-
-        logger.info(
-            f"🌐 /check -> {url}"
-        )
-
-
-        page = None
-
-
-        try:
-
-            page = await browser_instance.new_page()
-
-
-            await page.goto(
+            await current_page.goto(
 
                 url,
 
                 wait_until="domcontentloaded",
 
                 timeout=30000
-
             )
 
 
-            # Даём JS немного времени
             await asyncio.sleep(2)
 
 
-            title = await page.title()
+            title = await current_page.title()
 
 
-            # Получаем текст
             try:
 
-                text = (
-                    await page
-                    .locator("body")
-                    .inner_text(
-                        timeout=10000
-                    )
+                text = await current_page.locator(
+                    "body"
+                ).inner_text(
+                    timeout=10000
                 )
 
             except Exception:
@@ -1136,62 +1045,30 @@ async def check(
             text = text[:3500]
 
 
-            # Telegram HTML escaping
-            from html import escape
-
-
-            safe_title = escape(
-                title or "Без заголовка"
-            )
-
-
-            safe_url = escape(
-                url
-            )
-
-
-            safe_text = escape(
-                text
-            )
-
-
             result = (
 
                 "✅ <b>Страница открыта</b>\n\n"
 
                 f"🌐 <b>URL:</b> "
-                f"{safe_url}\n"
+                f"{escape(url)}\n"
 
                 f"📌 <b>Title:</b> "
-                f"{safe_title}\n\n"
+                f"{escape(title or 'Без заголовка')}\n\n"
 
                 "<b>Текст:</b>\n"
 
-                f"{safe_text}"
+                f"{escape(text)}"
 
             )
 
 
-            await msg.edit_text(
+        await msg.edit_text(
 
-                result,
+            result,
 
-                parse_mode="HTML"
+            parse_mode="HTML"
 
-            )
-
-
-        finally:
-
-            if page is not None:
-
-                try:
-
-                    await page.close()
-
-                except Exception:
-
-                    pass
+        )
 
 
     except Exception as e:
@@ -1201,18 +1078,10 @@ async def check(
         )
 
 
-        from html import escape
-
-
-        error_text = escape(
-            str(e)[:1500]
-        )
-
-
         await msg.edit_text(
 
             "❌ <b>Ошибка:</b>\n"
-            f"<code>{error_text}</code>",
+            f"<code>{escape(str(e)[:1500])}</code>",
 
             parse_mode="HTML"
 
@@ -1220,7 +1089,7 @@ async def check(
 
 
 # ============================================================
-# 16. /SCREENSHOT
+# 22. /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -1235,96 +1104,55 @@ async def screenshot(
 
     try:
 
-        global browser_instance
-
-
-        if not CAMOUFOX_AVAILABLE:
-
-            await msg.edit_text(
-                "❌ Camoufox не установлен"
-            )
-
-            return
+        global current_page
 
 
         if browser_instance is None:
 
             await msg.edit_text(
-                "❌ Браузер не запущен"
+                "❌ Camoufox не запущен"
             )
 
             return
 
 
-        if not hasattr(
-            browser_instance,
-            "new_page"
-        ):
+        async with browser_lock:
 
-            await msg.edit_text(
+            if current_page is None:
 
-                "❌ Неверный объект браузера:\n"
-                f"{type(browser_instance).__name__}"
+                current_page = (
+                    await browser_instance.new_page()
+                )
 
-            )
-
-            return
-
-
-        page = None
-
-
-        try:
-
-            page = await browser_instance.new_page()
-
-
-            await page.goto(
-
-                "https://example.com",
-
-                wait_until="domcontentloaded",
-
-                timeout=30000
-
-            )
-
-
-            await asyncio.sleep(1)
+                await current_page.goto(
+                    "https://example.com",
+                    wait_until="domcontentloaded",
+                    timeout=30000
+                )
 
 
             screenshot_bytes = (
-                await page.screenshot(
+                await current_page.screenshot(
                     full_page=True
                 )
             )
 
 
-            await update.message.reply_photo(
+        await update.message.reply_photo(
 
-                photo=screenshot_bytes,
+            photo=screenshot_bytes,
 
-                caption=(
-                    "📸 Скриншот через Camoufox"
-                )
-
+            caption=(
+                "📸 Скриншот через Camoufox"
             )
 
+        )
 
+
+        try:
             await msg.delete()
-
-
-        finally:
-
-            if page is not None:
-
-                try:
-
-                    await page.close()
-
-                except Exception:
-
-                    pass
+        except Exception:
+            pass
 
 
     except Exception as e:
@@ -1332,9 +1160,6 @@ async def screenshot(
         logger.exception(
             f"❌ Screenshot error: {e}"
         )
-
-
-        from html import escape
 
 
         await msg.edit_text(
@@ -1348,7 +1173,7 @@ async def screenshot(
 
 
 # ============================================================
-# 17. /STATUS
+# 23. /STATUS
 # ============================================================
 
 async def status(
@@ -1375,14 +1200,13 @@ async def status(
         f"🦊 Camoufox: "
         f"{'✅' if CAMOUFOX_AVAILABLE else '❌'}\n"
 
-        f"🌐 Браузер: "
+        f"🌐 Browser: "
         f"{'✅' if browser_ok else '❌'}\n"
 
         f"🧠 DSPy: "
         f"{'✅' if dspy_agent_instance else '❌'}\n"
 
-        f"🔧 Harness: "
-        f"{'✅' if harness_ready else '❌'}\n"
+        "🔧 Harness: ❌ УДАЛЁН\n"
 
         "📁 Profile: "
         "/app/camoufox-profile\n"
@@ -1394,9 +1218,23 @@ async def status(
 
         status_text += (
 
-            "\n📌 <b>Browser type:</b> "
+            "\n📌 <b>Browser object:</b> "
+
             f"<code>"
             f"{type(browser_instance).__name__}"
+            f"</code>"
+
+        )
+
+
+    if current_page is not None:
+
+        status_text += (
+
+            "\n📄 <b>Current page:</b> "
+
+            f"<code>"
+            f"{escape(current_page.url)}"
             f"</code>"
 
         )
@@ -1412,7 +1250,7 @@ async def status(
 
 
 # ============================================================
-# 18. /DSPY
+# 24. /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -1424,20 +1262,21 @@ async def dspy_command(
 
         await update.message.reply_text(
 
-            "🧠 <b>DSPy Agent</b>\n\n"
+            "🧠 <b>DSPy Browser Agent</b>\n\n"
 
             "Примеры:\n\n"
 
             "<code>/dspy "
-            "открой google.com "
+            "открой example.com "
             "и покажи заголовок</code>\n\n"
 
             "<code>/dspy "
-            "найди все ссылки на python.org"
-            "</code>\n\n"
+            "открой python.org "
+            "и найди все ссылки</code>\n\n"
 
             "<code>/dspy "
-            "сделай скриншот</code>",
+            "открой google.com "
+            "и получи текст страницы</code>",
 
             parse_mode="HTML"
 
@@ -1451,7 +1290,7 @@ async def dspy_command(
         await update.message.reply_text(
 
             "❌ DSPy не инициализирован.\n"
-            "Проверьте AGNES_API_KEY"
+            "Проверь AGNES_API_KEY"
 
         )
 
@@ -1469,6 +1308,15 @@ async def dspy_command(
 
 
     try:
+
+        # DSPy может выполнять синхронный вызов,
+        # поэтому выносим сам LM/agent execution
+        # из Telegram event loop.
+        #
+        # ВАЖНО:
+        # браузерные async Tool'ы должны выполняться
+        # через DSPy async execution в актуальной версии.
+        #
 
         loop = asyncio.get_running_loop()
 
@@ -1520,85 +1368,34 @@ async def dspy_command(
 
         await msg.edit_text(
 
-            f"❌ Ошибка: "
+            "❌ Ошибка: "
             f"{str(e)[:1000]}"
 
         )
 
 
 # ============================================================
-# 19. ЗАКРЫТИЕ CAMOUFOX
+# 25. CLOSE CURRENT PAGE
 # ============================================================
 
-async def close_browser():
+async def close_current_page():
 
-    global browser_instance
-    global camoufox_manager
+    global current_page
 
-
-    logger.info(
-        "🛑 Закрываем браузер..."
-    )
-
-
-    # --------------------------------------------------------
-    # ВАЖНО:
-    #
-    # browser_instance = BrowserContext
-    #
-    # camoufox_manager = AsyncCamoufox
-    #
-    # Поэтому закрываем через __aexit__().
-    # --------------------------------------------------------
-
-    if camoufox_manager is not None:
+    if current_page is not None:
 
         try:
 
-            await camoufox_manager.__aexit__(
-                None,
-                None,
-                None
-            )
+            await current_page.close()
 
+        except Exception:
+            pass
 
-            logger.info(
-                "✅ Camoufox закрыт"
-            )
-
-
-        except Exception as e:
-
-            logger.warning(
-
-                "⚠️ Ошибка закрытия Camoufox: "
-                f"{e}"
-
-            )
-
-
-    else:
-
-        # На случай старого/нестандартного состояния
-        if browser_instance is not None:
-
-            try:
-
-                await browser_instance.close()
-
-            except Exception as e:
-
-                logger.warning(
-                    f"⚠️ Ошибка close(): {e}"
-                )
-
-
-    browser_instance = None
-    camoufox_manager = None
+        current_page = None
 
 
 # ============================================================
-# 20. MAIN
+# 26. MAIN
 # ============================================================
 
 async def main():
@@ -1611,240 +1408,347 @@ async def main():
     )
 
 
+    if not CAMOUFOX_AVAILABLE:
+
+        raise RuntimeError(
+            "Camoufox недоступен"
+        )
+
+
     # --------------------------------------------------------
     # CAMOUFOX
     # --------------------------------------------------------
 
-    browser_ok = (
-        await init_browser_and_harness()
-    )
-
-
-    # --------------------------------------------------------
-    # DSPY
-    # --------------------------------------------------------
-
-    dspy_ok = init_dspy()
-
-
-    # --------------------------------------------------------
-    # TELEGRAM
-    # --------------------------------------------------------
-
-    app = (
-        Application
-        .builder()
-        .token(TELEGRAM_TOKEN)
-        .build()
-    )
-
-
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-
-    app.add_handler(
-        CommandHandler(
-            "check",
-            check
-        )
-    )
-
-
-    app.add_handler(
-        CommandHandler(
-            "screenshot",
-            screenshot
-        )
-    )
-
-
-    app.add_handler(
-        CommandHandler(
-            "status",
-            status
-        )
-    )
-
-
-    app.add_handler(
-        CommandHandler(
-            "dspy",
-            dspy_command
-        )
-    )
-
-
     logger.info(
-        "🚀 Бот запускается..."
+        "🚀 Запускаем Camoufox..."
     )
 
 
-    logger.info(
-        f"🦊 Camoufox: "
-        f"{'✅' if CAMOUFOX_AVAILABLE else '❌'}"
-    )
+    # ========================================================
+    # ВАЖНО
+    #
+    # AsyncCamoufox — context manager.
+    #
+    # Внутри `async with` переменная browser
+    # является Browser.
+    #
+    # Именно этот объект имеет new_page().
+    # ========================================================
 
+    async with AsyncCamoufox(
 
-    logger.info(
-        f"🌐 Browser: "
-        f"{'✅' if browser_ok else '❌'}"
-    )
+        headless=True,
 
+        fingerprint=True,
 
-    logger.info(
-        f"🧠 DSPy: "
-        f"{'✅' if dspy_ok else '❌'}"
-    )
+    ) as browser:
 
+        browser_instance = browser
 
-    if browser_instance is not None:
 
         logger.info(
-            "📌 Browser object: "
-            f"{type(browser_instance).__name__}"
-        )
-
-
-    # --------------------------------------------------------
-    # TELEGRAM START
-    # --------------------------------------------------------
-
-    try:
-
-        await app.initialize()
-
-        await app.start()
-
-        await app.updater.start_polling(
-
-            drop_pending_updates=True
-
+            "✅ Camoufox запущен"
         )
 
 
         logger.info(
-            "🤖 Telegram бот запущен!"
+            "📌 Browser type: %s",
+            type(browser_instance).__name__
         )
 
 
-        # ----------------------------------------------------
-        # SIGNALS
-        # ----------------------------------------------------
-
-        stop_signal = asyncio.Event()
-
-
-        def signal_handler():
-
-            logger.info(
-                "🛑 Получен сигнал остановки"
+        logger.info(
+            "📌 Browser has new_page: %s",
+            hasattr(
+                browser_instance,
+                "new_page"
             )
-
-            stop_signal.set()
-
-
-        try:
-
-            loop = asyncio.get_running_loop()
+        )
 
 
-            loop.add_signal_handler(
-
-                signal.SIGINT,
-
-                signal_handler
-
-            )
-
-
-            loop.add_signal_handler(
-
-                signal.SIGTERM,
-
-                signal_handler
-
-            )
-
-
-        except (
-            NotImplementedError,
-            RuntimeError
+        if not hasattr(
+            browser_instance,
+            "new_page"
         ):
 
-            pass
-
-
-        # ----------------------------------------------------
-        # MAIN LOOP
-        # ----------------------------------------------------
-
-        while not stop_signal.is_set():
-
-            await asyncio.sleep(60)
-
-            logger.info(
-                "💓 Bot alive"
+            raise RuntimeError(
+                "Camoufox вернул объект "
+                "без new_page(): "
+                f"{type(browser_instance).__name__}"
             )
 
 
-    except Exception as e:
-
-        logger.exception(
-            f"❌ Ошибка основного цикла: {e}"
-        )
-
-
-    finally:
+        # ----------------------------------------------------
+        # TEST PAGE
+        # ----------------------------------------------------
 
         logger.info(
-            "🛑 Останавливаем бота..."
+            "🔍 Проверяем Camoufox..."
         )
 
 
-        try:
-
-            if app.updater:
-
-                await app.updater.stop()
-
-        except Exception:
-
-            pass
+        test_page = None
 
 
         try:
 
-            await app.stop()
-
-        except Exception:
-
-            pass
+            test_page = (
+                await browser_instance.new_page()
+            )
 
 
-        try:
+            await test_page.goto(
 
-            await app.shutdown()
+                "https://example.com",
 
-        except Exception:
+                wait_until="domcontentloaded",
 
-            pass
+                timeout=30000
+            )
 
 
-        await close_browser()
+            title = await test_page.title()
+
+
+            logger.info(
+                "✅ Camoufox работает: %s",
+                title
+            )
+
+
+        finally:
+
+            if test_page is not None:
+
+                try:
+                    await test_page.close()
+                except Exception:
+                    pass
+
+
+        # ----------------------------------------------------
+        # DSPY
+        # ----------------------------------------------------
+
+        dspy_ok = init_dspy()
+
+
+        # ----------------------------------------------------
+        # TELEGRAM
+        # ----------------------------------------------------
+
+        app = (
+            Application
+            .builder()
+            .token(TELEGRAM_TOKEN)
+            .build()
+        )
+
+
+        app.add_handler(
+            CommandHandler(
+                "start",
+                start
+            )
+        )
+
+
+        app.add_handler(
+            CommandHandler(
+                "check",
+                check
+            )
+        )
+
+
+        app.add_handler(
+            CommandHandler(
+                "screenshot",
+                screenshot
+            )
+        )
+
+
+        app.add_handler(
+            CommandHandler(
+                "status",
+                status
+            )
+        )
+
+
+        app.add_handler(
+            CommandHandler(
+                "dspy",
+                dspy_command
+            )
+        )
 
 
         logger.info(
-            "👋 Бот остановлен"
+            "🚀 Telegram запускается..."
         )
+
+
+        logger.info(
+            f"🦊 Camoufox: "
+            f"{'✅' if CAMOUFOX_AVAILABLE else '❌'}"
+        )
+
+
+        logger.info(
+            f"🌐 Browser: "
+            f"{'✅' if browser_instance else '❌'}"
+        )
+
+
+        logger.info(
+            f"🧠 DSPy: "
+            f"{'✅' if dspy_ok else '❌'}"
+        )
+
+
+        logger.info(
+            "🔧 Browser Harness: ❌ НЕТ"
+        )
+
+
+        # ----------------------------------------------------
+        # START TELEGRAM
+        # ----------------------------------------------------
+
+        try:
+
+            await app.initialize()
+
+            await app.start()
+
+            await app.updater.start_polling(
+                drop_pending_updates=True
+            )
+
+
+            logger.info(
+                "🤖 Telegram бот запущен!"
+            )
+
+
+            stop_signal = asyncio.Event()
+
+
+            def signal_handler():
+
+                logger.info(
+                    "🛑 Получен сигнал остановки"
+                )
+
+                stop_signal.set()
+
+
+            try:
+
+                loop = asyncio.get_running_loop()
+
+
+                loop.add_signal_handler(
+                    signal.SIGINT,
+                    signal_handler
+                )
+
+
+                loop.add_signal_handler(
+                    signal.SIGTERM,
+                    signal_handler
+                )
+
+
+            except (
+                NotImplementedError,
+                RuntimeError
+            ):
+
+                pass
+
+
+            # ------------------------------------------------
+            # MAIN LOOP
+            # ------------------------------------------------
+
+            while not stop_signal.is_set():
+
+                await asyncio.sleep(60)
+
+                logger.info(
+                    "💓 Bot alive"
+                )
+
+
+        except Exception as e:
+
+            logger.exception(
+                f"❌ Ошибка Telegram: {e}"
+            )
+
+
+        finally:
+
+            logger.info(
+                "🛑 Останавливаем Telegram..."
+            )
+
+
+            try:
+
+                if app.updater:
+
+                    await app.updater.stop()
+
+            except Exception:
+                pass
+
+
+            try:
+
+                await app.stop()
+
+            except Exception:
+                pass
+
+
+            try:
+
+                await app.shutdown()
+
+            except Exception:
+                pass
+
+
+            # ------------------------------------------------
+            # CLOSE PAGE
+            # ------------------------------------------------
+
+            await close_current_page()
+
+
+            browser_instance = None
+
+
+            logger.info(
+                "👋 Telegram остановлен"
+            )
+
+
+    # ========================================================
+    # AsyncCamoufox автоматически закрылся здесь
+    # ========================================================
+
+    logger.info(
+        "🦊 Camoufox закрыт"
+    )
 
 
 # ============================================================
-# 21. START
+# 27. ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
