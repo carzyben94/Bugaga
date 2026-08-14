@@ -90,6 +90,10 @@ browser_lock = asyncio.Lock()
 
 dspy_agent_instance = None
 
+# Главный asyncio event loop.
+# Нужен для вызова async Camoufox из DSPy thread.
+main_event_loop = None
+
 
 # ============================================================
 # INSTALL COOKIES
@@ -264,7 +268,15 @@ async def init_browser():
             "✅ BrowserContext создан"
         )
 
+        # ----------------------------------------------------
+        # COOKIES
+        # ----------------------------------------------------
+
         await install_x_cookies()
+
+        # ----------------------------------------------------
+        # TEST BROWSER
+        # ----------------------------------------------------
 
         page = await browser_context.new_page()
 
@@ -286,6 +298,10 @@ async def init_browser():
             await page.close()
 
         browser_ready = True
+
+        # ----------------------------------------------------
+        # TEST X
+        # ----------------------------------------------------
 
         await check_x_auth()
 
@@ -576,16 +592,40 @@ async def browser_screenshot():
 
 def run_async_from_dspy(coro):
 
-    loop = asyncio.get_event_loop()
+    global main_event_loop
+
+    if main_event_loop is None:
+
+        raise RuntimeError(
+            "Главный asyncio event loop "
+            "не инициализирован"
+        )
+
+    # DSPy работает в executor thread.
+    # Возвращаем coroutine в главный
+    # asyncio loop, где работает Camoufox.
 
     future = asyncio.run_coroutine_threadsafe(
         coro,
-        loop,
+        main_event_loop,
     )
 
-    return future.result(
-        timeout=90
-    )
+    try:
+
+        return future.result(
+            timeout=90
+        )
+
+    except Exception:
+
+        # Если coroutine упала,
+        # логируем и пробрасываем ошибку DSPy.
+
+        logger.exception(
+            "❌ Ошибка async bridge"
+        )
+
+        raise
 
 
 # ============================================================
@@ -686,10 +726,6 @@ def init_dspy():
         return False
 
     try:
-
-        # ====================================================
-        # Agnes API должен быть OpenAI-compatible
-        # ====================================================
 
         lm = dspy.LM(
             "openai/agnes-2.0-flash",
@@ -1002,6 +1038,14 @@ async def dspy_command(
 
 async def main():
 
+    global main_event_loop
+
+    # ========================================================
+    # САМОЕ ВАЖНОЕ ИСПРАВЛЕНИЕ
+    # ========================================================
+
+    main_event_loop = asyncio.get_running_loop()
+
     logger.info(
         "🚀 Инициализация..."
     )
@@ -1070,7 +1114,9 @@ async def main():
     try:
 
         await app.initialize()
+
         await app.start()
+
         await app.updater.start_polling()
 
         logger.info(
