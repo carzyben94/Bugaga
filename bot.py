@@ -3,7 +3,6 @@ import asyncio
 import logging
 import time
 import signal
-from typing import Optional
 
 import httpx
 
@@ -67,7 +66,13 @@ os.makedirs(CAMOUFOX_PROFILE, exist_ok=True)
 # 4. ГЛОБАЛЬНОЕ СОСТОЯНИЕ
 # ============================================================
 
+# ВАЖНО:
+# camoufox_manager = объект AsyncCamoufox
+# camoufox_context = BrowserContext, который возвращает __aenter__()
+
+camoufox_manager = None
 camoufox_context = None
+
 browser_ready = False
 
 browser_lock = asyncio.Lock()
@@ -80,10 +85,8 @@ dspy_agent_instance = None
 # ============================================================
 
 async def init_browser():
-    """
-    Запускает один persistent Camoufox context.
-    """
 
+    global camoufox_manager
     global camoufox_context
     global browser_ready
 
@@ -94,25 +97,33 @@ async def init_browser():
     logger.info("🚀 Запускаем Camoufox...")
 
     try:
-        camoufox_context = AsyncCamoufox(
-            headless=True,
 
-            # ВАЖНО:
-            # persistent_context требует user_data_dir
+        # ----------------------------------------------------
+        # Создаём manager
+        # ----------------------------------------------------
+
+        camoufox_manager = AsyncCamoufox(
+            headless=True,
             persistent_context=True,
             user_data_dir=CAMOUFOX_PROFILE,
         )
 
-        # AsyncCamoufox в async context возвращает BrowserContext
-        browser = await camoufox_context.__aenter__()
+        # ----------------------------------------------------
+        # Получаем настоящий BrowserContext
+        # ----------------------------------------------------
 
-        if browser is None:
+        camoufox_context = (
+            await camoufox_manager.__aenter__()
+        )
+
+        if camoufox_context is None:
             raise RuntimeError(
                 "Camoufox вернул None"
             )
 
         logger.info(
-            f"✅ Camoufox запущен: {type(browser).__name__}"
+            f"✅ Camoufox запущен: "
+            f"{type(camoufox_context).__name__}"
         )
 
         # ----------------------------------------------------
@@ -121,21 +132,26 @@ async def init_browser():
 
         logger.info("🔍 Проверяем браузер...")
 
-        page = await browser.new_page()
+        page = await camoufox_context.new_page()
 
-        await page.goto(
-            "https://example.com",
-            wait_until="domcontentloaded",
-            timeout=30000,
-        )
+        try:
 
-        title = await page.title()
+            await page.goto(
+                "https://example.com",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
 
-        logger.info(
-            f"✅ Браузер работает. Title: {title}"
-        )
+            title = await page.title()
 
-        await page.close()
+            logger.info(
+                f"✅ Браузер работает. "
+                f"Title: {title}"
+            )
+
+        finally:
+
+            await page.close()
 
         browser_ready = True
 
@@ -153,6 +169,25 @@ async def init_browser():
         )
 
         browser_ready = False
+
+        # Если запуск частично состоялся —
+        # корректно закрываем manager
+
+        if camoufox_manager is not None:
+
+            try:
+
+                await camoufox_manager.__aexit__(
+                    None,
+                    None,
+                    None,
+                )
+
+            except Exception:
+
+                pass
+
+        camoufox_manager = None
         camoufox_context = None
 
         return False
@@ -163,11 +198,12 @@ async def init_browser():
 # ============================================================
 
 async def new_page():
-    """
-    Создаёт новую страницу в текущем Camoufox context.
-    """
 
-    if not browser_ready or camoufox_context is None:
+    if (
+        not browser_ready
+        or camoufox_context is None
+    ):
+
         raise RuntimeError(
             "Camoufox не запущен"
         )
@@ -181,10 +217,11 @@ async def new_page():
 
 async def close_browser():
 
+    global camoufox_manager
     global camoufox_context
     global browser_ready
 
-    if camoufox_context is None:
+    if camoufox_manager is None:
         return
 
     try:
@@ -193,7 +230,7 @@ async def close_browser():
             "🛑 Закрываем Camoufox..."
         )
 
-        await camoufox_context.__aexit__(
+        await camoufox_manager.__aexit__(
             None,
             None,
             None,
@@ -211,6 +248,7 @@ async def close_browser():
 
     finally:
 
+        camoufox_manager = None
         camoufox_context = None
         browser_ready = False
 
@@ -260,6 +298,7 @@ class AgnesLM(dspy.LM):
     ):
 
         if not self.api_key:
+
             return [
                 "Ошибка: AGNES_API_KEY не задан"
             ]
@@ -1122,7 +1161,10 @@ async def main():
                 signal_handler,
             )
 
-        except (NotImplementedError, RuntimeError):
+        except (
+            NotImplementedError,
+            RuntimeError,
+        ):
 
             pass
 
