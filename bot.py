@@ -19,7 +19,7 @@ from dspy import Signature, InputField, OutputField, settings, ReActV2, Tool
 
 
 # ============================================================
-# 1. ЛОГГЕР
+# 1. LOGGER
 # ============================================================
 
 logging.basicConfig(
@@ -46,7 +46,7 @@ except ImportError as e:
 
 
 # ============================================================
-# 3. НАСТРОЙКИ
+# 3. SETTINGS
 # ============================================================
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -63,15 +63,12 @@ os.makedirs(CAMOUFOX_PROFILE, exist_ok=True)
 
 
 # ============================================================
-# 4. ГЛОБАЛЬНОЕ СОСТОЯНИЕ
+# 4. GLOBAL STATE
 # ============================================================
-
-# ВАЖНО:
-# camoufox_manager = объект AsyncCamoufox
-# camoufox_context = BrowserContext, который возвращает __aenter__()
 
 camoufox_manager = None
 camoufox_context = None
+current_page = None
 
 browser_ready = False
 
@@ -81,13 +78,14 @@ dspy_agent_instance = None
 
 
 # ============================================================
-# 5. CAMOUFOX
+# 5. CAMOUFOX INIT
 # ============================================================
 
 async def init_browser():
 
     global camoufox_manager
     global camoufox_context
+    global current_page
     global browser_ready
 
     if not CAMOUFOX_AVAILABLE:
@@ -98,19 +96,11 @@ async def init_browser():
 
     try:
 
-        # ----------------------------------------------------
-        # Создаём manager
-        # ----------------------------------------------------
-
         camoufox_manager = AsyncCamoufox(
             headless=True,
             persistent_context=True,
             user_data_dir=CAMOUFOX_PROFILE,
         )
-
-        # ----------------------------------------------------
-        # Получаем настоящий BrowserContext
-        # ----------------------------------------------------
 
         camoufox_context = (
             await camoufox_manager.__aenter__()
@@ -122,36 +112,24 @@ async def init_browser():
             )
 
         logger.info(
-            f"✅ Camoufox запущен: "
+            f"✅ BrowserContext: "
             f"{type(camoufox_context).__name__}"
         )
 
-        # ----------------------------------------------------
-        # Тестовая страница
-        # ----------------------------------------------------
+        # Одна постоянная страница
+        current_page = await camoufox_context.new_page()
 
-        logger.info("🔍 Проверяем браузер...")
+        await current_page.goto(
+            "https://example.com",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
 
-        page = await camoufox_context.new_page()
+        title = await current_page.title()
 
-        try:
-
-            await page.goto(
-                "https://example.com",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-
-            title = await page.title()
-
-            logger.info(
-                f"✅ Браузер работает. "
-                f"Title: {title}"
-            )
-
-        finally:
-
-            await page.close()
+        logger.info(
+            f"✅ Camoufox работает. Title: {title}"
+        )
 
         browser_ready = True
 
@@ -170,56 +148,78 @@ async def init_browser():
 
         browser_ready = False
 
-        # Если запуск частично состоялся —
-        # корректно закрываем manager
+        try:
 
-        if camoufox_manager is not None:
-
-            try:
-
+            if camoufox_manager is not None:
                 await camoufox_manager.__aexit__(
                     None,
                     None,
                     None,
                 )
 
-            except Exception:
-
-                pass
+        except Exception:
+            pass
 
         camoufox_manager = None
         camoufox_context = None
+        current_page = None
 
         return False
 
 
 # ============================================================
-# 6. ПОЛУЧЕНИЕ НОВОЙ СТРАНИЦЫ
+# 6. CURRENT PAGE
 # ============================================================
 
-async def new_page():
+async def get_current_page():
 
     if (
         not browser_ready
         or camoufox_context is None
     ):
-
         raise RuntimeError(
             "Camoufox не запущен"
         )
 
-    return await camoufox_context.new_page()
+    global current_page
+
+    if current_page is None:
+        current_page = await camoufox_context.new_page()
+
+    try:
+        await current_page.title()
+    except Exception:
+
+        current_page = await camoufox_context.new_page()
+
+    return current_page
 
 
 # ============================================================
-# 7. ЗАКРЫТИЕ БРАУЗЕРА
+# 7. CLOSE BROWSER
 # ============================================================
 
 async def close_browser():
 
     global camoufox_manager
     global camoufox_context
+    global current_page
     global browser_ready
+
+    browser_ready = False
+
+    try:
+
+        if current_page is not None:
+
+            try:
+                await current_page.close()
+            except Exception:
+                pass
+
+    finally:
+
+        current_page = None
 
     if camoufox_manager is None:
         return
@@ -250,11 +250,484 @@ async def close_browser():
 
         camoufox_manager = None
         camoufox_context = None
-        browser_ready = False
 
 
 # ============================================================
-# 8. AGNES LM
+# 8. BROWSER TOOLS
+# ============================================================
+
+async def browser_goto(url: str) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        title = await page.title()
+
+        return (
+            f"✅ Открыто\n"
+            f"URL: {page.url}\n"
+            f"Title: {title}"
+        )
+
+
+async def browser_back() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.go_back(
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        return (
+            f"URL: {page.url}\n"
+            f"Title: {await page.title()}"
+        )
+
+
+async def browser_forward() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.go_forward(
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        return (
+            f"URL: {page.url}\n"
+            f"Title: {await page.title()}"
+        )
+
+
+async def browser_reload() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.reload(
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        return (
+            f"URL: {page.url}\n"
+            f"Title: {await page.title()}"
+        )
+
+
+async def browser_page_info() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        return (
+            f"URL: {page.url}\n"
+            f"Title: {await page.title()}\n"
+            f"Pages: {len(camoufox_context.pages)}"
+        )
+
+
+async def browser_get_text(
+    selector: str = "body"
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        text = await page.locator(
+            selector
+        ).inner_text(
+            timeout=10000
+        )
+
+        if not text:
+            return "❌ Текст не найден"
+
+        return text[:20000]
+
+
+async def browser_get_html(
+    selector: str = "body"
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        html = await page.locator(
+            selector
+        ).inner_html(
+            timeout=10000
+        )
+
+        return html[:30000]
+
+
+async def browser_get_links() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        links = await page.locator(
+            "a"
+        ).evaluate_all(
+            """
+            elements =>
+                elements.map(el => ({
+                    text: (el.innerText || "").trim(),
+                    href: el.href
+                })).filter(x => x.href)
+            """
+        )
+
+        if not links:
+            return "❌ Ссылок не найдено"
+
+        links = links[:200]
+
+        result = []
+
+        for item in links:
+
+            result.append(
+                f"{item.get('text', '')[:100]} "
+                f"→ {item.get('href', '')}"
+            )
+
+        return "\n".join(result)
+
+
+async def browser_click(
+    selector: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).first.click(
+            timeout=15000
+        )
+
+        await page.wait_for_timeout(500)
+
+        return (
+            f"✅ Клик выполнен\n"
+            f"Selector: {selector}\n"
+            f"URL: {page.url}"
+        )
+
+
+async def browser_fill(
+    selector: str,
+    text: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).first.fill(
+            text,
+            timeout=15000
+        )
+
+        return (
+            f"✅ Введён текст\n"
+            f"Selector: {selector}"
+        )
+
+
+async def browser_type(
+    selector: str,
+    text: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).first.type(
+            text,
+            timeout=15000
+        )
+
+        return (
+            f"✅ Текст напечатан\n"
+            f"Selector: {selector}"
+        )
+
+
+async def browser_press(
+    selector: str,
+    key: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).first.press(
+            key,
+            timeout=15000
+        )
+
+        return (
+            f"✅ Нажата клавиша {key}"
+        )
+
+
+async def browser_key(
+    key: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.keyboard.press(key)
+
+        return (
+            f"✅ Нажата клавиша {key}"
+        )
+
+
+async def browser_wait(
+    milliseconds: int = 1000
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        milliseconds = max(
+            0,
+            min(milliseconds, 30000)
+        )
+
+        await page.wait_for_timeout(
+            milliseconds
+        )
+
+        return (
+            f"✅ Ожидание {milliseconds} мс"
+        )
+
+
+async def browser_wait_selector(
+    selector: str,
+    timeout: int = 10000
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).wait_for(
+            state="visible",
+            timeout=timeout
+        )
+
+        return (
+            f"✅ Элемент появился: "
+            f"{selector}"
+        )
+
+
+async def browser_select(
+    selector: str,
+    value: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        result = await page.locator(
+            selector
+        ).select_option(
+            value=value,
+            timeout=15000
+        )
+
+        return (
+            f"✅ Выбрано: {result}"
+        )
+
+
+async def browser_check(
+    selector: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).check(
+            timeout=15000
+        )
+
+        return (
+            f"✅ Checkbox отмечен: "
+            f"{selector}"
+        )
+
+
+async def browser_uncheck(
+    selector: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).uncheck(
+            timeout=15000
+        )
+
+        return (
+            f"✅ Checkbox снят: "
+            f"{selector}"
+        )
+
+
+async def browser_hover(
+    selector: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        await page.locator(
+            selector
+        ).hover(
+            timeout=15000
+        )
+
+        return (
+            f"✅ Наведение выполнено: "
+            f"{selector}"
+        )
+
+
+async def browser_get_attribute(
+    selector: str,
+    attribute: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        value = await page.locator(
+            selector
+        ).first.get_attribute(
+            attribute
+        )
+
+        return str(value)
+
+
+async def browser_count(
+    selector: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        count = await page.locator(
+            selector
+        ).count()
+
+        return (
+            f"Количество элементов: {count}"
+        )
+
+
+async def browser_js(
+    expression: str
+) -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        result = await page.evaluate(
+            expression
+        )
+
+        return str(result)[:30000]
+
+
+async def browser_screenshot() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        filename = (
+            f"screenshot_"
+            f"{int(time.time())}.png"
+        )
+
+        path = os.path.join(
+            SCREENSHOTS_DIR,
+            filename,
+        )
+
+        await page.screenshot(
+            path=path,
+            full_page=True,
+        )
+
+        return path
+
+
+async def browser_content() -> str:
+
+    async with browser_lock:
+
+        page = await get_current_page()
+
+        content = await page.content()
+
+        return content[:30000]
+
+
+# ============================================================
+# 9. DSPy LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -282,7 +755,7 @@ class AgnesLM(dspy.LM):
             ),
             max_tokens=kwargs.get(
                 "max_tokens",
-                2000,
+                4000,
             ),
             cache=False,
         )
@@ -298,7 +771,6 @@ class AgnesLM(dspy.LM):
     ):
 
         if not self.api_key:
-
             return [
                 "Ошибка: AGNES_API_KEY не задан"
             ]
@@ -321,7 +793,6 @@ class AgnesLM(dspy.LM):
         headers = {
             "Authorization":
                 f"Bearer {self.api_key}",
-
             "Content-Type":
                 "application/json",
         }
@@ -332,13 +803,13 @@ class AgnesLM(dspy.LM):
             "temperature":
                 params.get("temperature", 0.3),
             "max_tokens":
-                params.get("max_tokens", 2000),
+                params.get("max_tokens", 4000),
         }
 
         try:
 
             with httpx.Client(
-                timeout=60.0
+                timeout=120.0
             ) as client:
 
                 response = client.post(
@@ -391,22 +862,50 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# 9. DSPy SIGNATURE
+# 10. DSPy SIGNATURE
 # ============================================================
 
 class BrowserTask(Signature):
 
     """
-    Агент управляет Camoufox напрямую.
+    Ты автономный браузерный агент.
 
-    Инструменты:
+    Ты управляешь текущей страницей Camoufox.
 
-    - goto_url
-    - page_info
-    - get_text
-    - get_links
-    - screenshot
-    - javascript
+    Всегда используй инструменты, когда задача
+    требует действий в браузере.
+
+    Ты можешь:
+    - открывать сайты;
+    - переходить назад/вперёд;
+    - нажимать кнопки;
+    - вводить текст;
+    - отправлять формы;
+    - нажимать клавиши;
+    - выбирать элементы;
+    - ставить checkbox;
+    - наводить мышь;
+    - читать текст;
+    - читать HTML;
+    - получать ссылки;
+    - выполнять JavaScript;
+    - ждать загрузки;
+    - делать скриншоты;
+    - проверять DOM;
+    - получать атрибуты;
+    - считать элементы.
+
+    Сохраняй состояние текущей страницы между действиями.
+
+    Не утверждай, что действие выполнено,
+    пока инструмент не вернул успешный результат.
+
+    Если селектор неизвестен, сначала исследуй страницу
+    через get_text, get_html, get_links, javascript
+    или другие инструменты.
+
+    Для сложных задач выполняй несколько действий
+    последовательно.
     """
 
     question = InputField(
@@ -419,171 +918,6 @@ class BrowserTask(Signature):
 
 
 # ============================================================
-# 10. BROWSER OPERATIONS
-# ============================================================
-
-async def browser_goto(url: str) -> str:
-
-    async with browser_lock:
-
-        page = await new_page()
-
-        try:
-
-            await page.goto(
-                url,
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-
-            title = await page.title()
-
-            return (
-                f"✅ Открыта страница\n"
-                f"URL: {page.url}\n"
-                f"Title: {title}"
-            )
-
-        finally:
-
-            await page.close()
-
-
-async def browser_page_info() -> str:
-
-    async with browser_lock:
-
-        page = await new_page()
-
-        try:
-
-            return (
-                f"URL: {page.url}\n"
-                f"Title: {await page.title()}"
-            )
-
-        finally:
-
-            await page.close()
-
-
-async def browser_get_text() -> str:
-
-    async with browser_lock:
-
-        page = await new_page()
-
-        try:
-
-            text = await page.locator(
-                "body"
-            ).inner_text(
-                timeout=10000
-            )
-
-            if not text:
-                return "❌ Текст не найден"
-
-            return text[:10000]
-
-        finally:
-
-            await page.close()
-
-
-async def browser_get_links() -> str:
-
-    async with browser_lock:
-
-        page = await new_page()
-
-        try:
-
-            links = await page.locator(
-                "a"
-            ).evaluate_all(
-                """
-                elements =>
-                    elements
-                    .map(el => el.href)
-                    .filter(Boolean)
-                """
-            )
-
-            if not links:
-                return "❌ Ссылок не найдено"
-
-            links = links[:50]
-
-            return (
-                f"Ссылки ({len(links)}):\n"
-                + "\n".join(
-                    str(x)
-                    for x in links
-                )
-            )
-
-        finally:
-
-            await page.close()
-
-
-async def browser_screenshot() -> str:
-
-    async with browser_lock:
-
-        page = await new_page()
-
-        try:
-
-            await page.goto(
-                "https://example.com",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-
-            filename = (
-                f"screenshot_"
-                f"{int(time.time())}.png"
-            )
-
-            path = os.path.join(
-                SCREENSHOTS_DIR,
-                filename,
-            )
-
-            await page.screenshot(
-                path=path,
-                full_page=True,
-            )
-
-            return path
-
-        finally:
-
-            await page.close()
-
-
-async def browser_js(expression: str) -> str:
-
-    async with browser_lock:
-
-        page = await new_page()
-
-        try:
-
-            result = await page.evaluate(
-                expression
-            )
-
-            return str(result)
-
-        finally:
-
-            await page.close()
-
-
-# ============================================================
 # 11. DSPy TOOLS
 # ============================================================
 
@@ -591,97 +925,205 @@ def create_browser_tools():
 
     tools = []
 
-    # --------------------------------------------------------
-    # GOTO
-    # --------------------------------------------------------
-
-    def tool_goto_url(url: str) -> str:
-
+    def tool_goto(url: str) -> str:
         return asyncio.run(
             browser_goto(url)
         )
 
-    tools.append(
-        Tool(tool_goto_url)
-    )
+    def tool_back() -> str:
+        return asyncio.run(
+            browser_back()
+        )
 
-    # --------------------------------------------------------
-    # PAGE INFO
-    # --------------------------------------------------------
+    def tool_forward() -> str:
+        return asyncio.run(
+            browser_forward()
+        )
+
+    def tool_reload() -> str:
+        return asyncio.run(
+            browser_reload()
+        )
 
     def tool_page_info() -> str:
-
         return asyncio.run(
             browser_page_info()
         )
 
-    tools.append(
-        Tool(tool_page_info)
-    )
-
-    # --------------------------------------------------------
-    # TEXT
-    # --------------------------------------------------------
-
-    def tool_get_text() -> str:
-
+    def tool_get_text(
+        selector: str = "body"
+    ) -> str:
         return asyncio.run(
-            browser_get_text()
+            browser_get_text(selector)
         )
 
-    tools.append(
-        Tool(tool_get_text)
-    )
-
-    # --------------------------------------------------------
-    # LINKS
-    # --------------------------------------------------------
+    def tool_get_html(
+        selector: str = "body"
+    ) -> str:
+        return asyncio.run(
+            browser_get_html(selector)
+        )
 
     def tool_get_links() -> str:
-
         return asyncio.run(
             browser_get_links()
         )
 
-    tools.append(
-        Tool(tool_get_links)
-    )
-
-    # --------------------------------------------------------
-    # SCREENSHOT
-    # --------------------------------------------------------
-
-    def tool_screenshot() -> str:
-
+    def tool_click(
+        selector: str
+    ) -> str:
         return asyncio.run(
-            browser_screenshot()
+            browser_click(selector)
         )
 
-    tools.append(
-        Tool(tool_screenshot)
-    )
+    def tool_fill(
+        selector: str,
+        text: str
+    ) -> str:
+        return asyncio.run(
+            browser_fill(selector, text)
+        )
 
-    # --------------------------------------------------------
-    # JAVASCRIPT
-    # --------------------------------------------------------
+    def tool_type(
+        selector: str,
+        text: str
+    ) -> str:
+        return asyncio.run(
+            browser_type(selector, text)
+        )
 
-    def tool_js(
+    def tool_press(
+        selector: str,
+        key: str
+    ) -> str:
+        return asyncio.run(
+            browser_press(selector, key)
+        )
+
+    def tool_key(
+        key: str
+    ) -> str:
+        return asyncio.run(
+            browser_key(key)
+        )
+
+    def tool_wait(
+        milliseconds: int = 1000
+    ) -> str:
+        return asyncio.run(
+            browser_wait(milliseconds)
+        )
+
+    def tool_wait_selector(
+        selector: str,
+        timeout: int = 10000
+    ) -> str:
+        return asyncio.run(
+            browser_wait_selector(
+                selector,
+                timeout,
+            )
+        )
+
+    def tool_select(
+        selector: str,
+        value: str
+    ) -> str:
+        return asyncio.run(
+            browser_select(
+                selector,
+                value,
+            )
+        )
+
+    def tool_check(
+        selector: str
+    ) -> str:
+        return asyncio.run(
+            browser_check(selector)
+        )
+
+    def tool_uncheck(
+        selector: str
+    ) -> str:
+        return asyncio.run(
+            browser_uncheck(selector)
+        )
+
+    def tool_hover(
+        selector: str
+    ) -> str:
+        return asyncio.run(
+            browser_hover(selector)
+        )
+
+    def tool_attribute(
+        selector: str,
+        attribute: str
+    ) -> str:
+        return asyncio.run(
+            browser_get_attribute(
+                selector,
+                attribute,
+            )
+        )
+
+    def tool_count(
+        selector: str
+    ) -> str:
+        return asyncio.run(
+            browser_count(selector)
+        )
+
+    def tool_javascript(
         expression: str
     ) -> str:
-
         return asyncio.run(
             browser_js(expression)
         )
 
-    tools.append(
-        Tool(tool_js)
-    )
+    def tool_screenshot() -> str:
+        return asyncio.run(
+            browser_screenshot()
+        )
+
+    def tool_content() -> str:
+        return asyncio.run(
+            browser_content()
+        )
+
+    tools.extend([
+        Tool(tool_goto),
+        Tool(tool_back),
+        Tool(tool_forward),
+        Tool(tool_reload),
+        Tool(tool_page_info),
+        Tool(tool_get_text),
+        Tool(tool_get_html),
+        Tool(tool_get_links),
+        Tool(tool_click),
+        Tool(tool_fill),
+        Tool(tool_type),
+        Tool(tool_press),
+        Tool(tool_key),
+        Tool(tool_wait),
+        Tool(tool_wait_selector),
+        Tool(tool_select),
+        Tool(tool_check),
+        Tool(tool_uncheck),
+        Tool(tool_hover),
+        Tool(tool_attribute),
+        Tool(tool_count),
+        Tool(tool_javascript),
+        Tool(tool_screenshot),
+        Tool(tool_content),
+    ])
 
     return tools
 
 
 # ============================================================
-# 12. DSPy
+# 12. INIT DSPy
 # ============================================================
 
 def init_dspy():
@@ -701,7 +1143,7 @@ def init_dspy():
         lm = AgnesLM(
             api_key=AGNES_API_KEY,
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=4000,
         )
 
         settings.configure(
@@ -713,7 +1155,7 @@ def init_dspy():
         dspy_agent_instance = ReActV2(
             signature=BrowserTask,
             tools=tools,
-            max_iters=10,
+            max_iters=20,
         )
 
         logger.info(
@@ -733,7 +1175,7 @@ def init_dspy():
 
 
 # ============================================================
-# 13. RUN DSPy
+# 13. RUN AGENT
 # ============================================================
 
 def run_agent(
@@ -749,10 +1191,8 @@ def run_agent(
 
     try:
 
-        result = (
-            dspy_agent_instance(
-                question=question
-            )
+        result = dspy_agent_instance(
+            question=question
         )
 
         answer = getattr(
@@ -762,7 +1202,6 @@ def run_agent(
         )
 
         if not answer:
-
             return "❌ Пустой ответ"
 
         return answer
@@ -787,12 +1226,12 @@ async def start(
 
     await update.message.reply_text(
         "👋 Привет!\n\n"
-        "🦊 Camoufox + DSPy\n\n"
+        "🦊 Camoufox + DSPy Agent\n\n"
         "Команды:\n"
         "/check <url> — открыть сайт\n"
         "/dspy <запрос> — AI агент\n"
         "/status — статус\n"
-        "/screenshot — скриншот"
+        "/screenshot — текущая страница"
     )
 
 
@@ -830,34 +1269,15 @@ async def check(
 
     try:
 
-        async with browser_lock:
+        result = await browser_goto(url)
 
-            page = await new_page()
-
-            try:
-
-                await page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=30000,
-                )
-
-                title = await page.title()
-
-                text = await page.locator(
-                    "body"
-                ).inner_text(
-                    timeout=10000
-                )
-
-                text = text[:1500]
-
-            finally:
-
-                await page.close()
+        text = await browser_get_text(
+            "body"
+        )
 
         await msg.edit_text(
-            f"✅ {title}\n\n{text}"
+            f"{result}\n\n"
+            f"{text[:1500]}"
         )
 
     except Exception as e:
@@ -881,7 +1301,7 @@ async def screenshot(
 ):
 
     msg = await update.message.reply_text(
-        "📸 Делаю скриншот..."
+        "📸 Делаю скриншот текущей страницы..."
     )
 
     if not browser_ready:
@@ -900,7 +1320,7 @@ async def screenshot(
 
             await update.message.reply_photo(
                 photo=photo,
-                caption="📸 Camoufox",
+                caption="📸 Текущая страница Camoufox",
             )
 
         await msg.delete()
@@ -925,24 +1345,41 @@ async def status(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    page_url = "—"
+    page_title = "—"
+
+    if browser_ready and current_page:
+
+        try:
+            page_url = current_page.url
+            page_title = await current_page.title()
+        except Exception:
+            pass
+
     status_text = (
         "📦 *Статус системы*\n\n"
 
         f"🦊 Camoufox: "
         f"{'✅' if CAMOUFOX_AVAILABLE else '❌'}\n"
 
-        f"🌐 Браузер: "
+        f"🌐 Browser: "
         f"{'✅' if browser_ready else '❌'}\n"
 
         f"🧠 DSPy: "
-        f"{'✅' if dspy_agent_instance else '❌'}\n"
+        f"{'✅' if dspy_agent_instance else '❌'}\n\n"
 
-        f"📁 Profile: `{CAMOUFOX_PROFILE}`"
+        f"🌐 URL:\n`{page_url}`\n\n"
+
+        f"📄 Title:\n"
+        f"{escape_markdown(page_title, version=2)}\n\n"
+
+        f"📁 Profile:\n"
+        f"`{CAMOUFOX_PROFILE}`"
     )
 
     await update.message.reply_text(
         status_text,
-        parse_mode="Markdown",
+        parse_mode="MarkdownV2",
     )
 
 
@@ -958,19 +1395,13 @@ async def dspy_command(
     if not context.args:
 
         await update.message.reply_text(
-            "🧠 *DSPy Agent*\n\n"
-
-            "Примеры:\n"
-
-            "`/dspy открой https://example.com "
-            "и покажи заголовок`\n\n"
-
-            "`/dspy найди все ссылки "
-            "на python.org`\n\n"
-
-            "`/dspy сделай скриншот`",
-
-            parse_mode="Markdown",
+            "🧠 DSPy Agent\n\n"
+            "Примеры:\n\n"
+            "/dspy открой https://example.com и покажи заголовок\n\n"
+            "/dspy найди все ссылки на python.org\n\n"
+            "/dspy открой Google, найди Python и перейди на официальный сайт\n\n"
+            "/dspy найди поле поиска, введи hello и нажми Enter\n\n"
+            "/dspy сделай скриншот текущей страницы"
         )
 
         return
@@ -996,7 +1427,7 @@ async def dspy_command(
     )
 
     msg = await update.message.reply_text(
-        "🧠 Думаю..."
+        "🧠 DSPy управляет Camoufox..."
     )
 
     try:
@@ -1048,21 +1479,9 @@ async def main():
         "🚀 Инициализация..."
     )
 
-    # --------------------------------------------------------
-    # Camoufox
-    # --------------------------------------------------------
-
     browser_ok = await init_browser()
 
-    # --------------------------------------------------------
-    # DSPy
-    # --------------------------------------------------------
-
     dspy_ok = init_dspy()
-
-    # --------------------------------------------------------
-    # Telegram
-    # --------------------------------------------------------
 
     app = (
         Application
