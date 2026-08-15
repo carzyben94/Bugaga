@@ -102,14 +102,14 @@ HTTP_ONLY_COOKIES = {
 SECURE_COOKIES = {
     "auth_token", "ct0", "twid", "guest_id", "guest_id_ads", 
     "guest_id_marketing", "personalization_id", "__cf_bm", 
-    "NID", "IDE"
+    "NID"
 }
 
-# Куки с SameSite=no_restriction
+# Куки с SameSite=None
 NO_RESTRICTION_COOKIES = {
     "auth_token", "ct0", "guest_id", "guest_id_ads", 
     "guest_id_marketing", "personalization_id", "__cf_bm",
-    "NID", "IDE"
+    "NID"
 }
 
 
@@ -133,7 +133,7 @@ agent_lock = threading.Lock()
 
 
 # ============================================================
-# 6. SET COOKIES FUNCTION
+# 6. SET COOKIES FUNCTION (ИСПРАВЛЕНО)
 # ============================================================
 
 async def set_cookies(page, domain=".x.com"):
@@ -157,11 +157,11 @@ async def set_cookies(page, domain=".x.com"):
             if name in HTTP_ONLY_COOKIES:
                 cookie_data["httpOnly"] = True
             
-            # SameSite
+            # ✅ ИСПРАВЛЕНО: правильные значения SameSite для Playwright
             if name in NO_RESTRICTION_COOKIES:
-                cookie_data["sameSite"] = "no_restriction"
+                cookie_data["sameSite"] = "None"
             else:
-                cookie_data["sameSite"] = "lax"
+                cookie_data["sameSite"] = "Lax"
             
             await page.context.add_cookies([cookie_data])
             success_count += 1
@@ -1180,7 +1180,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# 50. MAIN
+# 50. MAIN (ИСПРАВЛЕНО)
 # ============================================================
 
 async def main():
@@ -1208,7 +1208,15 @@ async def main():
     try:
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        
+        # ✅ ИСПРАВЛЕНО: удаляем вебхук и сбрасываем старые обновления
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        
+        await app.updater.start_polling(
+            drop_pending_updates=True,
+            poll_interval=1.0,
+            timeout=30,
+        )
 
         logger.info("🤖 Telegram бот запущен!")
 
