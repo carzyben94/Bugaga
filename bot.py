@@ -1,11 +1,10 @@
 import os
 import asyncio
 import logging
-import time 
+import time
 import signal
 import threading
 import json
-from typing import Optional
 
 import httpx
 
@@ -17,9 +16,11 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
 from telegram.helpers import escape_markdown
 
 import dspy
+
 from dspy import (
     Signature,
     InputField,
@@ -60,9 +61,7 @@ try:
 
     CAMOUFOX_AVAILABLE = True
 
-    logger.info(
-        "✅ Camoufox загружен"
-    )
+    logger.info("✅ Camoufox загружен")
 
 except ImportError as e:
 
@@ -96,7 +95,6 @@ SCREENSHOTS_DIR = "/app/screenshots"
 
 CAMOUFOX_PROFILE = "/app/camoufox-profile"
 
-
 os.makedirs(
     SCREENSHOTS_DIR,
     exist_ok=True,
@@ -129,6 +127,25 @@ main_event_loop = None
 agent_lock = threading.Lock()
 
 waiting_for_cookies = set()
+
+
+# ============================================================
+# INSPECT REFS
+# ============================================================
+
+agent_refs = {}
+
+agent_refs_url = None
+
+
+def clear_agent_refs():
+
+    global agent_refs
+    global agent_refs_url
+
+    agent_refs = {}
+
+    agent_refs_url = None
 
 
 # ============================================================
@@ -186,6 +203,8 @@ async def init_browser():
 
         browser_ready = True
 
+        clear_agent_refs()
+
         logger.info(
             f"✅ Camoufox работает: {title}"
         )
@@ -215,6 +234,7 @@ async def init_browser():
                 )
 
         except Exception:
+
             pass
 
         camoufox_manager = None
@@ -235,12 +255,16 @@ async def close_browser():
 
     browser_ready = False
 
+    clear_agent_refs()
+
     if current_page is not None:
 
         try:
+
             await current_page.close()
 
         except Exception:
+
             pass
 
     current_page = None
@@ -333,6 +357,8 @@ async def get_current_page():
             await camoufox_context.new_page()
         )
 
+        clear_agent_refs()
+
         return current_page
 
     except Exception as e:
@@ -366,10 +392,6 @@ def normalize_cookie(cookie: dict):
             "Cookie должен быть объектом"
         )
 
-    # --------------------------------------------------------
-    # NAME
-    # --------------------------------------------------------
-
     name = cookie.get("name")
 
     if not name:
@@ -377,10 +399,6 @@ def normalize_cookie(cookie: dict):
         raise ValueError(
             "Cookie не содержит name"
         )
-
-    # --------------------------------------------------------
-    # VALUE
-    # --------------------------------------------------------
 
     value = cookie.get(
         "value",
@@ -394,10 +412,6 @@ def normalize_cookie(cookie: dict):
         "value": str(value),
 
     }
-
-    # --------------------------------------------------------
-    # DOMAIN
-    # --------------------------------------------------------
 
     domain = cookie.get(
         "domain"
@@ -433,10 +447,6 @@ def normalize_cookie(cookie: dict):
 
             result["domain"] = domain
 
-    # --------------------------------------------------------
-    # URL
-    # --------------------------------------------------------
-
     url = cookie.get(
         "url"
     )
@@ -454,10 +464,6 @@ def normalize_cookie(cookie: dict):
         ):
 
             result["url"] = url
-
-    # --------------------------------------------------------
-    # FALLBACK URL
-    # --------------------------------------------------------
 
     if (
         "domain" not in result
@@ -483,6 +489,7 @@ def normalize_cookie(cookie: dict):
                     result["url"] = page_url
 
         except Exception:
+
             pass
 
     if (
@@ -495,29 +502,17 @@ def normalize_cookie(cookie: dict):
             "не содержит domain или url"
         )
 
-    # --------------------------------------------------------
-    # PATH
-    # --------------------------------------------------------
-
     path = cookie.get(
         "path"
     ) or "/"
 
-    path = str(
-        path
-    )
+    path = str(path)
 
-    if not path.startswith(
-        "/"
-    ):
+    if not path.startswith("/"):
 
         path = "/" + path
 
     result["path"] = path
-
-    # --------------------------------------------------------
-    # SECURE
-    # --------------------------------------------------------
 
     result["secure"] = bool(
         cookie.get(
@@ -526,20 +521,12 @@ def normalize_cookie(cookie: dict):
         )
     )
 
-    # --------------------------------------------------------
-    # HTTP ONLY
-    # --------------------------------------------------------
-
     result["httpOnly"] = bool(
         cookie.get(
             "httpOnly",
             False,
         )
     )
-
-    # --------------------------------------------------------
-    # SAME SITE
-    # --------------------------------------------------------
 
     same_site = cookie.get(
         "sameSite"
@@ -572,13 +559,7 @@ def normalize_cookie(cookie: dict):
             "Lax",
         )
 
-        result["sameSite"] = (
-            same_site
-        )
-
-    # --------------------------------------------------------
-    # EXPIRES
-    # --------------------------------------------------------
+        result["sameSite"] = same_site
 
     expires = cookie.get(
         "expires"
@@ -594,15 +575,11 @@ def normalize_cookie(cookie: dict):
 
         try:
 
-            expires = float(
-                expires
-            )
+            expires = float(expires)
 
             if expires > 0:
 
-                result["expires"] = (
-                    expires
-                )
+                result["expires"] = expires
 
         except (
             ValueError,
@@ -618,9 +595,7 @@ def normalize_cookie(cookie: dict):
 # 10. LOAD COOKIES
 # ============================================================
 
-async def load_cookies_from_json(
-    data
-):
+async def load_cookies_from_json(data):
 
     if isinstance(
         data,
@@ -661,10 +636,6 @@ async def load_cookies_from_json(
 
     errors = []
 
-    # --------------------------------------------------------
-    # NORMALIZE
-    # --------------------------------------------------------
-
     for index, cookie in enumerate(
         cookies
     ):
@@ -696,10 +667,6 @@ async def load_cookies_from_json(
                 errors[:20]
             )
         )
-
-    # --------------------------------------------------------
-    # LOAD
-    # --------------------------------------------------------
 
     async with browser_lock:
 
@@ -751,6 +718,8 @@ async def load_cookies_from_json(
                         e,
                     )
 
+            clear_agent_refs()
+
             return {
 
                 "loaded": loaded,
@@ -770,9 +739,7 @@ async def load_cookies_from_json(
 # 11. BROWSER ERROR
 # ============================================================
 
-def is_browser_closed_error(
-    error
-):
+def is_browser_closed_error(error):
 
     text = str(
         error
@@ -831,6 +798,8 @@ async def browser_operation(
 
         current_page = None
 
+        clear_agent_refs()
+
         await close_browser()
 
         ok = await init_browser()
@@ -848,9 +817,7 @@ async def browser_operation(
 # 13. GOTO
 # ============================================================
 
-async def browser_goto(
-    url: str
-):
+async def browser_goto(url: str):
 
     async with browser_lock:
 
@@ -863,6 +830,8 @@ async def browser_goto(
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
+
+            clear_agent_refs()
 
             return (
                 "✅ Открыто\n"
@@ -891,6 +860,8 @@ async def browser_back():
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
+
+            clear_agent_refs()
 
             if response is None:
 
@@ -927,6 +898,8 @@ async def browser_forward():
                 timeout=30000,
             )
 
+            clear_agent_refs()
+
             if response is None:
 
                 return (
@@ -961,6 +934,8 @@ async def browser_reload():
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
+
+            clear_agent_refs()
 
             return (
                 f"URL: {page.url}\n"
@@ -1054,10 +1029,13 @@ async def browser_get_html(
 
 
 # ============================================================
-# 20. INSPECT
+# 20. INSPECT PAGE WITH REFS
 # ============================================================
 
 async def browser_inspect():
+
+    global agent_refs
+    global agent_refs_url
 
     async with browser_lock:
 
@@ -1065,111 +1043,804 @@ async def browser_inspect():
 
             page = await get_current_page()
 
-            title = await page.title()
-
-            url = page.url
-
-            buttons = await page.locator(
-                "button"
-            ).evaluate_all(
+            data = await page.evaluate(
                 """
-                els => els.slice(0,50).map(
-                    e => ({
-                        text: (
-                            e.innerText ||
-                            e.getAttribute('aria-label') ||
-                            ''
-                        ).trim(),
-                        type: e.getAttribute('type') || '',
-                        id: e.id || '',
-                        cls: e.className || ''
-                    })
-                )
+                () => {
+
+                    function clean(value) {
+
+                        if (
+                            value === null ||
+                            value === undefined
+                        ) {
+                            return "";
+                        }
+
+                        return String(value)
+                            .replace(/\\\\s+/g, " ")
+                            .trim();
+                    }
+
+
+                    function isVisible(el) {
+
+                        if (!el) {
+                            return false;
+                        }
+
+                        const style =
+                            window.getComputedStyle(el);
+
+                        if (
+                            style.display === "none" ||
+                            style.visibility === "hidden" ||
+                            style.opacity === "0"
+                        ) {
+                            return false;
+                        }
+
+                        const rect =
+                            el.getBoundingClientRect();
+
+                        return (
+                            rect.width > 0 &&
+                            rect.height > 0
+                        );
+                    }
+
+
+                    function getRole(el) {
+
+                        const explicit =
+                            el.getAttribute("role");
+
+                        if (explicit) {
+                            return explicit;
+                        }
+
+                        const tag =
+                            el.tagName.toLowerCase();
+
+                        if (tag === "button") {
+                            return "button";
+                        }
+
+                        if (tag === "a") {
+                            return "link";
+                        }
+
+                        if (tag === "textarea") {
+                            return "textbox";
+                        }
+
+                        if (tag === "select") {
+                            return "combobox";
+                        }
+
+                        if (el.isContentEditable) {
+                            return "textbox";
+                        }
+
+                        if (tag === "input") {
+
+                            const type = (
+                                el.getAttribute("type") ||
+                                "text"
+                            ).toLowerCase();
+
+                            if (type === "checkbox") {
+                                return "checkbox";
+                            }
+
+                            if (type === "radio") {
+                                return "radio";
+                            }
+
+                            if (
+                                type === "submit" ||
+                                type === "reset" ||
+                                type === "button"
+                            ) {
+                                return "button";
+                            }
+
+                            if (type === "search") {
+                                return "searchbox";
+                            }
+
+                            if (type === "number") {
+                                return "spinbutton";
+                            }
+
+                            return "textbox";
+                        }
+
+                        return null;
+                    }
+
+
+                    function getAccessibleName(el) {
+
+                        const aria =
+                            el.getAttribute(
+                                "aria-label"
+                            );
+
+                        if (aria) {
+                            return clean(aria);
+                        }
+
+
+                        const labelledBy =
+                            el.getAttribute(
+                                "aria-labelledby"
+                            );
+
+                        if (labelledBy) {
+
+                            const text =
+                                labelledBy
+                                    .split(/\\s+/)
+                                    .map(id => {
+
+                                        const node =
+                                            document.getElementById(
+                                                id
+                                            );
+
+                                        return node
+                                            ? clean(
+                                                node.innerText ||
+                                                node.textContent
+                                            )
+                                            : "";
+
+                                    })
+                                    .filter(Boolean)
+                                    .join(" ");
+
+                            if (text) {
+                                return text;
+                            }
+                        }
+
+
+                        if (el.id) {
+
+                            const label =
+                                document.querySelector(
+                                    `label[for="${CSS.escape(el.id)}"]`
+                                );
+
+                            if (label) {
+
+                                const text =
+                                    clean(
+                                        label.innerText ||
+                                        label.textContent
+                                    );
+
+                                if (text) {
+                                    return text;
+                                }
+                            }
+                        }
+
+
+                        const parentLabel =
+                            el.closest("label");
+
+                        if (parentLabel) {
+
+                            const text =
+                                clean(
+                                    parentLabel.innerText ||
+                                    parentLabel.textContent
+                                );
+
+                            if (text) {
+                                return text;
+                            }
+                        }
+
+
+                        const text =
+                            clean(
+                                el.innerText ||
+                                el.textContent
+                            );
+
+                        if (text) {
+                            return text;
+                        }
+
+
+                        const title =
+                            el.getAttribute("title");
+
+                        if (title) {
+                            return clean(title);
+                        }
+
+
+                        const placeholder =
+                            el.getAttribute(
+                                "placeholder"
+                            );
+
+                        if (placeholder) {
+                            return clean(placeholder);
+                        }
+
+
+                        const name =
+                            el.getAttribute("name");
+
+                        if (name) {
+                            return clean(name);
+                        }
+
+
+                        return "";
+                    }
+
+
+                    function makeSelector(el) {
+
+                        if (el.id) {
+
+                            return (
+                                "#" +
+                                CSS.escape(el.id)
+                            );
+                        }
+
+
+                        const testid =
+                            el.getAttribute(
+                                "data-testid"
+                            );
+
+                        if (testid) {
+
+                            return (
+                                `[data-testid="${CSS.escape(
+                                    testid
+                                )}"]`
+                            );
+                        }
+
+
+                        const name =
+                            el.getAttribute("name");
+
+                        if (name) {
+
+                            return (
+                                `${el.tagName.toLowerCase()}[name="${CSS.escape(
+                                    name
+                                )}"]`
+                            );
+                        }
+
+
+                        const aria =
+                            el.getAttribute(
+                                "aria-label"
+                            );
+
+                        if (aria) {
+
+                            return (
+                                `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(
+                                    aria
+                                )}"]`
+                            );
+                        }
+
+
+                        const parts = [];
+
+                        let node = el;
+
+
+                        while (
+                            node &&
+                            node.nodeType === 1 &&
+                            node !== document.body
+                        ) {
+
+                            let part =
+                                node.tagName.toLowerCase();
+
+
+                            if (node.id) {
+
+                                part +=
+                                    "#" +
+                                    CSS.escape(node.id);
+
+                                parts.unshift(part);
+
+                                break;
+                            }
+
+
+                            const parent =
+                                node.parentElement;
+
+                            if (parent) {
+
+                                const siblings =
+                                    Array.from(
+                                        parent.children
+                                    ).filter(
+                                        child =>
+                                            child.tagName ===
+                                            node.tagName
+                                    );
+
+                                if (
+                                    siblings.length > 1
+                                ) {
+
+                                    const index =
+                                        siblings.indexOf(node) +
+                                        1;
+
+                                    part +=
+                                        `:nth-of-type(${index})`;
+                                }
+                            }
+
+
+                            parts.unshift(part);
+
+                            node = parent;
+
+                            if (
+                                parts.length >= 5
+                            ) {
+                                break;
+                            }
+                        }
+
+
+                        return parts.join(
+                            " > "
+                        );
+                    }
+
+
+                    const selector = [
+
+                        "button",
+
+                        "a",
+
+                        "input",
+
+                        "textarea",
+
+                        "select",
+
+                        "[role]",
+
+                        "[contenteditable='true']",
+
+                        "[tabindex]:not([tabindex='-1'])"
+
+                    ].join(",");
+
+
+                    const elements =
+                        Array.from(
+                            document.querySelectorAll(
+                                selector
+                            )
+                        );
+
+
+                    const interactive = [];
+
+
+                    for (
+                        const el of elements
+                    ) {
+
+                        if (!isVisible(el)) {
+                            continue;
+                        }
+
+
+                        const currentRole =
+                            getRole(el);
+
+                        if (!currentRole) {
+                            continue;
+                        }
+
+
+                        const rect =
+                            el.getBoundingClientRect();
+
+
+                        const item = {
+
+                            role:
+                                currentRole,
+
+                            name:
+                                getAccessibleName(
+                                    el
+                                ).slice(
+                                    0,
+                                    200
+                                ),
+
+                            selector:
+                                makeSelector(
+                                    el
+                                ),
+
+                            tag:
+                                el.tagName.toLowerCase(),
+
+                            disabled:
+                                !!el.disabled,
+
+                            x:
+                                Math.round(rect.x),
+
+                            y:
+                                Math.round(rect.y),
+
+                            width:
+                                Math.round(rect.width),
+
+                            height:
+                                Math.round(rect.height)
+                        };
+
+
+                        const type = (
+                            el.getAttribute("type") ||
+                            ""
+                        ).toLowerCase();
+
+
+                        if (
+                            "value" in el &&
+                            type !== "password"
+                        ) {
+
+                            item.value =
+                                clean(
+                                    el.value
+                                ).slice(
+                                    0,
+                                    200
+                                );
+                        }
+
+
+                        const placeholder =
+                            el.getAttribute(
+                                "placeholder"
+                            );
+
+                        if (placeholder) {
+
+                            item.placeholder =
+                                clean(
+                                    placeholder
+                                ).slice(
+                                    0,
+                                    200
+                                );
+                        }
+
+
+                        const nameAttribute =
+                            el.getAttribute(
+                                "name"
+                            );
+
+                        if (nameAttribute) {
+
+                            item.name_attribute =
+                                clean(
+                                    nameAttribute
+                                );
+                        }
+
+
+                        if (el.id) {
+                            item.id = el.id;
+                        }
+
+
+                        const href =
+                            el.getAttribute(
+                                "href"
+                            );
+
+                        if (href) {
+                            item.href = href;
+                        }
+
+
+                        if (
+                            type === "checkbox" ||
+                            type === "radio"
+                        ) {
+
+                            item.checked =
+                                !!el.checked;
+                        }
+
+
+                        if (
+                            el.tagName === "SELECT"
+                        ) {
+
+                            item.options =
+                                Array.from(
+                                    el.options
+                                )
+                                .slice(
+                                    0,
+                                    30
+                                )
+                                .map(
+                                    option => ({
+                                        text:
+                                            clean(
+                                                option.text
+                                            ),
+
+                                        value:
+                                            option.value,
+
+                                        selected:
+                                            option.selected
+                                    })
+                                );
+                        }
+
+
+                        const expanded =
+                            el.getAttribute(
+                                "aria-expanded"
+                            );
+
+                        if (
+                            expanded !== null
+                        ) {
+
+                            item.expanded =
+                                expanded === "true";
+                        }
+
+
+                        interactive.push(
+                            item
+                        );
+                    }
+
+
+                    return {
+
+                        url:
+                            location.href,
+
+                        title:
+                            document.title,
+
+                        interactive:
+                            interactive.slice(
+                                0,
+                                150
+                            ),
+
+                        bodyText:
+                            clean(
+                                document.body?.innerText
+                            ).slice(
+                                0,
+                                10000
+                            )
+                    };
+                }
                 """
             )
 
-            inputs = await page.locator(
-                "input, textarea, select"
-            ).evaluate_all(
-                """
-                els => els.slice(0,50).map(
-                    e => ({
-                        tag: e.tagName.toLowerCase(),
-                        type: e.getAttribute('type') || '',
-                        name: e.getAttribute('name') || '',
-                        placeholder:
-                            e.getAttribute('placeholder') || '',
-                        aria:
-                            e.getAttribute('aria-label') || '',
-                        id: e.id || ''
-                    })
-                )
-                """
+
+            # ----------------------------------------------------
+            # CREATE REF MAP
+            # ----------------------------------------------------
+
+            agent_refs = {}
+
+            agent_refs_url = page.url
+
+
+            elements = data.get(
+                "interactive",
+                []
             )
 
-            links = await page.locator(
-                "a"
-            ).evaluate_all(
-                """
-                els => els.slice(0,80).map(
-                    e => ({
-                        text: (e.innerText || '').trim(),
-                        href: e.href || ''
-                    })
-                ).filter(
-                    x => x.text || x.href
-                )
-                """
-            )
 
-            result = [
+            output = [
 
-                f"URL: {url}",
+                "PAGE",
 
-                f"TITLE: {title}",
+                f"URL: {data.get('url', '')}",
+
+                f"TITLE: {data.get('title', '')}",
 
                 "",
 
-                "BUTTONS:",
+                "INTERACTIVE ELEMENTS",
 
+                f"COUNT: {len(elements)}",
+
+                ""
             ]
 
-            for b in buttons:
 
-                result.append(
-                    f"- text={b.get('text','')[:100]} "
-                    f"id={b.get('id','')} "
-                    f"type={b.get('type','')}"
+            for index, element in enumerate(
+                elements,
+                start=1
+            ):
+
+                ref = f"e{index}"
+
+                selector =
+                    element.get(
+                        "selector",
+                        ""
+                    )
+
+                if not selector:
+                    continue
+
+                agent_refs[ref] = selector
+
+
+                output.append(
+                    f"[{ref}] "
+                    f"{element.get('role', '')}"
                 )
 
-            result.append("")
-            result.append("INPUTS:")
 
-            for i in inputs:
-
-                result.append(
-                    f"- tag={i.get('tag','')} "
-                    f"type={i.get('type','')} "
-                    f"name={i.get('name','')} "
-                    f"placeholder="
-                    f"{i.get('placeholder','')} "
-                    f"aria={i.get('aria','')} "
-                    f"id={i.get('id','')}"
+                name = element.get(
+                    "name",
+                    ""
                 )
 
-            result.append("")
-            result.append("LINKS:")
+                if name:
 
-            for link in links:
+                    output.append(
+                        f"    name: {name}"
+                    )
 
-                result.append(
-                    f"- {link.get('text','')[:100]} "
-                    f"→ {link.get('href','')}"
+
+                placeholder =
+                    element.get(
+                        "placeholder"
+                    )
+
+                if placeholder:
+
+                    output.append(
+                        "    placeholder: "
+                        f"{placeholder}"
+                    )
+
+
+                value = element.get(
+                    "value"
                 )
+
+                if value:
+
+                    output.append(
+                        f"    value: {value}"
+                    )
+
+
+                href = element.get(
+                    "href"
+                )
+
+                if href:
+
+                    output.append(
+                        f"    href: {href}"
+                    )
+
+
+                element_id = element.get(
+                    "id"
+                )
+
+                if element_id:
+
+                    output.append(
+                        f"    id: {element_id}"
+                    )
+
+
+                if element.get(
+                    "disabled"
+                ):
+
+                    output.append(
+                        "    disabled: true"
+                    )
+
+
+                if "checked" in element:
+
+                    output.append(
+                        "    checked: "
+                        f"{element['checked']}"
+                    )
+
+
+                options = element.get(
+                    "options"
+                )
+
+                if options:
+
+                    output.append(
+                        "    options:"
+                    )
+
+                    for option in options:
+
+                        selected = (
+                            " [selected]"
+                            if option.get(
+                                "selected"
+                            )
+                            else ""
+                        )
+
+                        output.append(
+                            "      - "
+                            f"{option.get('text', '')}"
+                            f" = "
+                            f"{option.get('value', '')}"
+                            f"{selected}"
+                        )
+
+
+                output.append("")
+
+
+            body_text = data.get(
+                "bodyText",
+                ""
+            )
+
+            if body_text:
+
+                output.append(
+                    "PAGE TEXT"
+                )
+
+                output.append(
+                    body_text
+                )
+
 
             return "\n".join(
-                result
+                output
             )[:30000]
+
 
         return await browser_operation(
             operation
@@ -1177,7 +1848,7 @@ async def browser_inspect():
 
 
 # ============================================================
-# 21. LINKS
+# 21. GET LINKS
 # ============================================================
 
 async def browser_get_links():
@@ -1227,7 +1898,42 @@ async def browser_get_links():
 
 
 # ============================================================
-# 22. CLICK
+# 22. REF RESOLUTION
+# ============================================================
+
+async def get_ref_selector(
+    ref: str
+):
+
+    page = await get_current_page()
+
+    if agent_refs_url != page.url:
+
+        clear_agent_refs()
+
+        raise RuntimeError(
+            "Refs устарели: страница изменилась. "
+            "Сначала вызови inspect_page."
+        )
+
+
+    selector = agent_refs.get(
+        ref
+    )
+
+    if not selector:
+
+        raise ValueError(
+            f"Ref '{ref}' не найден. "
+            "Сначала вызови inspect_page."
+        )
+
+
+    return page, selector
+
+
+# ============================================================
+# 23. CLICK
 # ============================================================
 
 async def browser_click(
@@ -1250,6 +1956,8 @@ async def browser_click(
                 500
             )
 
+            clear_agent_refs()
+
             return (
                 "✅ Клик выполнен\n"
                 f"Selector: {selector}\n"
@@ -1262,7 +1970,48 @@ async def browser_click(
 
 
 # ============================================================
-# 23. CLICK TEXT
+# 24. CLICK REF
+# ============================================================
+
+async def browser_click_ref(
+    ref: str
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            await page.locator(
+                selector
+            ).first.click(
+                timeout=15000
+            )
+
+            await page.wait_for_timeout(
+                500
+            )
+
+            clear_agent_refs()
+
+            return (
+                "✅ Клик выполнен\n"
+                f"Ref: {ref}\n"
+                f"URL: {page.url}"
+            )
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 25. CLICK TEXT
 # ============================================================
 
 async def browser_click_text(
@@ -1288,6 +2037,8 @@ async def browser_click_text(
                 500
             )
 
+            clear_agent_refs()
+
             return (
                 "✅ Клик по тексту выполнен\n"
                 f"Text: {text}\n"
@@ -1300,7 +2051,7 @@ async def browser_click_text(
 
 
 # ============================================================
-# 24. FILL
+# 26. FILL
 # ============================================================
 
 async def browser_fill(
@@ -1332,7 +2083,43 @@ async def browser_fill(
 
 
 # ============================================================
-# 25. FILL PLACEHOLDER
+# 27. FILL REF
+# ============================================================
+
+async def browser_fill_ref(
+    ref: str,
+    text: str,
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            await page.locator(
+                selector
+            ).first.fill(
+                text,
+                timeout=15000
+            )
+
+            return (
+                "✅ Поле заполнено\n"
+                f"Ref: {ref}"
+            )
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 28. FILL PLACEHOLDER
 # ============================================================
 
 async def browser_fill_placeholder(
@@ -1364,7 +2151,7 @@ async def browser_fill_placeholder(
 
 
 # ============================================================
-# 26. TYPE
+# 29. TYPE
 # ============================================================
 
 async def browser_type(
@@ -1393,7 +2180,7 @@ async def browser_type(
 
 
 # ============================================================
-# 27. PRESS
+# 30. PRESS
 # ============================================================
 
 async def browser_press(
@@ -1414,6 +2201,8 @@ async def browser_press(
                 timeout=15000
             )
 
+            clear_agent_refs()
+
             return (
                 f"✅ Нажата клавиша: {key}"
             )
@@ -1424,7 +2213,45 @@ async def browser_press(
 
 
 # ============================================================
-# 28. KEY
+# 31. PRESS REF
+# ============================================================
+
+async def browser_press_ref(
+    ref: str,
+    key: str,
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            await page.locator(
+                selector
+            ).first.press(
+                key,
+                timeout=15000
+            )
+
+            clear_agent_refs()
+
+            return (
+                f"✅ Нажата клавиша: {key}\n"
+                f"Ref: {ref}"
+            )
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 32. KEY
 # ============================================================
 
 async def browser_key(
@@ -1441,6 +2268,8 @@ async def browser_key(
                 key
             )
 
+            clear_agent_refs()
+
             return (
                 f"✅ Клавиша: {key}"
             )
@@ -1451,7 +2280,7 @@ async def browser_key(
 
 
 # ============================================================
-# 29. WAIT
+# 33. WAIT
 # ============================================================
 
 async def browser_wait(
@@ -1464,7 +2293,7 @@ async def browser_wait(
 
             page = await get_current_page()
 
-            milliseconds = max(
+            delay = max(
                 0,
                 min(
                     int(milliseconds),
@@ -1473,12 +2302,12 @@ async def browser_wait(
             )
 
             await page.wait_for_timeout(
-                milliseconds
+                delay
             )
 
             return (
                 f"✅ Ожидание "
-                f"{milliseconds} мс"
+                f"{delay} мс"
             )
 
         return await browser_operation(
@@ -1487,7 +2316,7 @@ async def browser_wait(
 
 
 # ============================================================
-# 30. WAIT SELECTOR
+# 34. WAIT SELECTOR
 # ============================================================
 
 async def browser_wait_selector(
@@ -1519,7 +2348,7 @@ async def browser_wait_selector(
 
 
 # ============================================================
-# 31. SELECT
+# 35. SELECT
 # ============================================================
 
 async def browser_select(
@@ -1550,7 +2379,44 @@ async def browser_select(
 
 
 # ============================================================
-# 32. CHECK
+# 36. SELECT REF
+# ============================================================
+
+async def browser_select_ref(
+    ref: str,
+    value: str,
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            result = await page.locator(
+                selector
+            ).select_option(
+                value=value,
+                timeout=15000,
+            )
+
+            return (
+                f"✅ Выбрано\n"
+                f"Ref: {ref}\n"
+                f"Value: {result}"
+            )
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 37. CHECK
 # ============================================================
 
 async def browser_check(
@@ -1577,7 +2443,41 @@ async def browser_check(
 
 
 # ============================================================
-# 33. UNCHECK
+# 38. CHECK REF
+# ============================================================
+
+async def browser_check_ref(
+    ref: str
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            await page.locator(
+                selector
+            ).check(
+                timeout=15000
+            )
+
+            return (
+                f"✅ Checkbox отмечен\n"
+                f"Ref: {ref}"
+            )
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 39. UNCHECK
 # ============================================================
 
 async def browser_uncheck(
@@ -1604,7 +2504,41 @@ async def browser_uncheck(
 
 
 # ============================================================
-# 34. HOVER
+# 40. UNCHECK REF
+# ============================================================
+
+async def browser_uncheck_ref(
+    ref: str
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            await page.locator(
+                selector
+            ).uncheck(
+                timeout=15000
+            )
+
+            return (
+                f"✅ Checkbox снят\n"
+                f"Ref: {ref}"
+            )
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 41. HOVER
 # ============================================================
 
 async def browser_hover(
@@ -1631,7 +2565,7 @@ async def browser_hover(
 
 
 # ============================================================
-# 35. ATTRIBUTE
+# 42. ATTRIBUTE
 # ============================================================
 
 async def browser_attribute(
@@ -1659,7 +2593,39 @@ async def browser_attribute(
 
 
 # ============================================================
-# 36. COUNT
+# 43. ATTRIBUTE REF
+# ============================================================
+
+async def browser_attribute_ref(
+    ref: str,
+    attribute: str,
+):
+
+    async with browser_lock:
+
+        async def operation():
+
+            page, selector = (
+                await get_ref_selector(
+                    ref
+                )
+            )
+
+            value = await page.locator(
+                selector
+            ).first.get_attribute(
+                attribute
+            )
+
+            return str(value)
+
+        return await browser_operation(
+            operation
+        )
+
+
+# ============================================================
+# 44. COUNT
 # ============================================================
 
 async def browser_count(
@@ -1686,7 +2652,7 @@ async def browser_count(
 
 
 # ============================================================
-# 37. JAVASCRIPT
+# 45. JAVASCRIPT
 # ============================================================
 
 async def browser_js(
@@ -1711,7 +2677,7 @@ async def browser_js(
 
 
 # ============================================================
-# 38. SCREENSHOT
+# 46. SCREENSHOT
 # ============================================================
 
 async def browser_screenshot():
@@ -1745,7 +2711,7 @@ async def browser_screenshot():
 
 
 # ============================================================
-# 39. CONTENT
+# 47. CONTENT
 # ============================================================
 
 async def browser_content():
@@ -1766,7 +2732,7 @@ async def browser_content():
 
 
 # ============================================================
-# 40. DSPY ASYNC BRIDGE
+# 48. DSPY ASYNC BRIDGE
 # ============================================================
 
 def run_async_from_dspy(
@@ -1811,7 +2777,7 @@ def run_async_from_dspy(
 
 
 # ============================================================
-# 41. DSPY TOOLS
+# 49. DSPY TOOLS
 # ============================================================
 
 def create_browser_tools():
@@ -1821,30 +2787,36 @@ def create_browser_tools():
             browser_goto(url)
         )
 
+
     def tool_back():
         return run_async_from_dspy(
             browser_back()
         )
+
 
     def tool_forward():
         return run_async_from_dspy(
             browser_forward()
         )
 
+
     def tool_reload():
         return run_async_from_dspy(
             browser_reload()
         )
+
 
     def tool_page_info():
         return run_async_from_dspy(
             browser_page_info()
         )
 
+
     def tool_inspect_page():
         return run_async_from_dspy(
             browser_inspect()
         )
+
 
     def tool_get_text(
         selector: str = "body"
@@ -1853,6 +2825,7 @@ def create_browser_tools():
             browser_get_text(selector)
         )
 
+
     def tool_get_html(
         selector: str = "body"
     ):
@@ -1860,10 +2833,12 @@ def create_browser_tools():
             browser_get_html(selector)
         )
 
+
     def tool_get_links():
         return run_async_from_dspy(
             browser_get_links()
         )
+
 
     def tool_click(
         selector: str
@@ -1872,12 +2847,22 @@ def create_browser_tools():
             browser_click(selector)
         )
 
+
+    def tool_click_ref(
+        ref: str
+    ):
+        return run_async_from_dspy(
+            browser_click_ref(ref)
+        )
+
+
     def tool_click_text(
         text: str
     ):
         return run_async_from_dspy(
             browser_click_text(text)
         )
+
 
     def tool_fill(
         selector: str,
@@ -1890,6 +2875,19 @@ def create_browser_tools():
             )
         )
 
+
+    def tool_fill_ref(
+        ref: str,
+        text: str,
+    ):
+        return run_async_from_dspy(
+            browser_fill_ref(
+                ref,
+                text,
+            )
+        )
+
+
     def tool_fill_placeholder(
         placeholder: str,
         text: str,
@@ -1900,6 +2898,7 @@ def create_browser_tools():
                 text,
             )
         )
+
 
     def tool_type(
         selector: str,
@@ -1912,6 +2911,7 @@ def create_browser_tools():
             )
         )
 
+
     def tool_press(
         selector: str,
         key: str,
@@ -1923,6 +2923,19 @@ def create_browser_tools():
             )
         )
 
+
+    def tool_press_ref(
+        ref: str,
+        key: str,
+    ):
+        return run_async_from_dspy(
+            browser_press_ref(
+                ref,
+                key,
+            )
+        )
+
+
     def tool_key(
         key: str
     ):
@@ -1930,12 +2943,14 @@ def create_browser_tools():
             browser_key(key)
         )
 
+
     def tool_wait(
         milliseconds: int = 1000
     ):
         return run_async_from_dspy(
             browser_wait(milliseconds)
         )
+
 
     def tool_wait_selector(
         selector: str,
@@ -1948,6 +2963,7 @@ def create_browser_tools():
             )
         )
 
+
     def tool_select(
         selector: str,
         value: str,
@@ -1959,12 +2975,34 @@ def create_browser_tools():
             )
         )
 
+
+    def tool_select_ref(
+        ref: str,
+        value: str,
+    ):
+        return run_async_from_dspy(
+            browser_select_ref(
+                ref,
+                value,
+            )
+        )
+
+
     def tool_check(
         selector: str
     ):
         return run_async_from_dspy(
             browser_check(selector)
         )
+
+
+    def tool_check_ref(
+        ref: str
+    ):
+        return run_async_from_dspy(
+            browser_check_ref(ref)
+        )
+
 
     def tool_uncheck(
         selector: str
@@ -1973,12 +3011,22 @@ def create_browser_tools():
             browser_uncheck(selector)
         )
 
+
+    def tool_uncheck_ref(
+        ref: str
+    ):
+        return run_async_from_dspy(
+            browser_uncheck_ref(ref)
+        )
+
+
     def tool_hover(
         selector: str
     ):
         return run_async_from_dspy(
             browser_hover(selector)
         )
+
 
     def tool_attribute(
         selector: str,
@@ -1991,12 +3039,26 @@ def create_browser_tools():
             )
         )
 
+
+    def tool_attribute_ref(
+        ref: str,
+        attribute: str,
+    ):
+        return run_async_from_dspy(
+            browser_attribute_ref(
+                ref,
+                attribute,
+            )
+        )
+
+
     def tool_count(
         selector: str
     ):
         return run_async_from_dspy(
             browser_count(selector)
         )
+
 
     def tool_javascript(
         expression: str
@@ -2005,15 +3067,18 @@ def create_browser_tools():
             browser_js(expression)
         )
 
+
     def tool_screenshot():
         return run_async_from_dspy(
             browser_screenshot()
         )
 
+
     def tool_content():
         return run_async_from_dspy(
             browser_content()
         )
+
 
     return [
 
@@ -2037,15 +3102,21 @@ def create_browser_tools():
 
         Tool(tool_click),
 
+        Tool(tool_click_ref),
+
         Tool(tool_click_text),
 
         Tool(tool_fill),
+
+        Tool(tool_fill_ref),
 
         Tool(tool_fill_placeholder),
 
         Tool(tool_type),
 
         Tool(tool_press),
+
+        Tool(tool_press_ref),
 
         Tool(tool_key),
 
@@ -2055,13 +3126,21 @@ def create_browser_tools():
 
         Tool(tool_select),
 
+        Tool(tool_select_ref),
+
         Tool(tool_check),
 
+        Tool(tool_check_ref),
+
         Tool(tool_uncheck),
+
+        Tool(tool_uncheck_ref),
 
         Tool(tool_hover),
 
         Tool(tool_attribute),
+
+        Tool(tool_attribute_ref),
 
         Tool(tool_count),
 
@@ -2075,7 +3154,7 @@ def create_browser_tools():
 
 
 # ============================================================
-# 42. AGNES LM
+# 50. AGNES LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -2115,6 +3194,7 @@ class AgnesLM(dspy.LM):
         )
 
         self.provider = "agnes-ai"
+
 
     def forward(
         self,
@@ -2176,17 +3256,13 @@ class AgnesLM(dspy.LM):
 
         }
 
-        if params.get(
-            "tools"
-        ):
+        if params.get("tools"):
 
             payload["tools"] = (
                 params["tools"]
             )
 
-        if params.get(
-            "tool_choice"
-        ):
+        if params.get("tool_choice"):
 
             payload["tool_choice"] = (
                 params["tool_choice"]
@@ -2274,6 +3350,7 @@ class AgnesLM(dspy.LM):
 
         return [content]
 
+
     def __call__(
         self,
         prompt=None,
@@ -2289,7 +3366,7 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# 43. DSPY SIGNATURE
+# 51. DSPY SIGNATURE
 # ============================================================
 
 class BrowserTask(Signature):
@@ -2297,25 +3374,73 @@ class BrowserTask(Signature):
     """
     Ты автономный браузерный агент.
 
-    Выполняй задачи пользователя непосредственно
-    через Camoufox.
+    Работай непосредственно через Camoufox.
+
+    ОСНОВНОЕ ПРАВИЛО:
+
+    После открытия или изменения страницы сначала
+    используй inspect_page.
+
+    inspect_page возвращает интерактивные элементы
+    с refs:
+
+        [e1]
+        [e2]
+        [e3]
+
+    Используй refs вместо сложных CSS-селекторов,
+    когда это возможно.
+
+    Доступные ref tools:
+
+        click_ref(ref)
+        fill_ref(ref, text)
+        press_ref(ref, key)
+        select_ref(ref, value)
+        check_ref(ref)
+        uncheck_ref(ref)
+        attribute_ref(ref, attribute)
 
     Правила:
 
     1. Для открытия сайта используй tool_goto.
-    2. Если структура неизвестна — inspect_page.
-    3. Для чтения — get_text.
-    4. Для поиска элементов — inspect_page.
-    5. Для кнопок — click/click_text.
-    6. Для полей — fill/fill_placeholder.
-    7. Для клавиатуры — press/key.
-    8. Не утверждай выполнение действия,
-       пока tool не подтвердил его.
-    9. При ошибке меняй стратегию.
-    10. Можно использовать несколько tools.
-    11. Для динамических сайтов используй wait.
-    12. Сложные задачи исследуй самостоятельно.
-    13. В конце дай только итоговый ответ.
+
+    2. После goto/reload/click/navigation снова
+       используй inspect_page.
+
+    3. Если структура неизвестна — inspect_page.
+
+    4. Для кнопок предпочитай click_ref.
+
+    5. Для полей предпочитай fill_ref.
+
+    6. Для select используй select_ref.
+
+    7. Для checkbox используй check_ref/uncheck_ref.
+
+    8. Для клавиш используй press_ref или key.
+
+    9. Не придумывай refs.
+       Используй только refs, которые вернул inspect_page.
+
+    10. Если получил ошибку "Refs устарели",
+        снова вызови inspect_page.
+
+    11. Не утверждай выполнение действия,
+        пока соответствующий tool не подтвердил его.
+
+    12. При ошибке меняй стратегию.
+
+    13. Можно использовать несколько tools.
+
+    14. Для динамических сайтов используй wait.
+
+    15. Сложные задачи исследуй самостоятельно.
+
+    16. Не выводи пользователю внутренний процесс
+        рассуждений и список tool calls.
+
+    17. В конце дай только итоговый ответ.
     """
 
     question = InputField(
@@ -2328,7 +3453,7 @@ class BrowserTask(Signature):
 
 
 # ============================================================
-# 44. INIT DSPY
+# 52. INIT DSPY
 # ============================================================
 
 def init_dspy():
@@ -2413,7 +3538,7 @@ def init_dspy():
 
         return True
 
-    except Exception as e:
+    except Exception:
 
         logger.exception(
             "❌ DSPy init error"
@@ -2425,7 +3550,7 @@ def init_dspy():
 
 
 # ============================================================
-# 45. RUN AGENT
+# 53. RUN AGENT
 # ============================================================
 
 def run_agent(
@@ -2501,7 +3626,7 @@ def run_agent(
 
 
 # ============================================================
-# 46. START
+# 54. START
 # ============================================================
 
 async def start(
@@ -2533,7 +3658,7 @@ async def start(
 
 
 # ============================================================
-# 47. CHECK
+# 55. CHECK
 # ============================================================
 
 async def check(
@@ -2590,7 +3715,7 @@ async def check(
 
 
 # ============================================================
-# 48. SCREENSHOT
+# 56. SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -2631,7 +3756,7 @@ async def screenshot(
 
 
 # ============================================================
-# 49. STATUS
+# 57. STATUS
 # ============================================================
 
 async def status(
@@ -2654,7 +3779,9 @@ async def status(
             title = await page.title()
 
         except Exception:
+
             pass
+
 
     status_text = (
 
@@ -2684,7 +3811,7 @@ async def status(
 
 
 # ============================================================
-# 50. COOKIES COMMAND
+# 58. COOKIES COMMAND
 # ============================================================
 
 async def cookies_command(
@@ -2720,7 +3847,7 @@ async def cookies_command(
 
 
 # ============================================================
-# 51. CANCEL
+# 59. CANCEL
 # ============================================================
 
 async def cancel_cookies(
@@ -2750,7 +3877,7 @@ async def cancel_cookies(
 
 
 # ============================================================
-# 52. COOKIE FILE
+# 60. COOKIE FILE
 # ============================================================
 
 async def cookies_file(
@@ -2829,17 +3956,11 @@ async def cookies_file(
             )
         )
 
-        loaded = result[
-            "loaded"
-        ]
+        loaded = result["loaded"]
 
-        total = result[
-            "total"
-        ]
+        total = result["total"]
 
-        errors = result[
-            "errors"
-        ]
+        errors = result["errors"]
 
         if loaded == 0:
 
@@ -2924,7 +4045,7 @@ async def cookies_file(
 
 
 # ============================================================
-# 53. DSPY COMMAND
+# 61. DSPY COMMAND
 # ============================================================
 
 async def dspy_command(
@@ -2952,6 +4073,7 @@ async def dspy_command(
 
         return
 
+
     if not dspy_agent_instance:
 
         await update.message.reply_text(
@@ -2959,6 +4081,7 @@ async def dspy_command(
         )
 
         return
+
 
     if not browser_ready:
 
@@ -2968,13 +4091,16 @@ async def dspy_command(
 
         return
 
+
     query = " ".join(
         context.args
     )
 
+
     msg = await update.message.reply_text(
         "🧠 DSPy управляет Camoufox..."
     )
+
 
     try:
 
@@ -2988,6 +4114,7 @@ async def dspy_command(
             query,
         )
 
+
         if len(answer) > 4000:
 
             answer = (
@@ -2995,12 +4122,14 @@ async def dspy_command(
                 + "..."
             )
 
+
         safe_answer = (
             escape_markdown(
                 answer,
                 version=2,
             )
         )
+
 
         await msg.edit_text(
 
@@ -3024,7 +4153,7 @@ async def dspy_command(
 
 
 # ============================================================
-# 54. TELEGRAM ERROR HANDLER
+# 62. TELEGRAM ERROR HANDLER
 # ============================================================
 
 async def telegram_error_handler(
@@ -3039,7 +4168,7 @@ async def telegram_error_handler(
 
 
 # ============================================================
-# 55. MAIN
+# 63. MAIN
 # ============================================================
 
 async def main():
@@ -3054,9 +4183,11 @@ async def main():
         "🚀 Инициализация..."
     )
 
+
     browser_ok = await init_browser()
 
     dspy_ok = init_dspy()
+
 
     app = (
         Application
@@ -3065,9 +4196,11 @@ async def main():
         .build()
     )
 
+
     app.add_error_handler(
         telegram_error_handler
     )
+
 
     # --------------------------------------------------------
     # COMMANDS
@@ -3080,12 +4213,14 @@ async def main():
         )
     )
 
+
     app.add_handler(
         CommandHandler(
             "check",
             check,
         )
     )
+
 
     app.add_handler(
         CommandHandler(
@@ -3094,12 +4229,14 @@ async def main():
         )
     )
 
+
     app.add_handler(
         CommandHandler(
             "status",
             status,
         )
     )
+
 
     app.add_handler(
         CommandHandler(
@@ -3108,6 +4245,7 @@ async def main():
         )
     )
 
+
     app.add_handler(
         CommandHandler(
             "cookies",
@@ -3115,12 +4253,14 @@ async def main():
         )
     )
 
+
     app.add_handler(
         CommandHandler(
             "cancel",
             cancel_cookies,
         )
     )
+
 
     # --------------------------------------------------------
     # JSON FILE
@@ -3133,15 +4273,18 @@ async def main():
         )
     )
 
+
     logger.info(
         f"🦊 Camoufox: "
         f"{'✅' if browser_ok else '❌'}"
     )
 
+
     logger.info(
         f"🧠 DSPy: "
         f"{'✅' if dspy_ok else '❌'}"
     )
+
 
     try:
 
@@ -3151,13 +4294,16 @@ async def main():
 
         await app.updater.start_polling()
 
+
         logger.info(
             "🤖 Telegram бот запущен!"
         )
 
+
         stop_signal = (
             asyncio.Event()
         )
+
 
         def signal_handler():
 
@@ -3166,6 +4312,7 @@ async def main():
             )
 
             stop_signal.set()
+
 
         try:
 
@@ -3190,6 +4337,7 @@ async def main():
 
             pass
 
+
         while not stop_signal.is_set():
 
             await asyncio.sleep(
@@ -3200,11 +4348,13 @@ async def main():
                 "💓 Bot alive"
             )
 
+
     except Exception as e:
 
         logger.exception(
             f"❌ Main error: {e}"
         )
+
 
     finally:
 
@@ -3212,32 +4362,39 @@ async def main():
             "🛑 Завершение..."
         )
 
+
         try:
 
             await app.updater.stop()
 
         except Exception:
+
             pass
+
 
         try:
 
             await app.stop()
 
         except Exception:
+
             pass
+
 
         try:
 
             await app.shutdown()
 
         except Exception:
+
             pass
+
 
         await close_browser()
 
 
 # ============================================================
-# 56. ENTRYPOINT
+# 64. ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
