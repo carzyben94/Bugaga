@@ -14,6 +14,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 from telegram.helpers import escape_markdown
 
@@ -88,7 +90,11 @@ dspy_agent_instance = None
 
 main_event_loop = None
 
+# Защита от одновременного запуска нескольких DSPy задач
 agent_lock = threading.Lock()
+
+# Пользователи, которые нажали /cookies
+waiting_for_cookies = set()
 
 
 # ============================================================
@@ -317,7 +323,8 @@ def is_browser_closed_error(error):
     ]
 
     return any(
-        pattern in text
+        pattern
+        in text
         for pattern in patterns
     )
 
@@ -567,10 +574,17 @@ async def browser_inspect():
                 """
                 els => els.slice(0,50).map(
                     e => ({
-                        text: (e.innerText || e.getAttribute('aria-label') || '').trim(),
-                        type: e.getAttribute('type') || '',
-                        id: e.id || '',
-                        cls: e.className || ''
+                        text: (
+                            e.innerText ||
+                            e.getAttribute('aria-label') ||
+                            ''
+                        ).trim(),
+                        type:
+                            e.getAttribute('type') || '',
+                        id:
+                            e.id || '',
+                        cls:
+                            e.className || ''
                     })
                 )
                 """
@@ -582,12 +596,18 @@ async def browser_inspect():
                 """
                 els => els.slice(0,50).map(
                     e => ({
-                        tag: e.tagName.toLowerCase(),
-                        type: e.getAttribute('type') || '',
-                        name: e.getAttribute('name') || '',
-                        placeholder: e.getAttribute('placeholder') || '',
-                        aria: e.getAttribute('aria-label') || '',
-                        id: e.id || ''
+                        tag:
+                            e.tagName.toLowerCase(),
+                        type:
+                            e.getAttribute('type') || '',
+                        name:
+                            e.getAttribute('name') || '',
+                        placeholder:
+                            e.getAttribute('placeholder') || '',
+                        aria:
+                            e.getAttribute('aria-label') || '',
+                        id:
+                            e.id || ''
                     })
                 )
                 """
@@ -599,10 +619,14 @@ async def browser_inspect():
                 """
                 els => els.slice(0,80).map(
                     e => ({
-                        text: (e.innerText || '').trim(),
-                        href: e.href || ''
+                        text:
+                            (e.innerText || '').trim(),
+                        href:
+                            e.href || ''
                     })
-                ).filter(x => x.text || x.href)
+                ).filter(
+                    x => x.text || x.href
+                )
                 """
             )
 
@@ -670,10 +694,14 @@ async def browser_get_links():
                 """
                 elements => elements.map(
                     el => ({
-                        text: (el.innerText || '').trim(),
-                        href: el.href
+                        text:
+                            (el.innerText || '').trim(),
+                        href:
+                            el.href
                     })
-                ).filter(x => x.href)
+                ).filter(
+                    x => x.href
+                )
                 """
             )
 
@@ -1242,7 +1270,7 @@ async def load_cookies(
             "Camoufox context отсутствует"
         )
 
-    # Поддерживаем:
+    # Поддержка:
     #
     # [
     #   {...},
@@ -1279,16 +1307,17 @@ async def load_cookies(
         )
 
     if not cookies:
+
         raise ValueError(
             "Список cookies пуст"
         )
 
     if not isinstance(cookies, list):
+
         raise ValueError(
             "Поле cookies должно быть массивом"
         )
 
-    # Минимальная проверка структуры.
     valid_cookies = []
 
     for index, cookie in enumerate(cookies):
@@ -1303,6 +1332,7 @@ async def load_cookies(
             continue
 
         if "name" not in cookie:
+
             logger.warning(
                 f"⚠️ Cookie #{index + 1} "
                 f"пропущена: нет name"
@@ -1311,6 +1341,7 @@ async def load_cookies(
             continue
 
         if "value" not in cookie:
+
             logger.warning(
                 f"⚠️ Cookie #{index + 1} "
                 f"пропущена: нет value"
@@ -1318,9 +1349,12 @@ async def load_cookies(
 
             continue
 
-        valid_cookies.append(cookie)
+        valid_cookies.append(
+            cookie
+        )
 
     if not valid_cookies:
+
         raise ValueError(
             "В JSON нет корректных cookies"
         )
@@ -1935,10 +1969,14 @@ async def start(
         "🦊 Camoufox + DSPy Browser Agent\n\n"
         "Команды:\n"
         "/check <url>\n"
-        "/cookies + JSON файл\n"
+        "/cookies\n"
+        "/cancel\n"
         "/dspy <задача>\n"
         "/status\n"
-        "/screenshot"
+        "/screenshot\n\n"
+        "🍪 Для cookies:\n"
+        "1. Отправь /cookies\n"
+        "2. Отправь JSON-файл отдельным сообщением"
     )
 
 
@@ -2007,16 +2045,44 @@ async def cookies_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    user_id = update.effective_user.id
+
+    if not browser_ready:
+
+        await update.message.reply_text(
+            "❌ Camoufox не запущен."
+        )
+
+        return
+
+    waiting_for_cookies.add(
+        user_id
+    )
+
+    await update.message.reply_text(
+        "🍪 Жду JSON-файл с cookies.\n\n"
+        "Просто отправь файл следующим сообщением.\n\n"
+        "❌ Для отмены: /cancel"
+    )
+
+
+# ============================================================
+# 47. RECEIVE COOKIES FILE
+# ============================================================
+
+async def receive_cookies_file(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    user_id = update.effective_user.id
+
+    if user_id not in waiting_for_cookies:
+        return
+
     document = update.message.document
 
     if document is None:
-
-        await update.message.reply_text(
-            "🍪 Отправь JSON-файл вместе с командой /cookies\n\n"
-            "Пример:\n"
-            "/cookies + cookies.json"
-        )
-
         return
 
     filename = (
@@ -2027,15 +2093,20 @@ async def cookies_command(
     if not filename.lower().endswith(".json"):
 
         await update.message.reply_text(
-            "❌ Нужен файл с расширением .json"
+            "❌ Нужен JSON-файл.\n\n"
+            "Отправь файл ещё раз."
         )
 
         return
 
     if not browser_ready:
 
+        waiting_for_cookies.discard(
+            user_id
+        )
+
         await update.message.reply_text(
-            "❌ Camoufox не запущен"
+            "❌ Camoufox не запущен."
         )
 
         return
@@ -2046,18 +2117,21 @@ async def cookies_command(
 
     try:
 
-        telegram_file = await document.get_file()
-
-        file_data = (
-            await telegram_file.download_as_bytearray()
+        telegram_file = (
+            await document.get_file()
         )
 
-        # Ограничение размера JSON — 10 MB
+        file_data = (
+            await telegram_file
+            .download_as_bytearray()
+        )
+
+        # Максимальный размер файла
         if len(file_data) > 10 * 1024 * 1024:
 
             raise ValueError(
                 "Файл слишком большой. "
-                "Максимальный размер: 10 MB"
+                "Максимальный размер: 10 MB."
             )
 
         try:
@@ -2069,40 +2143,72 @@ async def cookies_command(
         except UnicodeDecodeError:
 
             raise ValueError(
-                "JSON должен быть в UTF-8"
+                "JSON должен быть в UTF-8."
             )
 
         count = await load_cookies(
             cookies_data
         )
 
+        waiting_for_cookies.discard(
+            user_id
+        )
+
         await msg.edit_text(
-            "✅ Cookies успешно загружены!\n\n"
+            "✅ Cookies загружены!\n\n"
             f"🍪 Количество: {count}\n"
             f"📁 Файл: {filename}\n\n"
-            "🦊 Cookies добавлены в текущий "
-            "Camoufox context."
+            "🦊 Camoufox context обновлён."
         )
 
         logger.info(
-            f"🍪 Загружено cookies: {count} "
+            f"🍪 User {user_id}: "
+            f"загружено {count} cookies "
             f"из {filename}"
         )
 
     except Exception as e:
 
         logger.exception(
-            "❌ /cookies"
+            "❌ Ошибка загрузки cookies"
         )
 
         await msg.edit_text(
-            "❌ Не удалось загрузить cookies:\n\n"
-            f"{str(e)[:1500]}"
+            "❌ Ошибка загрузки cookies:\n\n"
+            f"{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 47. /SCREENSHOT
+# 48. /CANCEL
+# ============================================================
+
+async def cancel_cookies(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    user_id = update.effective_user.id
+
+    if user_id in waiting_for_cookies:
+
+        waiting_for_cookies.discard(
+            user_id
+        )
+
+        await update.message.reply_text(
+            "❌ Загрузка cookies отменена."
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "ℹ️ Сейчас нет активной загрузки cookies."
+        )
+
+
+# ============================================================
+# 49. /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -2118,7 +2224,10 @@ async def screenshot(
 
         path = await browser_screenshot()
 
-        with open(path, "rb") as photo:
+        with open(
+            path,
+            "rb"
+        ) as photo:
 
             await update.message.reply_photo(
                 photo=photo,
@@ -2139,7 +2248,7 @@ async def screenshot(
 
 
 # ============================================================
-# 48. /STATUS
+# 50. /STATUS
 # ============================================================
 
 async def status(
@@ -2188,7 +2297,7 @@ async def status(
 
 
 # ============================================================
-# 49. /DSPY
+# 51. /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -2277,7 +2386,7 @@ async def dspy_command(
 
 
 # ============================================================
-# 50. MAIN
+# 52. MAIN
 # ============================================================
 
 async def main():
@@ -2303,6 +2412,10 @@ async def main():
         .build()
     )
 
+    # --------------------------------------------------------
+    # COMMANDS
+    # --------------------------------------------------------
+
     app.add_handler(
         CommandHandler(
             "start",
@@ -2326,6 +2439,13 @@ async def main():
 
     app.add_handler(
         CommandHandler(
+            "cancel",
+            cancel_cookies,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
             "screenshot",
             screenshot,
         )
@@ -2342,6 +2462,17 @@ async def main():
         CommandHandler(
             "dspy",
             dspy_command,
+        )
+    )
+
+    # --------------------------------------------------------
+    # COOKIE FILE RECEIVER
+    # --------------------------------------------------------
+
+    app.add_handler(
+        MessageHandler(
+            filters.Document.ALL,
+            receive_cookies_file,
         )
     )
 
@@ -2437,7 +2568,7 @@ async def main():
 
 
 # ============================================================
-# 51. ENTRYPOINT
+# 53. ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
