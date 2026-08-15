@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 import logging
@@ -26,14 +25,18 @@ from dspy import Signature, InputField, OutputField, Tool
 
 try:
     from dspy import ReActV2
+
     REACT_V2_AVAILABLE = True
+
 except ImportError:
     ReActV2 = None
     REACT_V2_AVAILABLE = False
 
 try:
     from camoufox.async_api import AsyncCamoufox
+
     CAMOUFOX_AVAILABLE = True
+
 except ImportError:
     AsyncCamoufox = None
     CAMOUFOX_AVAILABLE = False
@@ -123,6 +126,7 @@ async def init_browser():
         )
 
         browser_ready = True
+
         return True
 
     except Exception as e:
@@ -217,6 +221,7 @@ async def get_current_page():
 
     try:
         current_page = await camoufox_context.new_page()
+
         return current_page
 
     except Exception:
@@ -243,7 +248,10 @@ def is_browser_closed_error(error):
         "target has been closed",
     )
 
-    return any(x in text for x in patterns)
+    return any(
+        x in text
+        for x in patterns
+    )
 
 
 async def browser_operation(operation):
@@ -278,6 +286,7 @@ async def browser_operation(operation):
 # ============================================================
 
 def normalize_cookie(cookie: dict):
+
     if not isinstance(cookie, dict):
         raise ValueError(
             "Cookie должен быть объектом"
@@ -753,8 +762,8 @@ async def browser_get_links():
                 return "Ссылок не найдено"
 
             return "\n".join(
-                f"- {x.get('text','')[:120]} "
-                f"→ {x.get('href','')}"
+                f"- {x.get('text', '')[:120]} "
+                f"→ {x.get('href', '')}"
                 for x in links[:200]
             )
 
@@ -1010,9 +1019,7 @@ async def browser_key(key: str):
 
             await page.keyboard.press(key)
 
-            return (
-                f"Клавиша: {key}"
-            )
+            return f"Клавиша: {key}"
 
         return await browser_operation(
             operation
@@ -1507,17 +1514,13 @@ INSPECTOR_JS = r"""
         if (tag === "input") {
 
             if (
-                [
-                    "checkbox"
-                ].includes(type)
+                ["checkbox"].includes(type)
             ) {
                 return "checkbox";
             }
 
             if (
-                [
-                    "radio"
-                ].includes(type)
+                ["radio"].includes(type)
             ) {
                 return "radio";
             }
@@ -1526,7 +1529,7 @@ INSPECTOR_JS = r"""
                 [
                     "button",
                     "submit",
-                    "reset"
+                    "reset",
                 ].includes(type)
             ) {
                 return "button";
@@ -1908,7 +1911,7 @@ INSPECTOR_JS = r"""
             return {
                 clickable: false,
                 reason: "outside-viewport",
-                point: {x, y}
+                point: { x, y }
             };
         }
 
@@ -1923,7 +1926,7 @@ INSPECTOR_JS = r"""
             return {
                 clickable: false,
                 reason: "no-hit-target",
-                point: {x, y}
+                point: { x, y }
             };
         }
 
@@ -1935,18 +1938,22 @@ INSPECTOR_JS = r"""
             clickable:
                 same &&
                 enabled(element),
+
             covered:
                 !same,
+
             topTag:
                 top.tagName
                     ? top.tagName.toLowerCase()
                     : "",
+
             topText:
                 textOf(top).slice(
                     0,
                     120
                 ),
-            point: {x, y}
+
+            point: { x, y }
         };
     };
 
@@ -2316,8 +2323,7 @@ INSPECTOR_JS = r"""
 
     walk(document);
 
-    const interactive =
-        [];
+    const interactive = [];
 
     for (
         const item
@@ -2782,9 +2788,7 @@ INSPECTOR_JS = r"""
 
     const bodyClone =
         document.body
-            ? document.body.cloneNode(
-                true
-            )
+            ? document.body.cloneNode(true)
             : null;
 
     if (bodyClone) {
@@ -2818,8 +2822,7 @@ INSPECTOR_JS = r"""
             document.title,
 
         lang:
-            document.documentElement
-                .lang || "",
+            document.documentElement.lang || "",
 
         readyState:
             document.readyState,
@@ -2980,27 +2983,6 @@ async def browser_inspect(
 
     """
     Advanced browser inspector.
-
-    Анализирует:
-      - main document
-      - Playwright frames
-      - shadow DOM
-      - interactive elements
-      - semantic locators
-      - CSS selectors
-      - XPath
-      - ARIA
-      - element state
-      - hit testing
-      - overlays/covered elements
-      - viewport
-      - forms
-      - dialogs
-      - links
-      - tables
-      - headings
-      - active element
-      - visible text
     """
 
     async with browser_lock:
@@ -3017,9 +2999,10 @@ async def browser_inspect(
                 else [page.main_frame]
             )
 
-            for frame_index, frame in enumerate(
-                frames
-            ):
+            for (
+                frame_index,
+                frame
+            ) in enumerate(frames):
 
                 data = await inspect_frame(
                     frame,
@@ -3068,15 +3051,18 @@ async def browser_inspect(
             )
 
             out.append(
-                f"URL: {main_data.get('url', page.url)}"
+                f"URL: "
+                f"{main_data.get('url', page.url)}"
             )
 
             out.append(
-                f"TITLE: {main_data.get('title', '')}"
+                f"TITLE: "
+                f"{main_data.get('title', '')}"
             )
 
             out.append(
-                f"LANG: {main_data.get('lang', '')}"
+                f"LANG: "
+                f"{main_data.get('lang', '')}"
             )
 
             out.append(
@@ -3156,6 +3142,16 @@ async def browser_inspect(
                         f"{frame_data['error']}"
                     )
 
+            # ====================================================
+            # FIX:
+            # Было:
+            #
+            # elements =
+            #     frame_data.get(...)
+            #
+            # Теперь корректное Python-присваивание.
+            # ====================================================
+
             out.append(
                 "\n=== INTERACTIVE ELEMENTS ==="
             )
@@ -3164,11 +3160,10 @@ async def browser_inspect(
 
             for frame_data in frames_data:
 
-                elements =
-                    frame_data.get(
-                        "interactive",
-                        []
-                    )
+                elements = frame_data.get(
+                    "interactive",
+                    []
+                )
 
                 for element in elements:
 
@@ -3720,12 +3715,9 @@ def create_browser_tools():
 
         return run_async_from_dspy(
             browser_inspect(
-                max_interactive=
-                    max_interactive,
-                max_links=
-                    max_links,
-                max_text=
-                    max_text,
+                max_interactive=max_interactive,
+                max_links=max_links,
+                max_text=max_text,
             )
         )
 
@@ -3966,47 +3958,33 @@ def create_browser_tools():
         )
 
     return [
-
         Tool(tool_goto),
         Tool(tool_back),
         Tool(tool_forward),
         Tool(tool_reload),
         Tool(tool_page_info),
-
         Tool(tool_inspect_page),
-
         Tool(tool_get_text),
         Tool(tool_get_html),
         Tool(tool_get_links),
-
         Tool(tool_click),
         Tool(tool_click_text),
         Tool(tool_click_role),
-
         Tool(tool_fill),
         Tool(tool_fill_label),
         Tool(tool_fill_placeholder),
-
         Tool(tool_type),
-
         Tool(tool_press),
         Tool(tool_key),
-
         Tool(tool_wait),
         Tool(tool_wait_selector),
-
         Tool(tool_select),
-
         Tool(tool_check),
         Tool(tool_uncheck),
-
         Tool(tool_hover),
-
         Tool(tool_attribute),
         Tool(tool_count),
-
         Tool(tool_javascript),
-
         Tool(tool_screenshot),
         Tool(tool_content),
     ]
@@ -4090,7 +4068,6 @@ class AgnesLM(dspy.LM):
         }
 
         payload = {
-
             "model":
                 self.model,
 
