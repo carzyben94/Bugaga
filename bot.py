@@ -92,7 +92,7 @@ main_event_loop = None
 
 agent_lock = threading.Lock()
 
-# Пользователи, от которых бот ожидает JSON cookies
+# Пользователи, которые вызвали /cookies
 waiting_for_cookies = set()
 
 
@@ -304,135 +304,253 @@ async def get_current_page():
 
 
 # ============================================================
-# 9. COOKIES
+# 9. COOKIE NORMALIZATION
 # ============================================================
 
-def normalize_cookie(cookie: dict) -> dict:
-    """
-    Приводит cookie из разных JSON-экспортов
-    к формату Playwright/Camoufox.
-    """
+def normalize_cookie(cookie: dict):
 
-    cookie = dict(cookie)
+    c = dict(cookie)
 
     # --------------------------------------------------------
-    # sameSite
+    # NAME
     # --------------------------------------------------------
 
-    same_site = cookie.get("sameSite")
+    if not c.get("name"):
+
+        raise ValueError(
+            "Cookie не содержит name"
+        )
+
+    # --------------------------------------------------------
+    # VALUE
+    # --------------------------------------------------------
+
+    if "value" not in c:
+
+        c["value"] = ""
+
+    # --------------------------------------------------------
+    # DOMAIN
+    # --------------------------------------------------------
+
+    domain = (
+        c.get("domain")
+        or c.get("host")
+    )
+
+    # hostOnly может быть boolean — это НЕ domain
+    if isinstance(domain, bool):
+        domain = None
+
+    if domain:
+
+        domain = str(domain).strip()
+
+        if domain.startswith("http://"):
+            domain = domain[7:]
+
+        elif domain.startswith("https://"):
+            domain = domain[8:]
+
+        domain = domain.split("/")[0]
+
+        c["domain"] = domain
+
+    # --------------------------------------------------------
+    # URL
+    # --------------------------------------------------------
+
+    if not c.get("url") and domain:
+
+        clean_domain = domain.lstrip(".")
+
+        c["url"] = (
+            f"https://{clean_domain}/"
+        )
+
+    # --------------------------------------------------------
+    # CURRENT PAGE URL
+    # --------------------------------------------------------
+
+    if (
+        not c.get("url")
+        and not c.get("domain")
+    ):
+
+        try:
+
+            if current_page and current_page.url:
+
+                c["url"] = current_page.url
+
+        except Exception:
+
+            pass
+
+    # --------------------------------------------------------
+    # PATH
+    # --------------------------------------------------------
+
+    if not c.get("path"):
+
+        c["path"] = "/"
+
+    # --------------------------------------------------------
+    # SAME SITE
+    # --------------------------------------------------------
+
+    same_site = c.get("sameSite")
 
     if same_site:
 
+        same_site = (
+            str(same_site)
+            .lower()
+            .strip()
+        )
+
         same_site_map = {
+
             "strict": "Strict",
             "lax": "Lax",
             "none": "None",
+
             "no_restriction": "None",
+            "no-restriction": "None",
+
             "unspecified": "Lax",
+            "default": "Lax",
+
         }
 
-        cookie["sameSite"] = same_site_map.get(
-            str(same_site).strip().lower(),
+        c["sameSite"] = same_site_map.get(
+            same_site,
             "Lax",
         )
 
     else:
 
-        cookie.pop(
-            "sameSite",
-            None,
+        c["sameSite"] = "Lax"
+
+    # --------------------------------------------------------
+    # EXPIRATION DATE
+    # --------------------------------------------------------
+
+    if (
+        "expirationDate" in c
+        and "expires" not in c
+    ):
+
+        try:
+
+            expiration = float(
+                c["expirationDate"]
+            )
+
+            if expiration > 0:
+
+                c["expires"] = expiration
+
+        except Exception:
+
+            pass
+
+    # --------------------------------------------------------
+    # EXPIRES STRING
+    # --------------------------------------------------------
+
+    if "expires" in c:
+
+        try:
+
+            expires = float(
+                c["expires"]
+            )
+
+            if expires <= 0:
+
+                c.pop("expires", None)
+
+            else:
+
+                c["expires"] = expires
+
+        except Exception:
+
+            c.pop("expires", None)
+
+    # --------------------------------------------------------
+    # BOOLEAN
+    # --------------------------------------------------------
+
+    if "secure" in c:
+
+        c["secure"] = bool(
+            c["secure"]
+        )
+
+    if "httpOnly" in c:
+
+        c["httpOnly"] = bool(
+            c["httpOnly"]
         )
 
     # --------------------------------------------------------
-    # Только поля, поддерживаемые Playwright
+    # ONLY PLAYWRIGHT FIELDS
     # --------------------------------------------------------
 
-    allowed_fields = {
+    allowed = {
         "name",
         "value",
-        "url",
         "domain",
         "path",
         "expires",
         "httpOnly",
         "secure",
         "sameSite",
+        "url",
     }
 
-    cookie = {
+    result = {
         key: value
-        for key, value in cookie.items()
-        if key in allowed_fields
+        for key, value in c.items()
+        if key in allowed
     }
 
     # --------------------------------------------------------
-    # expires
+    # FINAL VALIDATION
     # --------------------------------------------------------
 
-    if cookie.get("expires") is None:
+    if (
+        not result.get("domain")
+        and not result.get("url")
+    ):
 
-        cookie.pop(
-            "expires",
-            None,
+        raise ValueError(
+            f"Cookie '{result.get('name')}' "
+            "не содержит domain или url"
         )
 
-    # Некоторые экспортеры могут отдавать expires
-    # строкой. В таком случае удаляем его.
-    if "expires" in cookie:
+    return result
 
-        try:
-            cookie["expires"] = float(
-                cookie["expires"]
-            )
 
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            cookie.pop(
-                "expires",
-                None,
-            )
-
-    return cookie
-
+# ============================================================
+# 10. LOAD COOKIES
+# ============================================================
 
 async def load_cookies_from_json(data):
 
-    global camoufox_context
-
-    if camoufox_context is None:
-
-        raise RuntimeError(
-            "BrowserContext отсутствует"
-        )
-
-    # --------------------------------------------------------
-    # Поддержка:
-    #
-    # [
-    #   {...},
-    #   {...}
-    # ]
-    #
-    # И:
-    #
-    # {
-    #   "cookies": [...]
-    # }
-    # --------------------------------------------------------
-
     if isinstance(data, dict):
 
-        cookies = data.get(
-            "cookies"
-        )
+        if "cookies" in data:
 
-        if cookies is None:
+            cookies = data["cookies"]
+
+        else:
 
             raise ValueError(
-                "JSON не содержит поля 'cookies'"
+                "JSON должен содержать поле "
+                "'cookies'"
             )
 
     elif isinstance(data, list):
@@ -442,8 +560,7 @@ async def load_cookies_from_json(data):
     else:
 
         raise ValueError(
-            "JSON должен быть списком cookies "
-            "или объектом {'cookies': [...]}"
+            "Неверный формат JSON"
         )
 
     if not cookies:
@@ -453,68 +570,21 @@ async def load_cookies_from_json(data):
         )
 
     normalized = []
-
-    skipped = 0
+    errors = []
 
     for index, cookie in enumerate(cookies):
 
-        if not isinstance(cookie, dict):
-
-            logger.warning(
-                f"Cookie #{index} пропущена: "
-                "не является объектом"
-            )
-
-            skipped += 1
-            continue
-
         try:
 
-            normalized_cookie = normalize_cookie(
-                cookie
+            if not isinstance(cookie, dict):
+
+                raise ValueError(
+                    "Cookie должен быть объектом"
+                )
+
+            normalized_cookie = (
+                normalize_cookie(cookie)
             )
-
-            # name
-            if not normalized_cookie.get(
-                "name"
-            ):
-
-                logger.warning(
-                    f"Cookie #{index} пропущена: "
-                    "нет name"
-                )
-
-                skipped += 1
-                continue
-
-            # value
-            if "value" not in normalized_cookie:
-
-                logger.warning(
-                    f"Cookie #{index} пропущена: "
-                    "нет value"
-                )
-
-                skipped += 1
-                continue
-
-            # url или domain
-            if (
-                not normalized_cookie.get(
-                    "url"
-                )
-                and not normalized_cookie.get(
-                    "domain"
-                )
-            ):
-
-                logger.warning(
-                    f"Cookie #{index} пропущена: "
-                    "нет url/domain"
-                )
-
-                skipped += 1
-                continue
 
             normalized.append(
                 normalized_cookie
@@ -522,226 +592,65 @@ async def load_cookies_from_json(data):
 
         except Exception as e:
 
-            logger.warning(
-                f"Cookie #{index} пропущена: {e}"
+            errors.append(
+                f"Cookie #{index + 1}: {e}"
             )
-
-            skipped += 1
 
     if not normalized:
 
         raise ValueError(
-            "Не удалось подготовить ни одной cookie"
+            "Не удалось обработать ни одного "
+            "cookie:\n"
+            + "\n".join(errors[:10])
         )
-
-    # --------------------------------------------------------
-    # Загружаем cookies
-    # --------------------------------------------------------
 
     async with browser_lock:
 
-        if not browser_ready:
+        async def operation():
 
-            raise RuntimeError(
-                "Camoufox не запущен"
-            )
+            global current_page
 
-        if camoufox_context is None:
+            if camoufox_context is None:
 
-            raise RuntimeError(
-                "BrowserContext отсутствует"
-            )
-
-        await camoufox_context.add_cookies(
-            normalized
-        )
-
-    logger.info(
-        f"🍪 Cookies загружены: "
-        f"{len(normalized)}, "
-        f"пропущено: {skipped}"
-    )
-
-    return len(normalized), skipped
-
-
-# ============================================================
-# 10. COOKIE COMMAND
-# ============================================================
-
-async def cookies_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    user_id = update.effective_user.id
-
-    waiting_for_cookies.add(
-        user_id
-    )
-
-    await update.message.reply_text(
-        "🍪 Жду JSON-файл с cookies.\n\n"
-        "Просто отправь файл следующим сообщением.\n\n"
-        "❌ Для отмены: /cancel"
-    )
-
-
-# ============================================================
-# 11. CANCEL COOKIE UPLOAD
-# ============================================================
-
-async def cancel_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    user_id = update.effective_user.id
-
-    if user_id in waiting_for_cookies:
-
-        waiting_for_cookies.discard(
-            user_id
-        )
-
-        await update.message.reply_text(
-            "❌ Загрузка cookies отменена."
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "ℹ️ Сейчас я не жду cookies."
-        )
-
-
-# ============================================================
-# 12. COOKIE FILE HANDLER
-# ============================================================
-
-async def cookies_file_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    user_id = update.effective_user.id
-
-    # --------------------------------------------------------
-    # Обрабатываем файл только если пользователь
-    # предварительно написал /cookies
-    # --------------------------------------------------------
-
-    if user_id not in waiting_for_cookies:
-
-        return
-
-    document = update.message.document
-
-    if document is None:
-
-        return
-
-    filename = (
-        document.file_name
-        or ""
-    )
-
-    if not filename.lower().endswith(
-        ".json"
-    ):
-
-        await update.message.reply_text(
-            "❌ Нужен именно JSON-файл."
-        )
-
-        return
-
-    msg = await update.message.reply_text(
-        "🍪 Загружаю cookies..."
-    )
-
-    try:
-
-        telegram_file = (
-            await document.get_file()
-        )
-
-        file_bytes = (
-            await telegram_file.download_as_bytearray()
-        )
-
-        # ----------------------------------------------------
-        # JSON UTF-8
-        # ----------------------------------------------------
-
-        try:
-
-            data = json.loads(
-                file_bytes.decode(
-                    "utf-8-sig"
+                raise RuntimeError(
+                    "BrowserContext отсутствует"
                 )
+
+            await camoufox_context.add_cookies(
+                normalized
             )
 
-        except UnicodeDecodeError:
+            # Обновляем страницу после cookies
+            if (
+                current_page
+                and not current_page.is_closed()
+            ):
 
-            raise ValueError(
-                "Файл должен быть в UTF-8"
-            )
+                try:
 
-        # ----------------------------------------------------
-        # Загружаем cookies
-        # ----------------------------------------------------
+                    await current_page.reload(
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
 
-        count, skipped = (
-            await load_cookies_from_json(
-                data
-            )
-        )
+                except Exception as e:
 
-        # Успешно — больше не ждём файл
-        waiting_for_cookies.discard(
-            user_id
-        )
+                    logger.warning(
+                        f"⚠️ Не удалось reload: {e}"
+                    )
 
-        result_text = (
-            "✅ Cookies загружены!\n\n"
-            f"🍪 Загружено: {count}"
-        )
+            return {
+                "loaded": len(normalized),
+                "errors": errors,
+            }
 
-        if skipped:
-
-            result_text += (
-                f"\n⚠️ Пропущено: {skipped}"
-            )
-
-        result_text += (
-            "\n\n"
-            "Теперь они доступны Camoufox."
-        )
-
-        await msg.edit_text(
-            result_text
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "❌ Ошибка загрузки cookies"
-        )
-
-        # ВАЖНО:
-        # состояние ожидания НЕ удаляем,
-        # поэтому пользователь может просто
-        # отправить исправленный файл ещё раз.
-
-        await msg.edit_text(
-            "❌ Ошибка загрузки cookies:\n\n"
-            f"{str(e)[:2000]}"
+        return await browser_operation(
+            operation
         )
 
 
 # ============================================================
-# 13. BROWSER RECOVERY
+# 11. BROWSER RECOVERY
 # ============================================================
 
 def is_browser_closed_error(error):
@@ -749,6 +658,7 @@ def is_browser_closed_error(error):
     text = str(error).lower()
 
     patterns = [
+
         "targetclosederror",
         "target page",
         "browser has been closed",
@@ -756,6 +666,7 @@ def is_browser_closed_error(error):
         "context has been closed",
         "page has been closed",
         "target has been closed",
+
     ]
 
     return any(
@@ -764,9 +675,7 @@ def is_browser_closed_error(error):
     )
 
 
-async def browser_operation(
-    operation
-):
+async def browser_operation(operation):
 
     global current_page
 
@@ -801,12 +710,10 @@ async def browser_operation(
 
 
 # ============================================================
-# 14. GOTO
+# 12. GOTO
 # ============================================================
 
-async def browser_goto(
-    url: str
-):
+async def browser_goto(url: str):
 
     async with browser_lock:
 
@@ -832,7 +739,7 @@ async def browser_goto(
 
 
 # ============================================================
-# 15. BACK
+# 13. BACK
 # ============================================================
 
 async def browser_back():
@@ -859,7 +766,7 @@ async def browser_back():
 
 
 # ============================================================
-# 16. FORWARD
+# 14. FORWARD
 # ============================================================
 
 async def browser_forward():
@@ -886,7 +793,7 @@ async def browser_forward():
 
 
 # ============================================================
-# 17. RELOAD
+# 15. RELOAD
 # ============================================================
 
 async def browser_reload():
@@ -913,7 +820,7 @@ async def browser_reload():
 
 
 # ============================================================
-# 18. PAGE INFO
+# 16. PAGE INFO
 # ============================================================
 
 async def browser_page_info():
@@ -936,7 +843,7 @@ async def browser_page_info():
 
 
 # ============================================================
-# 19. GET TEXT
+# 17. GET TEXT
 # ============================================================
 
 async def browser_get_text(
@@ -967,7 +874,7 @@ async def browser_get_text(
 
 
 # ============================================================
-# 20. GET HTML
+# 18. GET HTML
 # ============================================================
 
 async def browser_get_html(
@@ -994,7 +901,7 @@ async def browser_get_html(
 
 
 # ============================================================
-# 21. INSPECT PAGE
+# 19. INSPECT PAGE
 # ============================================================
 
 async def browser_inspect():
@@ -1006,6 +913,7 @@ async def browser_inspect():
             page = await get_current_page()
 
             title = await page.title()
+
             url = page.url
 
             buttons = await page.locator(
@@ -1014,7 +922,11 @@ async def browser_inspect():
                 """
                 els => els.slice(0,50).map(
                     e => ({
-                        text: (e.innerText || e.getAttribute('aria-label') || '').trim(),
+                        text: (
+                            e.innerText ||
+                            e.getAttribute('aria-label') ||
+                            ''
+                        ).trim(),
                         type: e.getAttribute('type') || '',
                         id: e.id || '',
                         cls: e.className || ''
@@ -1032,8 +944,10 @@ async def browser_inspect():
                         tag: e.tagName.toLowerCase(),
                         type: e.getAttribute('type') || '',
                         name: e.getAttribute('name') || '',
-                        placeholder: e.getAttribute('placeholder') || '',
-                        aria: e.getAttribute('aria-label') || '',
+                        placeholder:
+                            e.getAttribute('placeholder') || '',
+                        aria:
+                            e.getAttribute('aria-label') || '',
                         id: e.id || ''
                     })
                 )
@@ -1049,7 +963,9 @@ async def browser_inspect():
                         text: (e.innerText || '').trim(),
                         href: e.href || ''
                     })
-                ).filter(x => x.text || x.href)
+                ).filter(
+                    x => x.text || x.href
+                )
                 """
             )
 
@@ -1077,7 +993,8 @@ async def browser_inspect():
                     f"- tag={i.get('tag','')} "
                     f"type={i.get('type','')} "
                     f"name={i.get('name','')} "
-                    f"placeholder={i.get('placeholder','')} "
+                    f"placeholder="
+                    f"{i.get('placeholder','')} "
                     f"aria={i.get('aria','')} "
                     f"id={i.get('id','')}"
                 )
@@ -1092,7 +1009,9 @@ async def browser_inspect():
                     f"→ {link.get('href','')}"
                 )
 
-            return "\n".join(result)[:30000]
+            return "\n".join(
+                result
+            )[:30000]
 
         return await browser_operation(
             operation
@@ -1100,7 +1019,7 @@ async def browser_inspect():
 
 
 # ============================================================
-# 22. LINKS
+# 20. LINKS
 # ============================================================
 
 async def browser_get_links():
@@ -1117,10 +1036,13 @@ async def browser_get_links():
                 """
                 elements => elements.map(
                     el => ({
-                        text: (el.innerText || '').trim(),
+                        text:
+                            (el.innerText || '').trim(),
                         href: el.href
                     })
-                ).filter(x => x.href)
+                ).filter(
+                    x => x.href
+                )
                 """
             )
 
@@ -1145,7 +1067,7 @@ async def browser_get_links():
 
 
 # ============================================================
-# 23. CLICK
+# 21. CLICK
 # ============================================================
 
 async def browser_click(
@@ -1180,7 +1102,7 @@ async def browser_click(
 
 
 # ============================================================
-# 24. CLICK TEXT
+# 22. CLICK TEXT
 # ============================================================
 
 async def browser_click_text(
@@ -1218,7 +1140,7 @@ async def browser_click_text(
 
 
 # ============================================================
-# 25. FILL
+# 23. FILL
 # ============================================================
 
 async def browser_fill(
@@ -1250,7 +1172,7 @@ async def browser_fill(
 
 
 # ============================================================
-# 26. FILL PLACEHOLDER
+# 24. FILL PLACEHOLDER
 # ============================================================
 
 async def browser_fill_placeholder(
@@ -1282,7 +1204,7 @@ async def browser_fill_placeholder(
 
 
 # ============================================================
-# 27. TYPE
+# 25. TYPE
 # ============================================================
 
 async def browser_type(
@@ -1311,7 +1233,7 @@ async def browser_type(
 
 
 # ============================================================
-# 28. PRESS
+# 26. PRESS
 # ============================================================
 
 async def browser_press(
@@ -1342,7 +1264,7 @@ async def browser_press(
 
 
 # ============================================================
-# 29. KEYBOARD
+# 27. KEYBOARD
 # ============================================================
 
 async def browser_key(
@@ -1369,7 +1291,7 @@ async def browser_key(
 
 
 # ============================================================
-# 30. WAIT
+# 28. WAIT
 # ============================================================
 
 async def browser_wait(
@@ -1398,7 +1320,7 @@ async def browser_wait(
 
 
 # ============================================================
-# 31. WAIT SELECTOR
+# 29. WAIT SELECTOR
 # ============================================================
 
 async def browser_wait_selector(
@@ -1429,7 +1351,7 @@ async def browser_wait_selector(
 
 
 # ============================================================
-# 32. SELECT
+# 30. SELECT
 # ============================================================
 
 async def browser_select(
@@ -1460,7 +1382,7 @@ async def browser_select(
 
 
 # ============================================================
-# 33. CHECK
+# 31. CHECK
 # ============================================================
 
 async def browser_check(
@@ -1487,7 +1409,7 @@ async def browser_check(
 
 
 # ============================================================
-# 34. UNCHECK
+# 32. UNCHECK
 # ============================================================
 
 async def browser_uncheck(
@@ -1514,7 +1436,7 @@ async def browser_uncheck(
 
 
 # ============================================================
-# 35. HOVER
+# 33. HOVER
 # ============================================================
 
 async def browser_hover(
@@ -1541,7 +1463,7 @@ async def browser_hover(
 
 
 # ============================================================
-# 36. ATTRIBUTE
+# 34. ATTRIBUTE
 # ============================================================
 
 async def browser_attribute(
@@ -1569,7 +1491,7 @@ async def browser_attribute(
 
 
 # ============================================================
-# 37. COUNT
+# 35. COUNT
 # ============================================================
 
 async def browser_count(
@@ -1596,7 +1518,7 @@ async def browser_count(
 
 
 # ============================================================
-# 38. JAVASCRIPT
+# 36. JAVASCRIPT
 # ============================================================
 
 async def browser_js(
@@ -1621,7 +1543,7 @@ async def browser_js(
 
 
 # ============================================================
-# 39. SCREENSHOT
+# 37. SCREENSHOT
 # ============================================================
 
 async def browser_screenshot():
@@ -1655,7 +1577,7 @@ async def browser_screenshot():
 
 
 # ============================================================
-# 40. PAGE CONTENT
+# 38. PAGE CONTENT
 # ============================================================
 
 async def browser_content():
@@ -1676,12 +1598,10 @@ async def browser_content():
 
 
 # ============================================================
-# 41. DSPY ASYNC BRIDGE
+# 39. DSPY ASYNC BRIDGE
 # ============================================================
 
-def run_async_from_dspy(
-    coro
-):
+def run_async_from_dspy(coro):
 
     global main_event_loop
 
@@ -1718,7 +1638,7 @@ def run_async_from_dspy(
 
 
 # ============================================================
-# 42. DSPY TOOLS
+# 40. DSPY TOOLS
 # ============================================================
 
 def create_browser_tools():
@@ -1954,7 +1874,7 @@ def create_browser_tools():
 
 
 # ============================================================
-# 43. AGNES LM
+# 41. AGNES LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -1968,9 +1888,7 @@ class AgnesLM(dspy.LM):
 
         self.api_key = (
             api_key
-            or os.environ.get(
-                "AGNES_API_KEY"
-            )
+            or os.environ.get("AGNES_API_KEY")
         )
 
         self.model = model
@@ -2108,7 +2026,7 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# 44. DSPY SIGNATURE
+# 42. DSPY SIGNATURE
 # ============================================================
 
 class BrowserTask(Signature):
@@ -2153,7 +2071,7 @@ class BrowserTask(Signature):
 
 
 # ============================================================
-# 45. INIT DSPY
+# 43. INIT DSPY
 # ============================================================
 
 def init_dspy():
@@ -2205,7 +2123,7 @@ def init_dspy():
 
 
 # ============================================================
-# 46. RUN AGENT
+# 44. RUN AGENT
 # ============================================================
 
 def run_agent(
@@ -2267,7 +2185,7 @@ def run_agent(
 
 
 # ============================================================
-# 47. /START
+# 45. /START
 # ============================================================
 
 async def start(
@@ -2281,15 +2199,15 @@ async def start(
         "Команды:\n"
         "/check <url>\n"
         "/dspy <задача>\n"
-        "/cookies — загрузить cookies JSON\n"
-        "/cancel — отменить загрузку cookies\n"
+        "/cookies\n"
+        "/cancel\n"
         "/status\n"
         "/screenshot"
     )
 
 
 # ============================================================
-# 48. /CHECK
+# 46. /CHECK
 # ============================================================
 
 async def check(
@@ -2345,7 +2263,7 @@ async def check(
 
 
 # ============================================================
-# 49. /SCREENSHOT
+# 47. /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -2382,7 +2300,7 @@ async def screenshot(
 
 
 # ============================================================
-# 50. /STATUS
+# 48. /STATUS
 # ============================================================
 
 async def status(
@@ -2403,6 +2321,7 @@ async def status(
             title = await page.title()
 
         except Exception:
+
             pass
 
     status_text = (
@@ -2431,7 +2350,196 @@ async def status(
 
 
 # ============================================================
-# 51. /DSPY
+# 49. /COOKIES
+# ============================================================
+
+async def cookies_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not browser_ready:
+
+        await update.message.reply_text(
+            "❌ Camoufox не запущен"
+        )
+
+        return
+
+    user_id = update.effective_user.id
+
+    waiting_for_cookies.add(user_id)
+
+    await update.message.reply_text(
+        "🍪 *Жду JSON-файл с cookies.*\n\n"
+        "Просто отправь файл следующим сообщением.\n\n"
+        "❌ Для отмены: /cancel",
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
+# 50. /CANCEL
+# ============================================================
+
+async def cancel_cookies(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    user_id = update.effective_user.id
+
+    if user_id in waiting_for_cookies:
+
+        waiting_for_cookies.discard(
+            user_id
+        )
+
+        await update.message.reply_text(
+            "❌ Загрузка cookies отменена."
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "Нечего отменять."
+        )
+
+
+# ============================================================
+# 51. COOKIE FILE
+# ============================================================
+
+async def cookies_file(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    user_id = update.effective_user.id
+
+    if user_id not in waiting_for_cookies:
+
+        return
+
+    waiting_for_cookies.discard(
+        user_id
+    )
+
+    document = update.message.document
+
+    if not document:
+
+        return
+
+    filename = (
+        document.file_name
+        or ""
+    ).lower()
+
+    if not filename.endswith(".json"):
+
+        await update.message.reply_text(
+            "❌ Нужен именно JSON-файл."
+        )
+
+        return
+
+    msg = await update.message.reply_text(
+        "⏳ Загружаю cookies..."
+    )
+
+    temp_path = (
+        f"/tmp/cookies_"
+        f"{user_id}_"
+        f"{int(time.time())}.json"
+    )
+
+    try:
+
+        telegram_file = (
+            await context.bot.get_file(
+                document.file_id
+            )
+        )
+
+        await telegram_file.download_to_drive(
+            temp_path
+        )
+
+        with open(
+            temp_path,
+            "r",
+            encoding="utf-8",
+        ) as f:
+
+            data = json.load(f)
+
+        result = await load_cookies_from_json(
+            data
+        )
+
+        loaded = result["loaded"]
+        errors = result["errors"]
+
+        response = (
+            "🍪 *Cookies загружены!*\n\n"
+            f"✅ Загружено: `{loaded}`"
+        )
+
+        if errors:
+
+            response += (
+                "\n\n⚠️ Не удалось загрузить:\n"
+                + "\n".join(
+                    f"• {e}"
+                    for e in errors[:10]
+                )
+            )
+
+            if len(errors) > 10:
+
+                response += (
+                    f"\n• ...и ещё "
+                    f"{len(errors) - 10}"
+                )
+
+        await msg.edit_text(
+            response,
+            parse_mode="Markdown",
+        )
+
+    except json.JSONDecodeError:
+
+        await msg.edit_text(
+            "❌ Файл не является корректным JSON."
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "❌ Ошибка загрузки cookies"
+        )
+
+        await msg.edit_text(
+            "❌ Ошибка загрузки cookies:\n\n"
+            f"{str(e)[:2000]}"
+        )
+
+    finally:
+
+        try:
+
+            os.remove(
+                temp_path
+            )
+
+        except Exception:
+
+            pass
+
+
+# ============================================================
+# 52. /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -2519,7 +2627,7 @@ async def dspy_command(
 
 
 # ============================================================
-# 52. MAIN
+# 53. MAIN
 # ============================================================
 
 async def main():
@@ -2546,7 +2654,7 @@ async def main():
     )
 
     # --------------------------------------------------------
-    # Commands
+    # COMMANDS
     # --------------------------------------------------------
 
     app.add_handler(
@@ -2584,10 +2692,6 @@ async def main():
         )
     )
 
-    # ========================================================
-    # COOKIES COMMANDS
-    # ========================================================
-
     app.add_handler(
         CommandHandler(
             "cookies",
@@ -2598,18 +2702,18 @@ async def main():
     app.add_handler(
         CommandHandler(
             "cancel",
-            cancel_command,
+            cancel_cookies,
         )
     )
 
-    # ========================================================
-    # COOKIE FILE HANDLER
-    # ========================================================
+    # --------------------------------------------------------
+    # JSON FILE
+    # --------------------------------------------------------
 
     app.add_handler(
         MessageHandler(
-            filters.Document.ALL,
-            cookies_file_handler,
+            filters.Document.JSON,
+            cookies_file,
         )
     )
 
@@ -2705,7 +2809,7 @@ async def main():
 
 
 # ============================================================
-# 53. ENTRYPOINT
+# 54. ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
