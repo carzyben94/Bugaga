@@ -9,11 +9,11 @@ import logging
 from typing import Optional
 
 import httpx
-import dspy
-from dspy import Signature, InputField, OutputField, Tool
+import dspy as dspy_lib  # ← ИМПОРТИРУЕМ КАК dspy_lib
+from dspy_lib import Signature, InputField, OutputField, Tool
 
 try:
-    from dspy import ReActV2
+    from dspy_lib import ReActV2
     REACT_V2_AVAILABLE = True
 except ImportError:
     ReActV2 = None
@@ -65,7 +65,7 @@ agent_lock = threading.Lock()
 # AGNES LM
 # ============================================================
 
-class AgnesLM(dspy.LM):
+class AgnesLM(dspy_lib.LM):  # ← dspy_lib.LM
 
     def __init__(
         self,
@@ -363,7 +363,7 @@ def init_dspy():
             max_tokens=4000,
         )
 
-        dspy.configure(lm=lm)
+        dspy_lib.configure(lm=lm)  # ← dspy_lib.configure
         tools = create_browser_tools()
 
         if REACT_V2_AVAILABLE:
@@ -376,13 +376,13 @@ def init_dspy():
                 logger.info("Используется ReActV2")
             except Exception as e:
                 logger.warning("ReActV2 error: %s", e)
-                dspy_agent_instance = dspy.ReAct(
+                dspy_agent_instance = dspy_lib.ReAct(  # ← dspy_lib.ReAct
                     BrowserTask,
                     tools=tools,
                     max_iters=15,
                 )
         else:
-            dspy_agent_instance = dspy.ReAct(
+            dspy_agent_instance = dspy_lib.ReAct(  # ← dspy_lib.ReAct
                 BrowserTask,
                 tools=tools,
                 max_iters=15,
