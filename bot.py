@@ -133,7 +133,7 @@ agent_lock = threading.Lock()
 
 
 # ============================================================
-# 6. SET COOKIES FUNCTION (ИСПРАВЛЕНО)
+# 6. SET COOKIES FUNCTION
 # ============================================================
 
 async def set_cookies(page, domain=".x.com"):
@@ -149,15 +149,12 @@ async def set_cookies(page, domain=".x.com"):
                 "path": "/",
             }
             
-            # Secure флаг
             if name in SECURE_COOKIES:
                 cookie_data["secure"] = True
             
-            # HTTP-only флаг
             if name in HTTP_ONLY_COOKIES:
                 cookie_data["httpOnly"] = True
             
-            # ✅ ИСПРАВЛЕНО: правильные значения SameSite для Playwright
             if name in NO_RESTRICTION_COOKIES:
                 cookie_data["sameSite"] = "None"
             else:
@@ -165,7 +162,6 @@ async def set_cookies(page, domain=".x.com"):
             
             await page.context.add_cookies([cookie_data])
             success_count += 1
-            logger.debug(f"🍪 Кука установлена: {name}")
             
         except Exception as e:
             logger.warning(f"⚠️ Не удалось установить куку {name}: {e}")
@@ -175,7 +171,7 @@ async def set_cookies(page, domain=".x.com"):
 
 
 # ============================================================
-# 7. CAMOUFOX INIT
+# 7. CAMOUFOX INIT (С ЗАЩИТОЙ)
 # ============================================================
 
 async def init_browser():
@@ -202,28 +198,27 @@ async def init_browser():
         if camoufox_context is None:
             raise RuntimeError("Camoufox вернул None")
 
+        # Проверяем, что контекст жив
+        try:
+            await camoufox_context.pages
+        except Exception as e:
+            logger.error(f"❌ Контекст невалиден: {e}")
+            return False
+
         current_page = await camoufox_context.new_page()
         
-        # ==========================================
-        # 🔥 УСТАНОВКА КУК ПЕРЕД ПЕРВЫМ ПЕРЕХОДОМ
-        # ==========================================
-        
-        # Устанавливаем куки для домена .x.com
+        # Устанавливаем куки
         await set_cookies(current_page, ".x.com")
-        
-        # Дополнительно для .twitter.com (на случай редиректов)
         await set_cookies(current_page, ".twitter.com")
         
-        # ==========================================
-
-        # Переходим на сайт уже с куками
+        # Переходим на сайт
         await current_page.goto(
             "https://x.com/home",
             wait_until="domcontentloaded",
             timeout=30000,
         )
 
-        # Проверяем, что авторизация прошла
+        # Проверяем куки
         cookies_after = await current_page.context.cookies()
         has_auth = any(c.get('name') == 'auth_token' for c in cookies_after)
         
@@ -252,7 +247,7 @@ async def init_browser():
 
 
 # ============================================================
-# 8. CLOSE BROWSER
+# 8. CLOSE BROWSER (С ЗАЩИТОЙ)
 # ============================================================
 
 async def close_browser():
@@ -265,9 +260,10 @@ async def close_browser():
 
     if current_page is not None:
         try:
-            await current_page.close()
-        except Exception:
-            pass
+            if not current_page.is_closed():
+                await current_page.close()
+        except Exception as e:
+            logger.debug(f"⚠️ Ошибка закрытия страницы: {e}")
     current_page = None
 
     if camoufox_manager is not None:
@@ -299,18 +295,38 @@ async def page_is_alive(page):
 
 
 # ============================================================
-# 10. GET CURRENT PAGE
+# 10. GET CURRENT PAGE (С ПЕРЕСОЗДАНИЕМ)
 # ============================================================
 
 async def get_current_page():
     global current_page
+    global camoufox_context
+    global camoufox_manager
 
     if not browser_ready:
         raise RuntimeError("Camoufox не запущен")
 
+    # Проверяем контекст
     if camoufox_context is None:
-        raise RuntimeError("BrowserContext отсутствует")
+        logger.warning("⚠️ Context None, пересоздаём...")
+        await close_browser()
+        ok = await init_browser()
+        if not ok:
+            raise RuntimeError("❌ Не удалось пересоздать Camoufox")
+        return current_page
 
+    # Проверяем, жив ли контекст
+    try:
+        await camoufox_context.pages
+    except Exception as e:
+        logger.warning(f"⚠️ Context мёртв: {e}, пересоздаём...")
+        await close_browser()
+        ok = await init_browser()
+        if not ok:
+            raise RuntimeError("❌ Не удалось пересоздать Camoufox")
+        return current_page
+
+    # Проверяем страницу
     if await page_is_alive(current_page):
         return current_page
 
@@ -320,7 +336,7 @@ async def get_current_page():
         current_page = await camoufox_context.new_page()
         return current_page
     except Exception as e:
-        logger.warning(f"⚠️ Context недоступен: {e}")
+        logger.warning(f"⚠️ Ошибка создания страницы: {e}")
         await close_browser()
         ok = await init_browser()
         if not ok:
@@ -1180,7 +1196,7 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# 50. MAIN (ИСПРАВЛЕНО)
+# 50. MAIN (С ЗАЩИТОЙ И ПОВТОРНЫМИ ПОПЫТКАМИ)
 # ============================================================
 
 async def main():
@@ -1190,8 +1206,19 @@ async def main():
 
     logger.info("🚀 Инициализация...")
 
-    browser_ok = await init_browser()
+    # Инициализация с повторными попытками
+    browser_ok = False
+    for attempt in range(3):
+        browser_ok = await init_browser()
+        if browser_ok:
+            break
+        logger.warning(f"⚠️ Попытка {attempt + 1} не удалась, ждём 2с...")
+        await asyncio.sleep(2)
+
     dspy_ok = init_dspy()
+
+    if not browser_ok:
+        logger.error("❌ Не удалось запустить браузер после 3 попыток")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -1209,13 +1236,14 @@ async def main():
         await app.initialize()
         await app.start()
         
-        # ✅ ИСПРАВЛЕНО: удаляем вебхук и сбрасываем старые обновления
+        # Удаляем вебхук и сбрасываем старые обновления
         await app.bot.delete_webhook(drop_pending_updates=True)
         
         await app.updater.start_polling(
             drop_pending_updates=True,
             poll_interval=1.0,
             timeout=30,
+            allowed_updates=["message", "callback_query"],
         )
 
         logger.info("🤖 Telegram бот запущен!")
