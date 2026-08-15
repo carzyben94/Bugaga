@@ -6,6 +6,7 @@ import signal
 import threading
 import json
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -24,18 +25,10 @@ from dspy import (
     Signature,
     InputField,
     OutputField,
+    settings,
+    ReActV2,
     Tool,
 )
-
-try:
-    from dspy import ReActV2
-
-    REACT_V2_AVAILABLE = True
-
-except ImportError:
-
-    ReActV2 = None
-    REACT_V2_AVAILABLE = False
 
 
 # ============================================================
@@ -55,57 +48,31 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 try:
-
     from camoufox.async_api import AsyncCamoufox
 
     CAMOUFOX_AVAILABLE = True
-
-    logger.info(
-        "✅ Camoufox загружен"
-    )
+    logger.info("✅ Camoufox загружен")
 
 except ImportError as e:
-
     CAMOUFOX_AVAILABLE = False
-
-    logger.error(
-        f"❌ Camoufox не найден: {e}"
-    )
+    logger.error(f"❌ Camoufox не найден: {e}")
 
 
 # ============================================================
 # 3. SETTINGS
 # ============================================================
 
-TELEGRAM_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN"
-)
-
-AGNES_API_KEY = os.environ.get(
-    "AGNES_API_KEY"
-)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
 
 if not TELEGRAM_TOKEN:
-
-    raise ValueError(
-        "TELEGRAM_BOT_TOKEN не задан!"
-    )
-
+    raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
 
 SCREENSHOTS_DIR = "/app/screenshots"
-
 CAMOUFOX_PROFILE = "/app/camoufox-profile"
 
-
-os.makedirs(
-    SCREENSHOTS_DIR,
-    exist_ok=True,
-)
-
-os.makedirs(
-    CAMOUFOX_PROFILE,
-    exist_ok=True,
-)
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+os.makedirs(CAMOUFOX_PROFILE, exist_ok=True)
 
 
 # ============================================================
@@ -113,9 +80,7 @@ os.makedirs(
 # ============================================================
 
 camoufox_manager = None
-
 camoufox_context = None
-
 current_page = None
 
 browser_ready = False
@@ -143,16 +108,10 @@ async def init_browser():
     global browser_ready
 
     if not CAMOUFOX_AVAILABLE:
-
-        logger.error(
-            "❌ Camoufox недоступен"
-        )
-
+        logger.error("❌ Camoufox недоступен")
         return False
 
-    logger.info(
-        "🚀 Запускаем Camoufox..."
-    )
+    logger.info("🚀 Запускаем Camoufox...")
 
     try:
 
@@ -162,19 +121,14 @@ async def init_browser():
             user_data_dir=CAMOUFOX_PROFILE,
         )
 
-        camoufox_context = (
-            await camoufox_manager.__aenter__()
-        )
+        camoufox_context = await camoufox_manager.__aenter__()
 
         if camoufox_context is None:
-
             raise RuntimeError(
                 "Camoufox вернул None"
             )
 
-        current_page = (
-            await camoufox_context.new_page()
-        )
+        current_page = await camoufox_context.new_page()
 
         await current_page.goto(
             "https://example.com",
@@ -199,9 +153,7 @@ async def init_browser():
         )
 
         browser_ready = False
-
         current_page = None
-
         camoufox_context = None
 
         try:
@@ -239,7 +191,6 @@ async def close_browser():
 
         try:
             await current_page.close()
-
         except Exception:
             pass
 
@@ -266,16 +217,13 @@ async def close_browser():
             )
 
     camoufox_manager = None
-
     camoufox_context = None
 
-    logger.info(
-        "✅ Camoufox закрыт"
-    )
+    logger.info("✅ Camoufox закрыт")
 
 
 # ============================================================
-# 7. PAGE ALIVE
+# 7. CHECK PAGE
 # ============================================================
 
 async def page_is_alive(page):
@@ -306,25 +254,21 @@ async def get_current_page():
     global current_page
 
     if not browser_ready:
-
         raise RuntimeError(
             "Camoufox не запущен"
         )
 
     if camoufox_context is None:
-
         raise RuntimeError(
             "BrowserContext отсутствует"
         )
 
-    if await page_is_alive(
-        current_page
-    ):
+    if await page_is_alive(current_page):
 
         return current_page
 
     logger.warning(
-        "⚠️ Текущая страница закрыта"
+        "⚠️ Текущая страница закрыта. Создаём новую."
     )
 
     try:
@@ -355,7 +299,92 @@ async def get_current_page():
 
 
 # ============================================================
-# 9. COOKIE NORMALIZATION
+# 9. COOKIE HELPERS
+# ============================================================
+
+def get_current_page_origin():
+    """
+    Возвращает origin текущей страницы:
+    https://x.com
+    """
+
+    try:
+
+        if not current_page:
+            return None
+
+        page_url = current_page.url
+
+        if not page_url:
+            return None
+
+        parsed = urlparse(page_url)
+
+        if parsed.scheme not in (
+            "http",
+            "https",
+        ):
+            return None
+
+        if not parsed.hostname:
+            return None
+
+        return (
+            f"{parsed.scheme}://"
+            f"{parsed.hostname}"
+        )
+
+    except Exception:
+
+        return None
+
+
+def clean_cookie_domain(domain):
+    """
+    Нормализует domain/host из разных cookie exporters.
+    """
+
+    if domain is None:
+        return None
+
+    if isinstance(domain, bool):
+        return None
+
+    domain = str(domain).strip()
+
+    if not domain:
+        return None
+
+    # URL -> hostname
+    if "://" in domain:
+
+        parsed = urlparse(domain)
+
+        domain = parsed.hostname or ""
+
+    else:
+
+        # Убираем путь
+        domain = domain.split("/", 1)[0]
+
+        # Убираем порт
+        if ":" in domain:
+
+            host, port = domain.rsplit(":", 1)
+
+            if port.isdigit():
+                domain = host
+
+    domain = domain.strip()
+
+    if not domain:
+        return None
+
+    return domain
+
+
+# ============================================================
+# 10. COOKIE NORMALIZATION
 # ============================================================
 
 def normalize_cookie(cookie: dict):
@@ -366,289 +395,281 @@ def normalize_cookie(cookie: dict):
             "Cookie должен быть объектом"
         )
 
+    c = dict(cookie)
+
     # --------------------------------------------------------
     # NAME
     # --------------------------------------------------------
 
-    name = cookie.get("name")
+    name = c.get("name")
 
-    if not name:
+    if name is None or str(name) == "":
 
         raise ValueError(
             "Cookie не содержит name"
         )
 
+    c["name"] = str(name)
+
     # --------------------------------------------------------
     # VALUE
     # --------------------------------------------------------
 
-    value = cookie.get(
-        "value",
-        "",
-    )
+    value = c.get("value")
 
-    result = {
+    if value is None:
+        value = ""
 
-        "name": str(name),
-
-        "value": str(value),
-
-    }
+    c["value"] = str(value)
 
     # --------------------------------------------------------
     # DOMAIN
     # --------------------------------------------------------
 
-    domain = cookie.get(
-        "domain"
+    domain = (
+        c.get("domain")
+        or c.get("host")
+        or c.get("hostname")
     )
 
-    if domain and not isinstance(
-        domain,
-        bool,
-    ):
+    domain = clean_cookie_domain(domain)
 
-        domain = str(
-            domain
-        ).strip()
+    if domain:
 
-        if domain.startswith(
-            "http://"
-        ):
+        c["domain"] = domain
 
-            domain = domain[7:]
+    else:
 
-        elif domain.startswith(
-            "https://"
-        ):
-
-            domain = domain[8:]
-
-        domain = domain.split(
-            "/",
-            1,
-        )[0]
-
-        if domain:
-
-            result["domain"] = domain
-
-    # --------------------------------------------------------
-    # URL
-    # --------------------------------------------------------
-
-    url = cookie.get(
-        "url"
-    )
-
-    if url:
-
-        url = str(
-            url
-        ).strip()
-
-        if url.startswith(
-            "http://"
-        ) or url.startswith(
-            "https://"
-        ):
-
-            result["url"] = url
-
-    # --------------------------------------------------------
-    # FALLBACK URL
-    # --------------------------------------------------------
-
-    if (
-        "domain" not in result
-        and "url" not in result
-    ):
-
-        try:
-
-            if (
-                current_page
-                and not current_page.is_closed()
-            ):
-
-                page_url = current_page.url
-
-                if page_url.startswith(
-                    (
-                        "http://",
-                        "https://",
-                    )
-                ):
-
-                    result["url"] = page_url
-
-        except Exception:
-            pass
-
-    if (
-        "domain" not in result
-        and "url" not in result
-    ):
-
-        raise ValueError(
-            f"Cookie '{name}' "
-            "не содержит domain или url"
-        )
+        c.pop("domain", None)
 
     # --------------------------------------------------------
     # PATH
     # --------------------------------------------------------
 
-    path = cookie.get(
-        "path"
-    ) or "/"
+    path = c.get("path")
 
-    path = str(
-        path
-    )
+    if not path:
+        path = "/"
 
-    if not path.startswith(
-        "/"
-    ):
+    path = str(path)
 
+    if not path.startswith("/"):
         path = "/" + path
 
-    result["path"] = path
+    c["path"] = path
 
     # --------------------------------------------------------
-    # SECURE
+    # URL
     # --------------------------------------------------------
 
-    result["secure"] = bool(
-        cookie.get(
-            "secure",
-            False,
-        )
-    )
+    url = c.get("url")
+
+    if url:
+
+        url = str(url).strip()
+
+        if not (
+            url.startswith("http://")
+            or url.startswith("https://")
+        ):
+
+            url = "https://" + url
+
+        c["url"] = url
+
+    else:
+
+        c.pop("url", None)
 
     # --------------------------------------------------------
-    # HTTP ONLY
+    # ЕСЛИ НЕТ DOMAIN И URL
+    #
+    # Используем текущий сайт.
     # --------------------------------------------------------
 
-    result["httpOnly"] = bool(
-        cookie.get(
-            "httpOnly",
-            False,
-        )
-    )
+    if not c.get("domain") and not c.get("url"):
+
+        origin = get_current_page_origin()
+
+        if origin:
+
+            c["url"] = origin + "/"
 
     # --------------------------------------------------------
     # SAME SITE
     # --------------------------------------------------------
 
-    same_site = cookie.get(
-        "sameSite"
-    )
+    same_site = c.get("sameSite")
 
-    if same_site:
+    if same_site is not None:
 
-        same_site = str(
-            same_site
-        ).strip().lower()
+        same_site = (
+            str(same_site)
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
 
-        same_site = {
+        same_site_map = {
 
             "strict": "Strict",
-
             "lax": "Lax",
-
             "none": "None",
 
             "no_restriction": "None",
-
             "no-restriction": "None",
 
             "unspecified": "Lax",
-
             "default": "Lax",
 
-        }.get(
+        }
+
+        c["sameSite"] = same_site_map.get(
             same_site,
             "Lax",
         )
 
-        result["sameSite"] = (
-            same_site
-        )
+    else:
+
+        c["sameSite"] = "Lax"
 
     # --------------------------------------------------------
-    # EXPIRES
+    # EXPIRATION
     # --------------------------------------------------------
 
-    expires = cookie.get(
-        "expires"
-    )
+    expiration = None
 
-    if expires is None:
-
-        expires = cookie.get(
-            "expirationDate"
-        )
-
-    if expires is not None:
+    if c.get("expirationDate") is not None:
 
         try:
 
-            expires = float(
-                expires
+            expiration = float(
+                c["expirationDate"]
             )
 
-            if expires > 0:
+        except Exception:
 
-                result["expires"] = (
-                    expires
-                )
+            expiration = None
 
-        except (
-            ValueError,
-            TypeError,
-        ):
+    elif c.get("expires") is not None:
 
-            pass
+        try:
+
+            expiration = float(
+                c["expires"]
+            )
+
+        except Exception:
+
+            expiration = None
+
+    if expiration is not None:
+
+        if expiration <= 0:
+
+            c.pop("expires", None)
+
+        else:
+
+            c["expires"] = expiration
+
+    else:
+
+        c.pop("expires", None)
+
+    # --------------------------------------------------------
+    # BOOLEAN
+    # --------------------------------------------------------
+
+    if "secure" in c:
+        c["secure"] = bool(c["secure"])
+
+    if "httpOnly" in c:
+        c["httpOnly"] = bool(c["httpOnly"])
+
+    # --------------------------------------------------------
+    # PARTITION KEY
+    # --------------------------------------------------------
+
+    if c.get("partitionKey"):
+
+        c["partitionKey"] = str(
+            c["partitionKey"]
+        )
+
+    # --------------------------------------------------------
+    # PLAYWRIGHT FIELDS ONLY
+    # --------------------------------------------------------
+
+    allowed = {
+        "name",
+        "value",
+        "domain",
+        "path",
+        "expires",
+        "httpOnly",
+        "secure",
+        "sameSite",
+        "url",
+        "partitionKey",
+    }
+
+    result = {
+        key: value
+        for key, value in c.items()
+        if key in allowed
+    }
+
+    # --------------------------------------------------------
+    # FINAL VALIDATION
+    # --------------------------------------------------------
+
+    has_url = bool(
+        result.get("url")
+    )
+
+    has_domain_and_path = (
+        bool(result.get("domain"))
+        and bool(result.get("path"))
+    )
+
+    if not has_url and not has_domain_and_path:
+
+        raise ValueError(
+            "Cookie не содержит domain + path "
+            "или url"
+        )
 
     return result
 
 
 # ============================================================
-# 10. LOAD COOKIES
+# 11. LOAD COOKIES
 # ============================================================
 
-async def load_cookies_from_json(
-    data
-):
+async def load_cookies_from_json(data):
 
-    if isinstance(
-        data,
-        dict,
-    ):
+    if isinstance(data, dict):
 
-        cookies = data.get(
-            "cookies"
-        )
+        if "cookies" in data:
 
-        if cookies is None:
+            cookies = data["cookies"]
+
+        else:
 
             raise ValueError(
-                "JSON должен содержать "
-                "поле 'cookies'"
+                "JSON должен содержать поле 'cookies'"
             )
 
-    elif isinstance(
-        data,
-        list,
-    ):
+    elif isinstance(data, list):
 
         cookies = data
 
     else:
 
         raise ValueError(
-            "Неверный формат JSON cookies"
+            "Неверный формат JSON"
         )
 
     if not cookies:
@@ -658,23 +679,18 @@ async def load_cookies_from_json(
         )
 
     normalized = []
-
     errors = []
 
     # --------------------------------------------------------
     # NORMALIZE
     # --------------------------------------------------------
 
-    for index, cookie in enumerate(
-        cookies
-    ):
+    for index, cookie in enumerate(cookies):
 
         try:
 
             normalized_cookie = (
-                normalize_cookie(
-                    cookie
-                )
+                normalize_cookie(cookie)
             )
 
             normalized.append(
@@ -683,27 +699,36 @@ async def load_cookies_from_json(
 
         except Exception as e:
 
+            cookie_name = "unknown"
+
+            if isinstance(cookie, dict):
+
+                cookie_name = (
+                    cookie.get("name")
+                    or f"#{index + 1}"
+                )
+
             errors.append(
-                f"Cookie #{index + 1}: {e}"
+                f"Cookie #{index + 1} "
+                f"({cookie_name}): {e}"
             )
 
     if not normalized:
 
         raise ValueError(
-            "Не удалось обработать ни одного "
-            "cookie:\n"
-            + "\n".join(
-                errors[:20]
-            )
+            "Не удалось обработать ни одной cookie.\n\n"
+            + "\n".join(errors[:20])
         )
 
     # --------------------------------------------------------
-    # LOAD
+    # ADD COOKIES
     # --------------------------------------------------------
 
     async with browser_lock:
 
         async def operation():
+
+            global current_page
 
             if camoufox_context is None:
 
@@ -712,13 +737,15 @@ async def load_cookies_from_json(
                 )
 
             loaded = 0
+            add_errors = []
 
-            load_errors = list(
-                errors
-            )
+            # ------------------------------------------------
+            # Добавляем ПО ОДНОЙ cookie.
+            # ------------------------------------------------
 
             for index, cookie in enumerate(
-                normalized
+                normalized,
+                start=1,
             ):
 
                 try:
@@ -729,36 +756,58 @@ async def load_cookies_from_json(
 
                     loaded += 1
 
-                except Exception as e:
-
-                    cookie_name = (
-                        cookie.get(
-                            "name",
-                            "unknown",
-                        )
+                    logger.info(
+                        "🍪 Cookie %s загружена: %s",
+                        index,
+                        cookie.get("name"),
                     )
 
-                    load_errors.append(
-                        f"Cookie #{index + 1} "
-                        f"({cookie_name}): {e}"
+                except Exception as e:
+
+                    add_errors.append(
+                        f"Cookie #{index} "
+                        f"({cookie.get('name', 'unknown')}): "
+                        f"{e}"
                     )
 
                     logger.warning(
-                        "⚠️ Cookie #%s (%s) "
-                        "не загружена: %s",
-                        index + 1,
-                        cookie_name,
+                        "⚠️ Cookie '%s' не загружена: %s",
+                        cookie.get("name"),
+                        e,
+                    )
+
+            # ------------------------------------------------
+            # RELOAD
+            # ------------------------------------------------
+
+            if (
+                loaded > 0
+                and current_page
+                and not current_page.is_closed()
+            ):
+
+                try:
+
+                    await current_page.reload(
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+
+                except Exception as e:
+
+                    logger.warning(
+                        "⚠️ Не удалось reload "
+                        "после cookies: %s",
                         e,
                     )
 
             return {
-
                 "loaded": loaded,
-
-                "errors": load_errors,
-
+                "errors": (
+                    errors
+                    + add_errors
+                ),
                 "total": len(cookies),
-
             }
 
         return await browser_operation(
@@ -767,31 +816,21 @@ async def load_cookies_from_json(
 
 
 # ============================================================
-# 11. BROWSER ERROR
+# 12. BROWSER RECOVERY
 # ============================================================
 
-def is_browser_closed_error(
-    error
-):
+def is_browser_closed_error(error):
 
-    text = str(
-        error
-    ).lower()
+    text = str(error).lower()
 
     patterns = [
 
         "targetclosederror",
-
         "target page",
-
         "browser has been closed",
-
         "browsercontext",
-
         "context has been closed",
-
         "page has been closed",
-
         "target has been closed",
 
     ]
@@ -802,13 +841,7 @@ def is_browser_closed_error(
     )
 
 
-# ============================================================
-# 12. BROWSER RECOVERY
-# ============================================================
-
-async def browser_operation(
-    operation
-):
+async def browser_operation(operation):
 
     global current_page
 
@@ -818,14 +851,12 @@ async def browser_operation(
 
     except Exception as e:
 
-        if not is_browser_closed_error(
-            e
-        ):
+        if not is_browser_closed_error(e):
 
             raise
 
         logger.warning(
-            "⚠️ Camoufox закрыт. "
+            "⚠️ Camoufox закрыл страницу/context. "
             "Восстанавливаем..."
         )
 
@@ -848,9 +879,7 @@ async def browser_operation(
 # 13. GOTO
 # ============================================================
 
-async def browser_goto(
-    url: str
-):
+async def browser_goto(url: str):
 
     async with browser_lock:
 
@@ -887,20 +916,12 @@ async def browser_back():
 
             page = await get_current_page()
 
-            response = await page.go_back(
+            await page.go_back(
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
 
-            if response is None:
-
-                return (
-                    "⚠️ Назад перейти невозможно\n"
-                    f"URL: {page.url}"
-                )
-
             return (
-                f"✅ Назад\n"
                 f"URL: {page.url}\n"
                 f"Title: {await page.title()}"
             )
@@ -922,20 +943,12 @@ async def browser_forward():
 
             page = await get_current_page()
 
-            response = await page.go_forward(
+            await page.go_forward(
                 wait_until="domcontentloaded",
                 timeout=30000,
             )
 
-            if response is None:
-
-                return (
-                    "⚠️ Вперёд перейти невозможно\n"
-                    f"URL: {page.url}"
-                )
-
             return (
-                f"✅ Вперёд\n"
                 f"URL: {page.url}\n"
                 f"Title: {await page.title()}"
             )
@@ -1054,7 +1067,7 @@ async def browser_get_html(
 
 
 # ============================================================
-# 20. INSPECT
+# 20. INSPECT PAGE
 # ============================================================
 
 async def browser_inspect():
@@ -1066,7 +1079,6 @@ async def browser_inspect():
             page = await get_current_page()
 
             title = await page.title()
-
             url = page.url
 
             buttons = await page.locator(
@@ -1123,15 +1135,10 @@ async def browser_inspect():
             )
 
             result = [
-
                 f"URL: {url}",
-
                 f"TITLE: {title}",
-
                 "",
-
                 "BUTTONS:",
-
             ]
 
             for b in buttons:
@@ -1217,9 +1224,7 @@ async def browser_get_links():
                     f"→ {link.get('href','')}"
                 )
 
-            return "\n".join(
-                result
-            )
+            return "\n".join(result)
 
         return await browser_operation(
             operation
@@ -1246,9 +1251,7 @@ async def browser_click(
                 timeout=15000
             )
 
-            await page.wait_for_timeout(
-                500
-            )
+            await page.wait_for_timeout(500)
 
             return (
                 "✅ Клик выполнен\n"
@@ -1284,9 +1287,7 @@ async def browser_click_text(
                 timeout=15000
             )
 
-            await page.wait_for_timeout(
-                500
-            )
+            await page.wait_for_timeout(500)
 
             return (
                 "✅ Клик по тексту выполнен\n"
@@ -1424,7 +1425,7 @@ async def browser_press(
 
 
 # ============================================================
-# 28. KEY
+# 28. KEYBOARD
 # ============================================================
 
 async def browser_key(
@@ -1437,13 +1438,9 @@ async def browser_key(
 
             page = await get_current_page()
 
-            await page.keyboard.press(
-                key
-            )
+            await page.keyboard.press(key)
 
-            return (
-                f"✅ Клавиша: {key}"
-            )
+            return f"✅ Клавиша: {key}"
 
         return await browser_operation(
             operation
@@ -1460,29 +1457,22 @@ async def browser_wait(
 
     async with browser_lock:
 
-        async def operation():
+        page = await get_current_page()
 
-            page = await get_current_page()
+        milliseconds = max(
+            0,
+            min(
+                int(milliseconds),
+                30000,
+            ),
+        )
 
-            milliseconds = max(
-                0,
-                min(
-                    int(milliseconds),
-                    30000,
-                ),
-            )
+        await page.wait_for_timeout(
+            milliseconds
+        )
 
-            await page.wait_for_timeout(
-                milliseconds
-            )
-
-            return (
-                f"✅ Ожидание "
-                f"{milliseconds} мс"
-            )
-
-        return await browser_operation(
-            operation
+        return (
+            f"✅ Ожидание {milliseconds} мс"
         )
 
 
@@ -1509,8 +1499,7 @@ async def browser_wait_selector(
             )
 
             return (
-                f"✅ Элемент найден: "
-                f"{selector}"
+                f"✅ Элемент найден: {selector}"
             )
 
         return await browser_operation(
@@ -1540,9 +1529,7 @@ async def browser_select(
                 timeout=15000,
             )
 
-            return (
-                f"✅ Выбрано: {result}"
-            )
+            return f"✅ Выбрано: {result}"
 
         return await browser_operation(
             operation
@@ -1676,9 +1663,7 @@ async def browser_count(
                 selector
             ).count()
 
-            return (
-                f"Количество: {count}"
-            )
+            return f"Количество: {count}"
 
         return await browser_operation(
             operation
@@ -1745,7 +1730,7 @@ async def browser_screenshot():
 
 
 # ============================================================
-# 39. CONTENT
+# 39. PAGE CONTENT
 # ============================================================
 
 async def browser_content():
@@ -1769,17 +1754,14 @@ async def browser_content():
 # 40. DSPY ASYNC BRIDGE
 # ============================================================
 
-def run_async_from_dspy(
-    coro
-):
+def run_async_from_dspy(coro):
 
     global main_event_loop
 
     if main_event_loop is None:
 
         raise RuntimeError(
-            "Основной asyncio loop "
-            "не установлен"
+            "Основной asyncio loop не установлен"
         )
 
     if main_event_loop.is_closed():
@@ -1788,11 +1770,9 @@ def run_async_from_dspy(
             "Основной asyncio loop закрыт"
         )
 
-    future = (
-        asyncio.run_coroutine_threadsafe(
-            coro,
-            main_event_loop,
-        )
+    future = asyncio.run_coroutine_threadsafe(
+        coro,
+        main_event_loop,
     )
 
     try:
@@ -1807,7 +1787,7 @@ def run_async_from_dspy(
 
         raise RuntimeError(
             f"Browser tool error: {e}"
-        ) from e
+        )
 
 
 # ============================================================
@@ -1865,34 +1845,24 @@ def create_browser_tools():
             browser_get_links()
         )
 
-    def tool_click(
-        selector: str
-    ):
+    def tool_click(selector: str):
         return run_async_from_dspy(
             browser_click(selector)
         )
 
-    def tool_click_text(
-        text: str
-    ):
+    def tool_click_text(text: str):
         return run_async_from_dspy(
             browser_click_text(text)
         )
 
-    def tool_fill(
-        selector: str,
-        text: str,
-    ):
+    def tool_fill(selector: str, text: str):
         return run_async_from_dspy(
-            browser_fill(
-                selector,
-                text,
-            )
+            browser_fill(selector, text)
         )
 
     def tool_fill_placeholder(
         placeholder: str,
-        text: str,
+        text: str
     ):
         return run_async_from_dspy(
             browser_fill_placeholder(
@@ -1901,45 +1871,29 @@ def create_browser_tools():
             )
         )
 
-    def tool_type(
-        selector: str,
-        text: str,
-    ):
+    def tool_type(selector: str, text: str):
         return run_async_from_dspy(
-            browser_type(
-                selector,
-                text,
-            )
+            browser_type(selector, text)
         )
 
-    def tool_press(
-        selector: str,
-        key: str,
-    ):
+    def tool_press(selector: str, key: str):
         return run_async_from_dspy(
-            browser_press(
-                selector,
-                key,
-            )
+            browser_press(selector, key)
         )
 
-    def tool_key(
-        key: str
-    ):
+    def tool_key(key: str):
         return run_async_from_dspy(
             browser_key(key)
         )
 
-    def tool_wait(
-        milliseconds: int = 1000
-    ):
+    def tool_wait(milliseconds: int = 1000):
         return run_async_from_dspy(
             browser_wait(milliseconds)
         )
 
     def tool_wait_selector(
         selector: str,
-        timeout: int = 10000,
+        timeout: int = 10000
     ):
         return run_async_from_dspy(
             browser_wait_selector(
@@ -1948,41 +1902,29 @@ def create_browser_tools():
             )
         )
 
-    def tool_select(
-        selector: str,
-        value: str,
-    ):
+    def tool_select(selector: str, value: str):
         return run_async_from_dspy(
-            browser_select(
-                selector,
-                value,
-            )
+            browser_select(selector, value)
         )
 
-    def tool_check(
-        selector: str
-    ):
+    def tool_check(selector: str):
         return run_async_from_dspy(
             browser_check(selector)
         )
 
-    def tool_uncheck(
-        selector: str
-    ):
+    def tool_uncheck(selector: str):
         return run_async_from_dspy(
             browser_uncheck(selector)
         )
 
-    def tool_hover(
-        selector: str
-    ):
+    def tool_hover(selector: str):
         return run_async_from_dspy(
             browser_hover(selector)
         )
 
     def tool_attribute(
         selector: str,
-        attribute: str,
+        attribute: str
     ):
         return run_async_from_dspy(
             browser_attribute(
@@ -1991,16 +1933,12 @@ def create_browser_tools():
             )
         )
 
-    def tool_count(
-        selector: str
-    ):
+    def tool_count(selector: str):
         return run_async_from_dspy(
             browser_count(selector)
         )
 
-    def tool_javascript(
-        expression: str
-    ):
+    def tool_javascript(expression: str):
         return run_async_from_dspy(
             browser_js(expression)
         )
@@ -2016,61 +1954,33 @@ def create_browser_tools():
         )
 
     return [
-
         Tool(tool_goto),
-
         Tool(tool_back),
-
         Tool(tool_forward),
-
         Tool(tool_reload),
-
         Tool(tool_page_info),
-
         Tool(tool_inspect_page),
-
         Tool(tool_get_text),
-
         Tool(tool_get_html),
-
         Tool(tool_get_links),
-
         Tool(tool_click),
-
         Tool(tool_click_text),
-
         Tool(tool_fill),
-
         Tool(tool_fill_placeholder),
-
         Tool(tool_type),
-
         Tool(tool_press),
-
         Tool(tool_key),
-
         Tool(tool_wait),
-
         Tool(tool_wait_selector),
-
         Tool(tool_select),
-
         Tool(tool_check),
-
         Tool(tool_uncheck),
-
         Tool(tool_hover),
-
         Tool(tool_attribute),
-
         Tool(tool_count),
-
         Tool(tool_javascript),
-
         Tool(tool_screenshot),
-
         Tool(tool_content),
-
     ]
 
 
@@ -2089,32 +1999,27 @@ class AgnesLM(dspy.LM):
 
         self.api_key = (
             api_key
-            or os.environ.get(
-                "AGNES_API_KEY"
-            )
+            or os.environ.get("AGNES_API_KEY")
         )
 
         self.model = model
 
-        self.temperature = kwargs.get(
-            "temperature",
-            0.2,
-        )
-
-        self.max_tokens = kwargs.get(
-            "max_tokens",
-            4000,
-        )
-
         super().__init__(
             model=model,
             model_type="chat",
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
+            temperature=kwargs.get(
+                "temperature",
+                0.2,
+            ),
+            max_tokens=kwargs.get(
+                "max_tokens",
+                4000,
+            ),
             cache=False,
         )
 
         self.provider = "agnes-ai"
+        self.forward_contract = "legacy"
 
     def forward(
         self,
@@ -2125,9 +2030,9 @@ class AgnesLM(dspy.LM):
 
         if not self.api_key:
 
-            raise RuntimeError(
-                "AGNES_API_KEY не задан"
-            )
+            return [
+                "Ошибка: AGNES_API_KEY не задан"
+            ]
 
         params = {
             **self.kwargs,
@@ -2145,66 +2050,33 @@ class AgnesLM(dspy.LM):
         )
 
         headers = {
-
             "Authorization":
                 f"Bearer {self.api_key}",
-
             "Content-Type":
                 "application/json",
-
         }
 
         payload = {
-
-            "model":
-                self.model,
-
-            "messages":
-                api_messages,
-
+            "model": self.model,
+            "messages": api_messages,
             "temperature":
                 params.get(
                     "temperature",
-                    self.temperature,
+                    0.2,
                 ),
-
             "max_tokens":
                 params.get(
                     "max_tokens",
-                    self.max_tokens,
+                    4000,
                 ),
-
         }
-
-        if params.get(
-            "tools"
-        ):
-
-            payload["tools"] = (
-                params["tools"]
-            )
-
-        if params.get(
-            "tool_choice"
-        ):
-
-            payload["tool_choice"] = (
-                params["tool_choice"]
-            )
-
-        logger.info(
-            "🧠 → Agnes API"
-        )
 
         try:
 
+            logger.info("🧠 → Agnes API")
+
             with httpx.Client(
-                timeout=httpx.Timeout(
-                    connect=30,
-                    read=120,
-                    write=120,
-                    pool=30,
-                )
+                timeout=120.0
             ) as client:
 
                 response = client.post(
@@ -2217,62 +2089,36 @@ class AgnesLM(dspy.LM):
 
                 data = response.json()
 
-        except httpx.HTTPStatusError as e:
+                if (
+                    "choices" in data
+                    and data["choices"]
+                ):
 
-            body = e.response.text[:2000]
+                    content = (
+                        data["choices"][0]
+                        ["message"]
+                        ["content"]
+                    )
 
-            logger.error(
-                "❌ Agnes HTTP %s: %s",
-                e.response.status_code,
-                body,
-            )
+                    logger.info(
+                        "🧠 ← Agnes API"
+                    )
 
-            raise RuntimeError(
-                f"Agnes HTTP "
-                f"{e.response.status_code}: "
-                f"{body}"
-            ) from e
+                    return [content]
+
+                return [
+                    "Ошибка: пустой ответ Agnes"
+                ]
 
         except Exception as e:
 
-            logger.exception(
-                "❌ Agnes API"
+            logger.error(
+                f"❌ Agnes API: {e}"
             )
 
-            raise RuntimeError(
-                f"Agnes API error: {e}"
-            ) from e
-
-        choices = data.get(
-            "choices"
-        ) or []
-
-        if not choices:
-
-            raise RuntimeError(
-                f"Agnes вернул пустой ответ: "
-                f"{data}"
-            )
-
-        message = (
-            choices[0].get(
-                "message"
-            )
-            or {}
-        )
-
-        content = (
-            message.get(
-                "content"
-            )
-            or ""
-        )
-
-        logger.info(
-            "🧠 ← Agnes API"
-        )
-
-        return [content]
+            return [
+                f"Ошибка Agnes API: {e}"
+            ]
 
     def __call__(
         self,
@@ -2297,25 +2143,21 @@ class BrowserTask(Signature):
     """
     Ты автономный браузерный агент.
 
-    Выполняй задачи пользователя непосредственно
-    через Camoufox.
+    Работай непосредственно через Camoufox.
 
     Правила:
 
     1. Для открытия сайта используй tool_goto.
-    2. Если структура неизвестна — inspect_page.
-    3. Для чтения — get_text.
-    4. Для поиска элементов — inspect_page.
-    5. Для кнопок — click/click_text.
-    6. Для полей — fill/fill_placeholder.
-    7. Для клавиатуры — press/key.
-    8. Не утверждай выполнение действия,
-       пока tool не подтвердил его.
-    9. При ошибке меняй стратегию.
-    10. Можно использовать несколько tools.
-    11. Для динамических сайтов используй wait.
-    12. Сложные задачи исследуй самостоятельно.
-    13. В конце дай только итоговый ответ.
+    2. Если структура неизвестна — tool_inspect_page.
+    3. Для чтения — tool_get_text.
+    4. Для кнопок — tool_click/tool_click_text.
+    5. Для полей — tool_fill/tool_fill_placeholder.
+    6. Для клавиатуры — tool_press/tool_key.
+    7. Не утверждай выполнение действия без подтверждения tool.
+    8. При ошибке инструмента измени стратегию.
+    9. Можно использовать несколько tools подряд.
+    10. Для динамических сайтов используй wait.
+    11. В конце дай только итоговый ответ пользователю.
     """
 
     question = InputField(
@@ -2351,64 +2193,18 @@ def init_dspy():
             max_tokens=4000,
         )
 
-        dspy.configure(
-            lm=lm
-        )
+        settings.configure(lm=lm)
 
         tools = create_browser_tools()
 
-        if REACT_V2_AVAILABLE:
-
-            try:
-
-                dspy_agent_instance = (
-                    ReActV2(
-                        BrowserTask,
-                        tools=tools,
-                        max_iters=15,
-                    )
-                )
-
-                logger.info(
-                    "✅ Используется ReActV2"
-                )
-
-            except Exception as e:
-
-                logger.warning(
-                    "⚠️ ReActV2 error: %s",
-                    e,
-                )
-
-                dspy_agent_instance = (
-                    dspy.ReAct(
-                        BrowserTask,
-                        tools=tools,
-                        max_iters=15,
-                    )
-                )
-
-                logger.info(
-                    "↩️ Используется обычный ReAct"
-                )
-
-        else:
-
-            dspy_agent_instance = (
-                dspy.ReAct(
-                    BrowserTask,
-                    tools=tools,
-                    max_iters=15,
-                )
-            )
-
-            logger.info(
-                "✅ Используется обычный ReAct"
-            )
+        dspy_agent_instance = ReActV2(
+            signature=BrowserTask,
+            tools=tools,
+            max_iters=15,
+        )
 
         logger.info(
-            f"🧠 DSPy создан. "
-            f"Tools: {len(tools)}"
+            f"✅ DSPy создан. Tools: {len(tools)}"
         )
 
         return True
@@ -2416,10 +2212,8 @@ def init_dspy():
     except Exception as e:
 
         logger.exception(
-            "❌ DSPy init error"
+            f"❌ DSPy init error: {e}"
         )
-
-        dspy_agent_instance = None
 
         return False
 
@@ -2428,9 +2222,7 @@ def init_dspy():
 # 45. RUN AGENT
 # ============================================================
 
-def run_agent(
-    question: str
-):
+def run_agent(question: str):
 
     if not dspy_agent_instance:
 
@@ -2446,10 +2238,8 @@ def run_agent(
                 f"🧠 DSPy task: {question}"
             )
 
-            result = (
-                dspy_agent_instance(
-                    question=question
-                )
+            result = dspy_agent_instance(
+                question=question
             )
 
             answer = getattr(
@@ -2458,33 +2248,18 @@ def run_agent(
                 None,
             )
 
-            if (
-                answer is None
-                and isinstance(
-                    result,
-                    dict,
-                )
-            ):
-
-                answer = result.get(
-                    "answer"
-                )
-
             if answer is None:
 
-                answer = str(
-                    result
+                return (
+                    "❌ DSPy не вернул "
+                    "итоговый ответ"
                 )
 
-            answer = str(
-                answer
-            ).strip()
+            answer = str(answer).strip()
 
             if not answer:
 
-                return (
-                    "❌ Пустой ответ DSPy"
-                )
+                return "❌ Пустой ответ DSPy"
 
             return answer
 
@@ -2495,13 +2270,12 @@ def run_agent(
             )
 
             return (
-                f"❌ Ошибка агента: "
-                f"{type(e).__name__}: {e}"
+                f"❌ Ошибка агента: {e}"
             )
 
 
 # ============================================================
-# 46. START
+# 46. /START
 # ============================================================
 
 async def start(
@@ -2510,30 +2284,20 @@ async def start(
 ):
 
     await update.message.reply_text(
-
         "👋 Привет!\n\n"
-
         "🦊 Camoufox + DSPy Browser Agent\n\n"
-
         "Команды:\n"
-
         "/check <url>\n"
-
         "/dspy <задача>\n"
-
         "/cookies\n"
-
         "/cancel\n"
-
         "/status\n"
-
         "/screenshot"
-
     )
 
 
 # ============================================================
-# 47. CHECK
+# 47. /CHECK
 # ============================================================
 
 async def check(
@@ -2566,31 +2330,25 @@ async def check(
 
     try:
 
-        result = await browser_goto(
-            url
-        )
+        result = await browser_goto(url)
 
         text = await browser_get_text()
 
         await msg.edit_text(
-            f"{result}\n\n"
-            f"{text[:1500]}"
+            f"{result}\n\n{text[:1500]}"
         )
 
     except Exception as e:
 
-        logger.exception(
-            "❌ /check"
-        )
+        logger.exception("❌ /check")
 
         await msg.edit_text(
-            f"❌ Ошибка:\n"
-            f"{str(e)[:1000]}"
+            f"❌ Ошибка:\n{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 48. SCREENSHOT
+# 48. /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -2606,10 +2364,7 @@ async def screenshot(
 
         path = await browser_screenshot()
 
-        with open(
-            path,
-            "rb"
-        ) as photo:
+        with open(path, "rb") as photo:
 
             await update.message.reply_photo(
                 photo=photo,
@@ -2625,13 +2380,12 @@ async def screenshot(
         )
 
         await msg.edit_text(
-            f"❌ Ошибка:\n"
-            f"{str(e)[:1000]}"
+            f"❌ Ошибка:\n{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 49. STATUS
+# 49. /STATUS
 # ============================================================
 
 async def status(
@@ -2640,7 +2394,6 @@ async def status(
 ):
 
     url = "—"
-
     title = "—"
 
     if browser_ready:
@@ -2650,14 +2403,12 @@ async def status(
             page = await get_current_page()
 
             url = page.url
-
             title = await page.title()
 
         except Exception:
             pass
 
     status_text = (
-
         "📦 *Статус системы*\n\n"
 
         f"🦊 Camoufox: "
@@ -2674,7 +2425,6 @@ async def status(
 
         f"📄 Title:\n"
         f"{escape_markdown(title, version=2)}"
-
     )
 
     await update.message.reply_text(
@@ -2684,7 +2434,7 @@ async def status(
 
 
 # ============================================================
-# 50. COOKIES COMMAND
+# 50. /COOKIES
 # ============================================================
 
 async def cookies_command(
@@ -2700,27 +2450,34 @@ async def cookies_command(
 
         return
 
-    user_id = (
-        update.effective_user.id
-    )
+    user_id = update.effective_user.id
 
-    waiting_for_cookies.add(
-        user_id
-    )
+    waiting_for_cookies.add(user_id)
+
+    current_url = "неизвестен"
+
+    try:
+
+        page = await get_current_page()
+
+        current_url = page.url
+
+    except Exception:
+        pass
 
     await update.message.reply_text(
-
-        "🍪 Жду JSON-файл с cookies.\n\n"
-
-        "Отправь файл следующим сообщением.\n\n"
-
-        "❌ Для отмены: /cancel"
-
+        "🍪 *Жду JSON-файл с cookies.*\n\n"
+        f"🌐 Текущий сайт:\n`{escape_markdown(current_url, version=2)}`\n\n"
+        "Если в cookies отсутствует domain/url, "
+        "они будут привязаны к текущему сайту.\n\n"
+        "Просто отправь JSON следующим сообщением.\n\n"
+        "❌ Для отмены: /cancel",
+        parse_mode="MarkdownV2",
     )
 
 
 # ============================================================
-# 51. CANCEL
+# 51. /CANCEL
 # ============================================================
 
 async def cancel_cookies(
@@ -2728,15 +2485,11 @@ async def cancel_cookies(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    user_id = (
-        update.effective_user.id
-    )
+    user_id = update.effective_user.id
 
     if user_id in waiting_for_cookies:
 
-        waiting_for_cookies.discard(
-            user_id
-        )
+        waiting_for_cookies.discard(user_id)
 
         await update.message.reply_text(
             "❌ Загрузка cookies отменена."
@@ -2758,20 +2511,16 @@ async def cookies_file(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    user_id = (
-        update.effective_user.id
-    )
+    user_id = update.effective_user.id
 
     if user_id not in waiting_for_cookies:
-
         return
 
-    document = (
-        update.message.document
-    )
+    waiting_for_cookies.discard(user_id)
+
+    document = update.message.document
 
     if not document:
-
         return
 
     filename = (
@@ -2779,19 +2528,13 @@ async def cookies_file(
         or ""
     ).lower()
 
-    if not filename.endswith(
-        ".json"
-    ):
+    if not filename.endswith(".json"):
 
         await update.message.reply_text(
             "❌ Нужен именно JSON-файл."
         )
 
         return
-
-    waiting_for_cookies.discard(
-        user_id
-    )
 
     msg = await update.message.reply_text(
         "⏳ Загружаю cookies..."
@@ -2823,65 +2566,45 @@ async def cookies_file(
 
             data = json.load(f)
 
-        result = (
-            await load_cookies_from_json(
-                data
-            )
+        result = await load_cookies_from_json(
+            data
         )
 
-        loaded = result[
-            "loaded"
-        ]
+        loaded = result["loaded"]
+        total = result["total"]
+        errors = result["errors"]
 
-        total = result[
-            "total"
-        ]
-
-        errors = result[
-            "errors"
-        ]
-
-        if loaded == 0:
+        if loaded == total:
 
             response = (
-                "❌ Не удалось загрузить "
-                "ни одной cookie.\n\n"
-                + "\n".join(
-                    f"• {e}"
-                    for e in errors[:15]
-                )
+                "🍪 *Cookies загружены!*\n\n"
+                f"✅ Загружено: `{loaded}` из `{total}`\n\n"
+                "✅ Все cookies успешно добавлены."
             )
 
         else:
 
             response = (
-
-                "🍪 *Cookies обработаны!*\n\n"
-
-                f"✅ Загружено: `{loaded}`\n"
-
-                f"📦 Всего в файле: `{total}`"
-
+                "🍪 *Cookies обработаны*\n\n"
+                f"✅ Загружено: `{loaded}` из `{total}`"
             )
 
-            if errors:
+        if errors:
 
-                response += (
-                    "\n\n"
-                    "⚠️ Ошибки:\n"
-                )
-
-                response += "\n".join(
+            response += (
+                "\n\n⚠️ Ошибки:\n"
+                + "\n".join(
                     f"• {e}"
                     for e in errors[:10]
                 )
+            )
 
-                if len(errors) > 10:
+            if len(errors) > 10:
 
-                    response += (
-                        "\n• ...и ещё "
-                        f"{len(errors) - 10}"
-                    )
+                response += (
+                    f"\n• ...и ещё "
+                    f"{len(errors) - 10}"
+                )
 
         await msg.edit_text(
             response,
@@ -2891,8 +2614,7 @@ async def cookies_file(
     except json.JSONDecodeError:
 
         await msg.edit_text(
-            "❌ Файл не является "
-            "корректным JSON."
+            "❌ Файл не является корректным JSON."
         )
 
     except Exception as e:
@@ -2909,22 +2631,13 @@ async def cookies_file(
     finally:
 
         try:
-
-            if os.path.exists(
-                temp_path
-            ):
-
-                os.remove(
-                    temp_path
-                )
-
+            os.remove(temp_path)
         except Exception:
-
             pass
 
 
 # ============================================================
-# 53. DSPY COMMAND
+# 53. /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -2935,19 +2648,13 @@ async def dspy_command(
     if not context.args:
 
         await update.message.reply_text(
-
             "🧠 DSPy Browser Agent\n\n"
-
             "Примеры:\n\n"
-
             "/dspy открой https://example.com "
             "и покажи заголовок\n\n"
-
             "/dspy найди новости про Трампа "
             "на BBC и кратко перескажи 5 последних\n\n"
-
             "/dspy открой Google и найди Python"
-
         )
 
         return
@@ -2968,9 +2675,7 @@ async def dspy_command(
 
         return
 
-    query = " ".join(
-        context.args
-    )
+    query = " ".join(context.args)
 
     msg = await update.message.reply_text(
         "🧠 DSPy управляет Camoufox..."
@@ -2978,9 +2683,7 @@ async def dspy_command(
 
     try:
 
-        loop = (
-            asyncio.get_running_loop()
-        )
+        loop = asyncio.get_running_loop()
 
         answer = await loop.run_in_executor(
             None,
@@ -2995,51 +2698,28 @@ async def dspy_command(
                 + "..."
             )
 
-        safe_answer = (
-            escape_markdown(
-                answer,
-                version=2,
-            )
+        safe_answer = escape_markdown(
+            answer,
+            version=2,
         )
 
         await msg.edit_text(
-
             "✅ *Результат:*\n\n"
             + safe_answer,
-
             parse_mode="MarkdownV2",
-
         )
 
     except Exception as e:
 
-        logger.exception(
-            "❌ /dspy"
-        )
+        logger.exception("❌ /dspy")
 
         await msg.edit_text(
-            f"❌ Ошибка:\n"
-            f"{str(e)[:1000]}"
+            f"❌ Ошибка:\n{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 54. TELEGRAM ERROR HANDLER
-# ============================================================
-
-async def telegram_error_handler(
-    update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    logger.error(
-        "❌ Telegram error",
-        exc_info=context.error,
-    )
-
-
-# ============================================================
-# 55. MAIN
+# 54. MAIN
 # ============================================================
 
 async def main():
@@ -3065,70 +2745,37 @@ async def main():
         .build()
     )
 
-    app.add_error_handler(
-        telegram_error_handler
-    )
-
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
-
     app.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
+        CommandHandler("start", start)
     )
 
     app.add_handler(
-        CommandHandler(
-            "check",
-            check,
-        )
+        CommandHandler("check", check)
     )
 
     app.add_handler(
-        CommandHandler(
-            "screenshot",
-            screenshot,
-        )
+        CommandHandler("screenshot", screenshot)
     )
 
     app.add_handler(
-        CommandHandler(
-            "status",
-            status,
-        )
+        CommandHandler("status", status)
     )
 
     app.add_handler(
-        CommandHandler(
-            "dspy",
-            dspy_command,
-        )
+        CommandHandler("dspy", dspy_command)
     )
 
     app.add_handler(
-        CommandHandler(
-            "cookies",
-            cookies_command,
-        )
+        CommandHandler("cookies", cookies_command)
     )
 
     app.add_handler(
-        CommandHandler(
-            "cancel",
-            cancel_cookies,
-        )
+        CommandHandler("cancel", cancel_cookies)
     )
-
-    # --------------------------------------------------------
-    # JSON FILE
-    # --------------------------------------------------------
 
     app.add_handler(
         MessageHandler(
-            filters.Document.ALL,
+            filters.Document.JSON,
             cookies_file,
         )
     )
@@ -3155,9 +2802,7 @@ async def main():
             "🤖 Telegram бот запущен!"
         )
 
-        stop_signal = (
-            asyncio.Event()
-        )
+        stop_signal = asyncio.Event()
 
         def signal_handler():
 
@@ -3169,9 +2814,7 @@ async def main():
 
         try:
 
-            loop = (
-                asyncio.get_running_loop()
-            )
+            loop = asyncio.get_running_loop()
 
             loop.add_signal_handler(
                 signal.SIGINT,
@@ -3192,9 +2835,7 @@ async def main():
 
         while not stop_signal.is_set():
 
-            await asyncio.sleep(
-                60
-            )
+            await asyncio.sleep(60)
 
             logger.info(
                 "💓 Bot alive"
@@ -3213,23 +2854,17 @@ async def main():
         )
 
         try:
-
             await app.updater.stop()
-
         except Exception:
             pass
 
         try:
-
             await app.stop()
-
         except Exception:
             pass
 
         try:
-
             await app.shutdown()
-
         except Exception:
             pass
 
@@ -3237,11 +2872,9 @@ async def main():
 
 
 # ============================================================
-# 56. ENTRYPOINT
+# 55. ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
 
-    asyncio.run(
-        main()
-    )
+    asyncio.run(main())
