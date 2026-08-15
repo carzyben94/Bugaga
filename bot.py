@@ -462,9 +462,23 @@ async def browser_click(selector: str):
     async with browser_lock:
         async def operation():
             page = await get_current_page()
-            await page.locator(selector).first.click(timeout=15000)
+            before_url = page.url
+            before_title = await page.title()
+            before_count = await page.locator(selector).count()
+            if before_count < 1:
+                return f"Клик не выполнен: selector не найден\nSelector: {selector}"
+            locator = page.locator(selector).first
+            await locator.scroll_into_view_if_needed(timeout=10000)
+            await locator.click(timeout=15000)
             await page.wait_for_timeout(500)
-            return f"Клик выполнен\nSelector: {selector}\nURL: {page.url}"
+            after_url = page.url
+            after_title = await page.title()
+            return (
+                f"Клик выполнен\nSelector: {selector}\n"
+                f"URL before: {before_url}\nURL after: {after_url}\n"
+                f"URL changed: {before_url != after_url}\n"
+                f"Title changed: {before_title != after_title}"
+            )
         return await browser_operation(operation)
 
 
@@ -693,6 +707,16 @@ INSPECTOR_JS = r"""
 }) => {
     const clean = value =>
         String(value ?? "").replace(/\s+/g, " ").trim();
+
+    const hashString = value => {
+        let h = 2166136261;
+        const text = String(value ?? "");
+        for (let i = 0; i < text.length; i++) {
+            h ^= text.charCodeAt(i);
+            h = Math.imul(h, 16777619);
+        }
+        return (h >>> 0).toString(36);
+    };
 
     const cssEscape = value => {
         value = String(value ?? "");
@@ -1053,6 +1077,59 @@ INSPECTOR_JS = r"""
         return result;
     };
 
+    const stableElementId = element => {
+        const role = roleOf(element);
+        const name = accessibleName(element);
+        const tag = element.tagName.toLowerCase();
+        const type = clean(element.getAttribute("type"));
+        const stableAttrs = ["data-testid", "data-test", "data-qa", "data-cy", "name", "placeholder"]
+            .map(a => `${a}=${clean(element.getAttribute(a))}`)
+            .filter(x => !x.endsWith("="));
+        const parent = element.parentElement;
+        const parentSig = parent ? `${parent.tagName.toLowerCase()}|${clean(parent.id)}|${clean(parent.getAttribute("role"))}` : "";
+        return `el_${hashString([tag, role, name, type, ...stableAttrs, parentSig].join("|"))}`;
+    };
+
+    const selectorCandidates = element => {
+        const candidates = [];
+        const add = (kind, value, score) => {
+            if (!value || candidates.some(x => x.value === value)) return;
+            candidates.push({kind, value, score});
+        };
+        if (element.id) add("id", `#${cssEscape(element.id)}`, 100);
+        for (const a of ["data-testid", "data-test", "data-qa", "data-cy"]) {
+            const v = clean(element.getAttribute(a));
+            if (v) add(a, `[${a}="${cssEscape(v)}"]`, 95);
+        }
+        const name = clean(element.getAttribute("name"));
+        if (name) add("name", `${element.tagName.toLowerCase()}[name="${cssEscape(name)}"]`, 90);
+        const aria = clean(element.getAttribute("aria-label"));
+        if (aria) add("aria-label", `${element.tagName.toLowerCase()}[aria-label="${cssEscape(aria)}"]`, 85);
+        const placeholder = clean(element.getAttribute("placeholder"));
+        if (placeholder) add("placeholder", `${element.tagName.toLowerCase()}[placeholder="${cssEscape(placeholder)}"]`, 80);
+        const semantic = semanticLocator(element);
+        if (semantic) add("semantic", semantic, 75);
+        const css = uniqueSelector(element);
+        if (css) add("css", css, 60);
+        const xp = xpath(element);
+        if (xp) add("xpath", xp, 45);
+        return candidates.sort((a,b) => b.score - a.score).slice(0, 8);
+    };
+
+    const actionability = element => {
+        if (!element || !visible(element)) return {ok:false, reasons:["not-visible"]};
+        const style = getComputedStyle(element);
+        const reasons = [];
+        if (!enabled(element)) reasons.push("disabled");
+        if (style.pointerEvents === "none") reasons.push("pointer-events-none");
+        const hit = hitTest(element);
+        if (hit.covered) reasons.push("covered");
+        if (!inViewport(element)) reasons.push("outside-viewport");
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) reasons.push("too-small");
+        return {ok: reasons.length === 0, reasons, recommended: reasons.length === 0};
+    };
+
     const describe = (element, index, frameUrl, shadow) => {
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
@@ -1086,6 +1163,8 @@ INSPECTOR_JS = r"""
             selector: uniqueSelector(element),
             xpath: xpath(element),
             semanticLocator: semanticLocator(element),
+            selectorCandidates: selectorCandidates(element),
+            stableId: stableElementId(element),
             labelLocator: labelLocator(element),
             id: clean(element.id),
             name: clean(element.getAttribute("name")),
@@ -1111,6 +1190,7 @@ INSPECTOR_JS = r"""
             relationships: relationshipData(element),
             state,
             hitTest: hit,
+            actionability: actionability(element),
             events: eventHints(element),
             rect: {
                 x: Math.round(rect.x),
@@ -1169,6 +1249,23 @@ INSPECTOR_JS = r"""
 
         if (interactive.length >= maxInteractive) break;
     }
+
+    // Rank targets so the agent can prefer elements that are both semantic and actionable.
+    interactive.sort((a, b) => {
+        const score = x => {
+            let s = 0;
+            if (x.actionability?.ok) s += 40;
+            if (x.state?.inViewport) s += 15;
+            if (x.accessibleName) s += 15;
+            if (x.semanticLocator) s += 10;
+            if (x.id || x.name || x.placeholder) s += 5;
+            if (x.state?.covered) s -= 30;
+            if (!x.state?.enabled) s -= 50;
+            return s;
+        };
+        return score(b) - score(a);
+    });
+    interactive.forEach((x, i) => { x.rank = i + 1; });
 
     const links = allElements
         .filter(item => item.element.tagName.toLowerCase() === "a")
@@ -1525,6 +1622,7 @@ async def browser_inspect(
                         out.append(
                             f"  semantic={element.get('semanticLocator') or '-'}"
                         )
+                        out.append(f"  rank={element.get('rank')} stableId={element.get('stableId')}")
                         out.append(
                             f"  frame={frame_data.get('frameIndex')} "
                             f"visible={state.get('visible')} "
@@ -1642,6 +1740,7 @@ async def browser_inspect(
 
                     for field in (
                         "semanticLocator",
+                        "stableId",
                         "labelLocator",
                         "xpath",
                         "text",
@@ -1687,6 +1786,13 @@ async def browser_inspect(
                         f"coveredPoints={hit.get('coveredPoints')} "
                         f"coverageRatio={hit.get('coverageRatio')}"
                     )
+                    act = element.get("actionability", {})
+                    out.append(f"  actionability: ok={act.get('ok')} reasons={act.get('reasons', [])}")
+                    candidates = element.get("selectorCandidates", [])
+                    if candidates:
+                        out.append("  selector-candidates:")
+                        for candidate in candidates[:6]:
+                            out.append(f"    - {candidate.get('kind')}: {candidate.get('value')} (score={candidate.get('score')})")
 
                     relationships = element.get("relationships", {})
                     if relationships:
@@ -1855,11 +1961,51 @@ async def browser_inspect(
                     f"{meta.get('name')}: {meta.get('content')}"
                 )
 
+            # Inspector quality summary for the agent.
+            actionable = []
+            blocked = []
+            for frame_data in frames_data:
+                for element in frame_data.get("interactive", []):
+                    if element.get("actionability", {}).get("ok"):
+                        actionable.append(element)
+                    elif element.get("actionability"):
+                        blocked.append(element)
+            out.append("\n=== INSPECTOR QUALITY ===")
+            out.append(f"actionableTargets: {len(actionable)}")
+            out.append(f"blockedTargets: {len(blocked)}")
+            out.append("recommendation: prefer stableId + highest-score selector candidate; verify actionability before click/fill")
+
             out.append("\n=== VISIBLE TEXT ===")
             out.append(main_data.get("visibleText", "") or "(empty)")
 
             return "\n".join(out)[:60000]
 
+        return await browser_operation(operation)
+
+
+async def browser_inspect_target(selector: str):
+    """Return focused actionability/selector diagnostics for one target."""
+    async with browser_lock:
+        async def operation():
+            page = await get_current_page()
+            script = r"""
+            selector => {
+                const el = document.querySelector(selector);
+                if (!el) return {found:false, selector};
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                const points = [[r.left+r.width/2,r.top+r.height/2],[r.left+2,r.top+2]];
+                const hits = points.filter(([x,y]) => x>=0 && y>=0 && x<innerWidth && y<innerHeight)
+                    .map(([x,y]) => { const top=document.elementFromPoint(x,y); return {x,y,hit:top===el || el.contains(top)}; });
+                return {found:true, tag:el.tagName.toLowerCase(), text:(el.innerText||el.value||el.getAttribute('aria-label')||'').trim().slice(0,300),
+                    visible:!!(r.width&&r.height&&s.visibility!=='hidden'&&s.display!=='none'),
+                    enabled:!el.hasAttribute('disabled')&&el.getAttribute('aria-disabled')!=='true',
+                    pointerEvents:s.pointerEvents, rect:{x:r.x,y:r.y,width:r.width,height:r.height}, hits,
+                    recommended:hits.length>0 && hits.every(x=>x.hit) && s.pointerEvents!=='none' && !el.hasAttribute('disabled')};
+            }
+            """
+            result = await page.evaluate(script, selector)
+            return json.dumps(result, ensure_ascii=False)
         return await browser_operation(operation)
 
 
@@ -2001,6 +2147,9 @@ def create_browser_tools():
             )
         )
 
+    def tool_inspect_target(selector: str):
+        return run_async_from_dspy(browser_inspect_target(selector))
+
     def tool_get_text(selector: str = "body"):
         return run_async_from_dspy(browser_get_text(selector))
 
@@ -2077,6 +2226,7 @@ def create_browser_tools():
         Tool(tool_reload),
         Tool(tool_page_info),
         Tool(tool_inspect_page),
+        Tool(tool_inspect_target),
         Tool(tool_get_text),
         Tool(tool_get_html),
         Tool(tool_get_links),
