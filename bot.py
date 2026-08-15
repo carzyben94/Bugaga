@@ -5,6 +5,7 @@ import time
 import signal
 import threading
 import json
+from typing import Optional
 
 import httpx
 
@@ -16,11 +17,9 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-
 from telegram.helpers import escape_markdown
 
 import dspy
-
 from dspy import (
     Signature,
     InputField,
@@ -40,7 +39,7 @@ except ImportError:
 
 
 # ============================================================
-# 1. LOGGER
+# LOGGER
 # ============================================================
 
 logging.basicConfig(
@@ -52,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 2. CAMOUFOX
+# CAMOUFOX
 # ============================================================
 
 try:
@@ -61,19 +60,20 @@ try:
 
     CAMOUFOX_AVAILABLE = True
 
-    logger.info("✅ Camoufox загружен")
+    logger.info("Camoufox загружен")
 
 except ImportError as e:
 
     CAMOUFOX_AVAILABLE = False
 
     logger.error(
-        f"❌ Camoufox не найден: {e}"
+        "Camoufox не найден: %s",
+        e,
     )
 
 
 # ============================================================
-# 3. SETTINGS
+# SETTINGS
 # ============================================================
 
 TELEGRAM_TOKEN = os.environ.get(
@@ -107,7 +107,7 @@ os.makedirs(
 
 
 # ============================================================
-# 4. GLOBAL STATE
+# GLOBAL STATE
 # ============================================================
 
 camoufox_manager = None
@@ -130,26 +130,7 @@ waiting_for_cookies = set()
 
 
 # ============================================================
-# INSPECT REFS
-# ============================================================
-
-agent_refs = {}
-
-agent_refs_url = None
-
-
-def clear_agent_refs():
-
-    global agent_refs
-    global agent_refs_url
-
-    agent_refs = {}
-
-    agent_refs_url = None
-
-
-# ============================================================
-# 5. CAMOUFOX INIT
+# CAMOUFOX INIT
 # ============================================================
 
 async def init_browser():
@@ -162,13 +143,13 @@ async def init_browser():
     if not CAMOUFOX_AVAILABLE:
 
         logger.error(
-            "❌ Camoufox недоступен"
+            "Camoufox недоступен"
         )
 
         return False
 
     logger.info(
-        "🚀 Запускаем Camoufox..."
+        "Запускаем Camoufox..."
     )
 
     try:
@@ -203,10 +184,9 @@ async def init_browser():
 
         browser_ready = True
 
-        clear_agent_refs()
-
         logger.info(
-            f"✅ Camoufox работает: {title}"
+            "Camoufox работает: %s",
+            title,
         )
 
         return True
@@ -214,7 +194,8 @@ async def init_browser():
     except Exception as e:
 
         logger.exception(
-            f"❌ Ошибка запуска Camoufox: {e}"
+            "Ошибка запуска Camoufox: %s",
+            e,
         )
 
         browser_ready = False
@@ -234,7 +215,6 @@ async def init_browser():
                 )
 
         except Exception:
-
             pass
 
         camoufox_manager = None
@@ -243,7 +223,7 @@ async def init_browser():
 
 
 # ============================================================
-# 6. CLOSE BROWSER
+# CLOSE BROWSER
 # ============================================================
 
 async def close_browser():
@@ -255,8 +235,6 @@ async def close_browser():
 
     browser_ready = False
 
-    clear_agent_refs()
-
     if current_page is not None:
 
         try:
@@ -264,7 +242,6 @@ async def close_browser():
             await current_page.close()
 
         except Exception:
-
             pass
 
     current_page = None
@@ -274,7 +251,7 @@ async def close_browser():
         try:
 
             logger.info(
-                "🛑 Закрываем Camoufox..."
+                "Закрываем Camoufox..."
             )
 
             await camoufox_manager.__aexit__(
@@ -286,7 +263,8 @@ async def close_browser():
         except Exception as e:
 
             logger.warning(
-                f"⚠️ Ошибка закрытия: {e}"
+                "Ошибка закрытия Camoufox: %s",
+                e,
             )
 
     camoufox_manager = None
@@ -294,12 +272,12 @@ async def close_browser():
     camoufox_context = None
 
     logger.info(
-        "✅ Camoufox закрыт"
+        "Camoufox закрыт"
     )
 
 
 # ============================================================
-# 7. PAGE ALIVE
+# PAGE ALIVE
 # ============================================================
 
 async def page_is_alive(page):
@@ -322,7 +300,7 @@ async def page_is_alive(page):
 
 
 # ============================================================
-# 8. GET CURRENT PAGE
+# GET CURRENT PAGE
 # ============================================================
 
 async def get_current_page():
@@ -348,7 +326,7 @@ async def get_current_page():
         return current_page
 
     logger.warning(
-        "⚠️ Текущая страница закрыта"
+        "Текущая страница закрыта"
     )
 
     try:
@@ -357,14 +335,13 @@ async def get_current_page():
             await camoufox_context.new_page()
         )
 
-        clear_agent_refs()
-
         return current_page
 
     except Exception as e:
 
         logger.warning(
-            f"⚠️ Context недоступен: {e}"
+            "Context недоступен: %s",
+            e,
         )
 
         await close_browser()
@@ -374,19 +351,22 @@ async def get_current_page():
         if not ok:
 
             raise RuntimeError(
-                "❌ Не удалось восстановить Camoufox"
+                "Не удалось восстановить Camoufox"
             )
 
         return current_page
 
 
 # ============================================================
-# 9. COOKIE NORMALIZATION
+# COOKIE NORMALIZATION
 # ============================================================
 
 def normalize_cookie(cookie: dict):
 
-    if not isinstance(cookie, dict):
+    if not isinstance(
+        cookie,
+        dict,
+    ):
 
         raise ValueError(
             "Cookie должен быть объектом"
@@ -406,11 +386,8 @@ def normalize_cookie(cookie: dict):
     )
 
     result = {
-
         "name": str(name),
-
         "value": str(value),
-
     }
 
     domain = cookie.get(
@@ -489,7 +466,6 @@ def normalize_cookie(cookie: dict):
                     result["url"] = page_url
 
         except Exception:
-
             pass
 
     if (
@@ -506,9 +482,13 @@ def normalize_cookie(cookie: dict):
         "path"
     ) or "/"
 
-    path = str(path)
+    path = str(
+        path
+    )
 
-    if not path.startswith("/"):
+    if not path.startswith(
+        "/"
+    ):
 
         path = "/" + path
 
@@ -539,21 +519,13 @@ def normalize_cookie(cookie: dict):
         ).strip().lower()
 
         same_site = {
-
             "strict": "Strict",
-
             "lax": "Lax",
-
             "none": "None",
-
             "no_restriction": "None",
-
             "no-restriction": "None",
-
             "unspecified": "Lax",
-
             "default": "Lax",
-
         }.get(
             same_site,
             "Lax",
@@ -575,7 +547,9 @@ def normalize_cookie(cookie: dict):
 
         try:
 
-            expires = float(expires)
+            expires = float(
+                expires
+            )
 
             if expires > 0:
 
@@ -592,10 +566,12 @@ def normalize_cookie(cookie: dict):
 
 
 # ============================================================
-# 10. LOAD COOKIES
+# LOAD COOKIES
 # ============================================================
 
-async def load_cookies_from_json(data):
+async def load_cookies_from_json(
+    data
+):
 
     if isinstance(
         data,
@@ -711,23 +687,16 @@ async def load_cookies_from_json(data):
                     )
 
                     logger.warning(
-                        "⚠️ Cookie #%s (%s) "
-                        "не загружена: %s",
+                        "Cookie #%s (%s) не загружена: %s",
                         index + 1,
                         cookie_name,
                         e,
                     )
 
-            clear_agent_refs()
-
             return {
-
                 "loaded": loaded,
-
                 "errors": load_errors,
-
                 "total": len(cookies),
-
             }
 
         return await browser_operation(
@@ -736,31 +705,25 @@ async def load_cookies_from_json(data):
 
 
 # ============================================================
-# 11. BROWSER ERROR
+# BROWSER ERROR
 # ============================================================
 
-def is_browser_closed_error(error):
+def is_browser_closed_error(
+    error
+):
 
     text = str(
         error
     ).lower()
 
     patterns = [
-
         "targetclosederror",
-
         "target page",
-
         "browser has been closed",
-
         "browsercontext",
-
         "context has been closed",
-
         "page has been closed",
-
         "target has been closed",
-
     ]
 
     return any(
@@ -770,7 +733,7 @@ def is_browser_closed_error(error):
 
 
 # ============================================================
-# 12. BROWSER RECOVERY
+# BROWSER RECOVERY
 # ============================================================
 
 async def browser_operation(
@@ -792,13 +755,10 @@ async def browser_operation(
             raise
 
         logger.warning(
-            "⚠️ Camoufox закрыт. "
-            "Восстанавливаем..."
+            "Camoufox закрыт. Восстанавливаем..."
         )
 
         current_page = None
-
-        clear_agent_refs()
 
         await close_browser()
 
@@ -807,17 +767,19 @@ async def browser_operation(
         if not ok:
 
             raise RuntimeError(
-                "❌ Camoufox не удалось восстановить"
+                "Camoufox не удалось восстановить"
             )
 
         return await operation()
 
 
 # ============================================================
-# 13. GOTO
+# GOTO
 # ============================================================
 
-async def browser_goto(url: str):
+async def browser_goto(
+    url: str
+):
 
     async with browser_lock:
 
@@ -831,10 +793,8 @@ async def browser_goto(url: str):
                 timeout=30000,
             )
 
-            clear_agent_refs()
-
             return (
-                "✅ Открыто\n"
+                "Открыто\n"
                 f"URL: {page.url}\n"
                 f"Title: {await page.title()}"
             )
@@ -845,7 +805,7 @@ async def browser_goto(url: str):
 
 
 # ============================================================
-# 14. BACK
+# BACK
 # ============================================================
 
 async def browser_back():
@@ -861,17 +821,15 @@ async def browser_back():
                 timeout=30000,
             )
 
-            clear_agent_refs()
-
             if response is None:
 
                 return (
-                    "⚠️ Назад перейти невозможно\n"
+                    "Назад перейти невозможно\n"
                     f"URL: {page.url}"
                 )
 
             return (
-                f"✅ Назад\n"
+                "Назад\n"
                 f"URL: {page.url}\n"
                 f"Title: {await page.title()}"
             )
@@ -882,7 +840,7 @@ async def browser_back():
 
 
 # ============================================================
-# 15. FORWARD
+# FORWARD
 # ============================================================
 
 async def browser_forward():
@@ -898,17 +856,15 @@ async def browser_forward():
                 timeout=30000,
             )
 
-            clear_agent_refs()
-
             if response is None:
 
                 return (
-                    "⚠️ Вперёд перейти невозможно\n"
+                    "Вперёд перейти невозможно\n"
                     f"URL: {page.url}"
                 )
 
             return (
-                f"✅ Вперёд\n"
+                "Вперёд\n"
                 f"URL: {page.url}\n"
                 f"Title: {await page.title()}"
             )
@@ -919,7 +875,7 @@ async def browser_forward():
 
 
 # ============================================================
-# 16. RELOAD
+# RELOAD
 # ============================================================
 
 async def browser_reload():
@@ -935,8 +891,6 @@ async def browser_reload():
                 timeout=30000,
             )
 
-            clear_agent_refs()
-
             return (
                 f"URL: {page.url}\n"
                 f"Title: {await page.title()}"
@@ -948,7 +902,7 @@ async def browser_reload():
 
 
 # ============================================================
-# 17. PAGE INFO
+# PAGE INFO
 # ============================================================
 
 async def browser_page_info():
@@ -971,7 +925,7 @@ async def browser_page_info():
 
 
 # ============================================================
-# 18. GET TEXT
+# GET TEXT
 # ============================================================
 
 async def browser_get_text(
@@ -992,7 +946,7 @@ async def browser_get_text(
 
             if not text:
 
-                return "❌ Текст не найден"
+                return "Текст не найден"
 
             return text[:20000]
 
@@ -1002,7 +956,7 @@ async def browser_get_text(
 
 
 # ============================================================
-# 19. GET HTML
+# GET HTML
 # ============================================================
 
 async def browser_get_html(
@@ -1029,13 +983,10 @@ async def browser_get_html(
 
 
 # ============================================================
-# 20. INSPECT PAGE WITH REFS
+# INSPECT PAGE
 # ============================================================
 
 async def browser_inspect():
-
-    global agent_refs
-    global agent_refs_url
 
     async with browser_lock:
 
@@ -1043,333 +994,116 @@ async def browser_inspect():
 
             page = await get_current_page()
 
-            data = await page.evaluate(
+            title = await page.title()
+
+            url = page.url
+
+            # ------------------------------------------------
+            # INTERACTIVE ELEMENTS
+            # ------------------------------------------------
+
+            elements = await page.locator(
                 """
-                () => {
+                button,
+                input,
+                textarea,
+                select,
+                option,
+                a,
+                [role],
+                [contenteditable="true"],
+                [onclick]
+                """
+            ).evaluate_all(
+                """
+                elements => elements.slice(0, 300).map((el, index) => {
 
-                    function clean(value) {
+                    const rect =
+                        el.getBoundingClientRect();
+
+                    const style =
+                        getComputedStyle(el);
+
+                    const text = (
+                        el.innerText ||
+                        el.textContent ||
+                        el.getAttribute("aria-label") ||
+                        el.getAttribute("title") ||
+                        el.getAttribute("placeholder") ||
+                        ""
+                    ).replace(/\\s+/g, " ").trim();
+
+                    const attrs = {};
+
+                    for (const attr of el.attributes) {
 
                         if (
-                            value === null ||
-                            value === undefined
+                            [
+                                "id",
+                                "name",
+                                "type",
+                                "role",
+                                "href",
+                                "value",
+                                "placeholder",
+                                "aria-label",
+                                "title",
+                                "data-testid",
+                                "for"
+                            ].includes(attr.name)
                         ) {
-                            return "";
-                        }
 
-                        return String(value)
-                            .replace(/\\\\s+/g, " ")
-                            .trim();
+                            attrs[attr.name] =
+                                attr.value;
+                        }
                     }
 
+                    let selector = "";
 
-                    function isVisible(el) {
+                    if (el.id) {
 
-                        if (!el) {
-                            return false;
-                        }
+                        selector =
+                            "#" +
+                            CSS.escape(el.id);
 
-                        const style =
-                            window.getComputedStyle(el);
+                    } else if (
+                        el.getAttribute(
+                            "data-testid"
+                        )
+                    ) {
 
-                        if (
-                            style.display === "none" ||
-                            style.visibility === "hidden" ||
-                            style.opacity === "0"
-                        ) {
-                            return false;
-                        }
+                        selector =
+                            `[data-testid="${CSS.escape(
+                                el.getAttribute(
+                                    "data-testid"
+                                )
+                            )}"]`;
 
-                        const rect =
-                            el.getBoundingClientRect();
-
-                        return (
-                            rect.width > 0 &&
-                            rect.height > 0
-                        );
-                    }
-
-
-                    function getRole(el) {
-
-                        const explicit =
-                            el.getAttribute("role");
-
-                        if (explicit) {
-                            return explicit;
-                        }
+                    } else {
 
                         const tag =
                             el.tagName.toLowerCase();
 
-                        if (tag === "button") {
-                            return "button";
-                        }
-
-                        if (tag === "a") {
-                            return "link";
-                        }
-
-                        if (tag === "textarea") {
-                            return "textbox";
-                        }
-
-                        if (tag === "select") {
-                            return "combobox";
-                        }
-
-                        if (el.isContentEditable) {
-                            return "textbox";
-                        }
-
-                        if (tag === "input") {
-
-                            const type = (
-                                el.getAttribute("type") ||
-                                "text"
-                            ).toLowerCase();
-
-                            if (type === "checkbox") {
-                                return "checkbox";
-                            }
-
-                            if (type === "radio") {
-                                return "radio";
-                            }
-
-                            if (
-                                type === "submit" ||
-                                type === "reset" ||
-                                type === "button"
-                            ) {
-                                return "button";
-                            }
-
-                            if (type === "search") {
-                                return "searchbox";
-                            }
-
-                            if (type === "number") {
-                                return "spinbutton";
-                            }
-
-                            return "textbox";
-                        }
-
-                        return null;
-                    }
-
-
-                    function getAccessibleName(el) {
-
-                        const aria =
-                            el.getAttribute(
-                                "aria-label"
-                            );
-
-                        if (aria) {
-                            return clean(aria);
-                        }
-
-
-                        const labelledBy =
-                            el.getAttribute(
-                                "aria-labelledby"
-                            );
-
-                        if (labelledBy) {
-
-                            const text =
-                                labelledBy
-                                    .split(/\\s+/)
-                                    .map(id => {
-
-                                        const node =
-                                            document.getElementById(
-                                                id
-                                            );
-
-                                        return node
-                                            ? clean(
-                                                node.innerText ||
-                                                node.textContent
-                                            )
-                                            : "";
-
-                                    })
-                                    .filter(Boolean)
-                                    .join(" ");
-
-                            if (text) {
-                                return text;
-                            }
-                        }
-
-
-                        if (el.id) {
-
-                            const label =
-                                document.querySelector(
-                                    `label[for="${CSS.escape(el.id)}"]`
-                                );
-
-                            if (label) {
-
-                                const text =
-                                    clean(
-                                        label.innerText ||
-                                        label.textContent
-                                    );
-
-                                if (text) {
-                                    return text;
-                                }
-                            }
-                        }
-
-
-                        const parentLabel =
-                            el.closest("label");
-
-                        if (parentLabel) {
-
-                            const text =
-                                clean(
-                                    parentLabel.innerText ||
-                                    parentLabel.textContent
-                                );
-
-                            if (text) {
-                                return text;
-                            }
-                        }
-
-
-                        const text =
-                            clean(
-                                el.innerText ||
-                                el.textContent
-                            );
-
-                        if (text) {
-                            return text;
-                        }
-
-
-                        const title =
-                            el.getAttribute("title");
-
-                        if (title) {
-                            return clean(title);
-                        }
-
-
-                        const placeholder =
-                            el.getAttribute(
-                                "placeholder"
-                            );
-
-                        if (placeholder) {
-                            return clean(placeholder);
-                        }
-
-
-                        const name =
-                            el.getAttribute("name");
-
-                        if (name) {
-                            return clean(name);
-                        }
-
-
-                        return "";
-                    }
-
-
-                    function makeSelector(el) {
-
-                        if (el.id) {
-
-                            return (
-                                "#" +
-                                CSS.escape(el.id)
-                            );
-                        }
-
-
-                        const testid =
-                            el.getAttribute(
-                                "data-testid"
-                            );
-
-                        if (testid) {
-
-                            return (
-                                `[data-testid="${CSS.escape(
-                                    testid
-                                )}"]`
-                            );
-                        }
-
-
                         const name =
                             el.getAttribute("name");
 
                         if (name) {
 
-                            return (
-                                `${el.tagName.toLowerCase()}[name="${CSS.escape(
+                            selector =
+                                `${tag}[name="${CSS.escape(
                                     name
-                                )}"]`
-                            );
-                        }
+                                )}"]`;
 
-
-                        const aria =
-                            el.getAttribute(
-                                "aria-label"
-                            );
-
-                        if (aria) {
-
-                            return (
-                                `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(
-                                    aria
-                                )}"]`
-                            );
-                        }
-
-
-                        const parts = [];
-
-                        let node = el;
-
-
-                        while (
-                            node &&
-                            node.nodeType === 1 &&
-                            node !== document.body
-                        ) {
-
-                            let part =
-                                node.tagName.toLowerCase();
-
-
-                            if (node.id) {
-
-                                part +=
-                                    "#" +
-                                    CSS.escape(node.id);
-
-                                parts.unshift(part);
-
-                                break;
-                            }
-
+                        } else {
 
                             const parent =
-                                node.parentElement;
+                                el.parentElement;
 
-                            if (parent) {
+                            if (!parent) {
+
+                                selector = tag;
+
+                            } else {
 
                                 const siblings =
                                     Array.from(
@@ -1377,470 +1111,623 @@ async def browser_inspect():
                                     ).filter(
                                         child =>
                                             child.tagName ===
-                                            node.tagName
+                                            el.tagName
                                     );
 
                                 if (
-                                    siblings.length > 1
+                                    siblings.length === 1
                                 ) {
 
-                                    const index =
-                                        siblings.indexOf(node) +
-                                        1;
+                                    selector = tag;
 
-                                    part +=
-                                        `:nth-of-type(${index})`;
+                                } else {
+
+                                    const position =
+                                        siblings.indexOf(
+                                            el
+                                        ) + 1;
+
+                                    selector =
+                                        `${tag}:nth-of-type(${position})`;
                                 }
                             }
-
-
-                            parts.unshift(part);
-
-                            node = parent;
-
-                            if (
-                                parts.length >= 5
-                            ) {
-                                break;
-                            }
                         }
-
-
-                        return parts.join(
-                            " > "
-                        );
                     }
 
+                    return {
 
-                    const selector = [
+                        index,
 
-                        "button",
+                        tag:
+                            el.tagName.toLowerCase(),
 
-                        "a",
+                        text:
+                            text.slice(0, 200),
 
-                        "input",
+                        visible:
+                            !!(
+                                rect.width ||
+                                rect.height
+                            ) &&
+                            style.visibility !==
+                                "hidden" &&
+                            style.display !==
+                                "none",
 
-                        "textarea",
+                        disabled:
+                            !!el.disabled ||
+                            el.getAttribute(
+                                "aria-disabled"
+                            ) === "true",
 
-                        "select",
+                        selector,
 
-                        "[role]",
+                        attrs,
 
-                        "[contenteditable='true']",
+                        classes:
+                            typeof el.className ===
+                            "string"
+                                ? el.className.slice(
+                                    0,
+                                    300
+                                )
+                                : ""
+                    };
 
-                        "[tabindex]:not([tabindex='-1'])"
+                })
+                """
+            )
 
-                    ].join(",");
+            # ------------------------------------------------
+            # HEADINGS
+            # ------------------------------------------------
 
+            headings = await page.locator(
+                "h1,h2,h3,h4,h5,h6"
+            ).evaluate_all(
+                """
+                elements => elements
+                    .slice(0, 100)
+                    .map(el => ({
+                        tag:
+                            el.tagName.toLowerCase(),
 
-                    const elements =
-                        Array.from(
-                            document.querySelectorAll(
-                                selector
+                        text:
+                            (
+                                el.innerText ||
+                                el.textContent ||
+                                ""
                             )
-                        );
+                            .replace(/\\s+/g, " ")
+                            .trim()
+                    }))
+                    .filter(x => x.text)
+                """
+            )
 
+            # ------------------------------------------------
+            # FORMS
+            # ------------------------------------------------
 
-                    const interactive = [];
+            forms = await page.locator(
+                "form"
+            ).evaluate_all(
+                """
+                forms => forms.slice(0, 50).map(
+                    (form, index) => ({
 
+                        index,
 
-                    for (
-                        const el of elements
-                    ) {
+                        action:
+                            form.action || "",
 
-                        if (!isVisible(el)) {
-                            continue;
-                        }
+                        method:
+                            (
+                                form.method ||
+                                "get"
+                            ).toUpperCase(),
 
+                        inputs:
+                            Array.from(
+                                form.querySelectorAll(
+                                    "input, textarea, select, button"
+                                )
+                            )
+                            .slice(0, 50)
+                            .map(el => ({
 
-                        const currentRole =
-                            getRole(el);
+                                tag:
+                                    el.tagName.toLowerCase(),
 
-                        if (!currentRole) {
-                            continue;
-                        }
+                                type:
+                                    el.getAttribute(
+                                        "type"
+                                    ) || "",
 
+                                name:
+                                    el.getAttribute(
+                                        "name"
+                                    ) || "",
+
+                                placeholder:
+                                    el.getAttribute(
+                                        "placeholder"
+                                    ) || "",
+
+                                aria:
+                                    el.getAttribute(
+                                        "aria-label"
+                                    ) || "",
+
+                                value:
+                                    typeof el.value !==
+                                    "undefined"
+                                        ? el.value
+                                        : "",
+
+                                text:
+                                    (
+                                        el.innerText ||
+                                        ""
+                                    )
+                                    .replace(
+                                        /\\s+/g,
+                                        " "
+                                    )
+                                    .trim()
+                                    .slice(
+                                        0,
+                                        100
+                                    )
+                            }))
+                    })
+                )
+                """
+            )
+
+            # ------------------------------------------------
+            # LINKS
+            # ------------------------------------------------
+
+            links = await page.locator(
+                "a[href]"
+            ).evaluate_all(
+                """
+                elements => elements
+                    .slice(0, 150)
+                    .map((el, index) => {
 
                         const rect =
                             el.getBoundingClientRect();
 
+                        const style =
+                            getComputedStyle(el);
 
-                        const item = {
+                        return {
 
-                            role:
-                                currentRole,
+                            index,
 
-                            name:
-                                getAccessibleName(
-                                    el
-                                ).slice(
-                                    0,
-                                    200
-                                ),
-
-                            selector:
-                                makeSelector(
-                                    el
-                                ),
-
-                            tag:
-                                el.tagName.toLowerCase(),
-
-                            disabled:
-                                !!el.disabled,
-
-                            x:
-                                Math.round(rect.x),
-
-                            y:
-                                Math.round(rect.y),
-
-                            width:
-                                Math.round(rect.width),
-
-                            height:
-                                Math.round(rect.height)
-                        };
-
-
-                        const type = (
-                            el.getAttribute("type") ||
-                            ""
-                        ).toLowerCase();
-
-
-                        if (
-                            "value" in el &&
-                            type !== "password"
-                        ) {
-
-                            item.value =
-                                clean(
-                                    el.value
-                                ).slice(
-                                    0,
-                                    200
-                                );
-                        }
-
-
-                        const placeholder =
-                            el.getAttribute(
-                                "placeholder"
-                            );
-
-                        if (placeholder) {
-
-                            item.placeholder =
-                                clean(
-                                    placeholder
-                                ).slice(
-                                    0,
-                                    200
-                                );
-                        }
-
-
-                        const nameAttribute =
-                            el.getAttribute(
-                                "name"
-                            );
-
-                        if (nameAttribute) {
-
-                            item.name_attribute =
-                                clean(
-                                    nameAttribute
-                                );
-                        }
-
-
-                        if (el.id) {
-                            item.id = el.id;
-                        }
-
-
-                        const href =
-                            el.getAttribute(
-                                "href"
-                            );
-
-                        if (href) {
-                            item.href = href;
-                        }
-
-
-                        if (
-                            type === "checkbox" ||
-                            type === "radio"
-                        ) {
-
-                            item.checked =
-                                !!el.checked;
-                        }
-
-
-                        if (
-                            el.tagName === "SELECT"
-                        ) {
-
-                            item.options =
-                                Array.from(
-                                    el.options
+                            text:
+                                (
+                                    el.innerText ||
+                                    el.textContent ||
+                                    el.getAttribute(
+                                        "aria-label"
+                                    ) ||
+                                    ""
                                 )
+                                .replace(
+                                    /\\s+/g,
+                                    " "
+                                )
+                                .trim()
                                 .slice(
                                     0,
-                                    30
-                                )
-                                .map(
-                                    option => ({
-                                        text:
-                                            clean(
-                                                option.text
-                                            ),
+                                    200
+                                ),
 
-                                        value:
-                                            option.value,
+                            href:
+                                el.href || "",
 
-                                        selected:
-                                            option.selected
-                                    })
-                                );
-                        }
+                            target:
+                                el.target || "",
 
+                            visible:
+                                !!(
+                                    rect.width ||
+                                    rect.height
+                                ) &&
+                                style.display !==
+                                    "none" &&
+                                style.visibility !==
+                                    "hidden"
+                        };
 
-                        const expanded =
+                    })
+                """
+            )
+
+            # ------------------------------------------------
+            # DIALOGS
+            # ------------------------------------------------
+
+            dialogs = await page.locator(
+                '[role="dialog"], dialog, [aria-modal="true"]'
+            ).evaluate_all(
+                """
+                elements => elements
+                    .slice(0, 20)
+                    .map(el => ({
+
+                        role:
                             el.getAttribute(
-                                "aria-expanded"
-                            );
+                                "role"
+                            ) || "",
 
-                        if (
-                            expanded !== null
-                        ) {
+                        text:
+                            (
+                                el.innerText ||
+                                el.textContent ||
+                                ""
+                            )
+                            .replace(
+                                /\\s+/g,
+                                " "
+                            )
+                            .trim()
+                            .slice(
+                                0,
+                                1000
+                            )
+                    }))
+                """
+            )
 
-                            item.expanded =
-                                expanded === "true";
-                        }
+            # ------------------------------------------------
+            # ACTIVE ELEMENT
+            # ------------------------------------------------
 
+            active_element = await page.evaluate(
+                """
+                () => {
 
-                        interactive.push(
-                            item
-                        );
+                    const el =
+                        document.activeElement;
+
+                    if (!el) {
+                        return null;
                     }
-
 
                     return {
 
-                        url:
-                            location.href,
+                        tag:
+                            el.tagName
+                                ? el.tagName.toLowerCase()
+                                : "",
 
-                        title:
-                            document.title,
+                        id:
+                            el.id || "",
 
-                        interactive:
-                            interactive.slice(
+                        name:
+                            el.getAttribute(
+                                "name"
+                            ) || "",
+
+                        type:
+                            el.getAttribute(
+                                "type"
+                            ) || "",
+
+                        placeholder:
+                            el.getAttribute(
+                                "placeholder"
+                            ) || "",
+
+                        aria:
+                            el.getAttribute(
+                                "aria-label"
+                            ) || "",
+
+                        value:
+                            typeof el.value !==
+                            "undefined"
+                                ? el.value
+                                : "",
+
+                        text:
+                            (
+                                el.innerText ||
+                                el.textContent ||
+                                ""
+                            )
+                            .replace(
+                                /\\s+/g,
+                                " "
+                            )
+                            .trim()
+                            .slice(
                                 0,
-                                150
-                            ),
-
-                        bodyText:
-                            clean(
-                                document.body?.innerText
-                            ).slice(
-                                0,
-                                10000
+                                200
                             )
                     };
                 }
                 """
             )
 
+            # ------------------------------------------------
+            # BUILD OUTPUT
+            # ------------------------------------------------
 
-            # ----------------------------------------------------
-            # CREATE REF MAP
-            # ----------------------------------------------------
+            result = []
 
-            agent_refs = {}
-
-            agent_refs_url = page.url
-
-
-            elements = data.get(
-                "interactive",
-                []
+            result.append(
+                "=== PAGE ==="
             )
 
+            result.append(
+                f"URL: {url}"
+            )
 
-            output = [
+            result.append(
+                f"TITLE: {title}"
+            )
 
-                "PAGE",
+            result.append("")
 
-                f"URL: {data.get('url', '')}",
+            # ------------------------------------------------
+            # HEADINGS
+            # ------------------------------------------------
 
-                f"TITLE: {data.get('title', '')}",
+            result.append(
+                "=== HEADINGS ==="
+            )
 
-                "",
+            if headings:
 
-                "INTERACTIVE ELEMENTS",
+                for item in headings:
 
-                f"COUNT: {len(elements)}",
+                    result.append(
+                        f"[{item['tag']}] "
+                        f"{item['text'][:200]}"
+                    )
 
-                ""
+            else:
+
+                result.append(
+                    "(none)"
+                )
+
+            result.append("")
+
+            # ------------------------------------------------
+            # INTERACTIVE ELEMENTS
+            # ------------------------------------------------
+
+            result.append(
+                "=== INTERACTIVE ELEMENTS ==="
+            )
+
+            visible_elements = [
+                x
+                for x in elements
+                if x.get("visible")
             ]
 
+            for item in visible_elements:
 
-            for index, element in enumerate(
-                elements,
-                start=1
-            ):
-
-                ref = f"e{index}"
-
-                selector =
-                    element.get(
-                        "selector",
-                        ""
-                    )
-
-                if not selector:
-                    continue
-
-                agent_refs[ref] = selector
-
-
-                output.append(
-                    f"[{ref}] "
-                    f"{element.get('role', '')}"
+                attrs = item.get(
+                    "attrs",
+                    {}
                 )
 
+                attr_parts = []
 
-                name = element.get(
+                for key in [
+                    "id",
                     "name",
-                    ""
-                )
+                    "type",
+                    "role",
+                    "placeholder",
+                    "aria-label",
+                    "title",
+                    "data-testid",
+                ]:
 
-                if name:
-
-                    output.append(
-                        f"    name: {name}"
+                    value = attrs.get(
+                        key
                     )
 
+                    if value:
 
-                placeholder =
-                    element.get(
-                        "placeholder"
+                        attr_parts.append(
+                            f'{key}="{str(value)[:150]}"'
+                        )
+
+                attr_text = ""
+
+                if attr_parts:
+
+                    attr_text = (
+                        " | "
+                        + " ".join(
+                            attr_parts
+                        )
                     )
 
-                if placeholder:
+                disabled = ""
 
-                    output.append(
-                        "    placeholder: "
-                        f"{placeholder}"
-                    )
-
-
-                value = element.get(
-                    "value"
-                )
-
-                if value:
-
-                    output.append(
-                        f"    value: {value}"
-                    )
-
-
-                href = element.get(
-                    "href"
-                )
-
-                if href:
-
-                    output.append(
-                        f"    href: {href}"
-                    )
-
-
-                element_id = element.get(
-                    "id"
-                )
-
-                if element_id:
-
-                    output.append(
-                        f"    id: {element_id}"
-                    )
-
-
-                if element.get(
+                if item.get(
                     "disabled"
                 ):
 
-                    output.append(
-                        "    disabled: true"
+                    disabled = (
+                        " | DISABLED"
                     )
 
-
-                if "checked" in element:
-
-                    output.append(
-                        "    checked: "
-                        f"{element['checked']}"
-                    )
-
-
-                options = element.get(
-                    "options"
+                result.append(
+                    f"[{item['index']}] "
+                    f"<{item['tag']}> "
+                    f"selector={item['selector']} "
+                    f'text="{item["text"][:200]}"'
+                    f"{attr_text}"
+                    f"{disabled}"
                 )
 
-                if options:
+            if not visible_elements:
 
-                    output.append(
-                        "    options:"
-                    )
+                result.append(
+                    "(no visible interactive elements)"
+                )
 
-                    for option in options:
+            result.append("")
 
-                        selected = (
-                            " [selected]"
-                            if option.get(
-                                "selected"
-                            )
-                            else ""
-                        )
+            # ------------------------------------------------
+            # FORMS
+            # ------------------------------------------------
 
-                        output.append(
-                            "      - "
-                            f"{option.get('text', '')}"
-                            f" = "
-                            f"{option.get('value', '')}"
-                            f"{selected}"
-                        )
-
-
-                output.append("")
-
-
-            body_text = data.get(
-                "bodyText",
-                ""
+            result.append(
+                "=== FORMS ==="
             )
 
-            if body_text:
+            if forms:
 
-                output.append(
-                    "PAGE TEXT"
+                for form in forms:
+
+                    result.append(
+                        f"FORM #{form['index']} "
+                        f"method={form['method']} "
+                        f"action={form['action']}"
+                    )
+
+                    for field in form[
+                        "inputs"
+                    ]:
+
+                        result.append(
+                            f"  - "
+                            f"<{field['tag']}> "
+                            f"type={field['type']} "
+                            f"name={field['name']} "
+                            f"placeholder="
+                            f"{field['placeholder']} "
+                            f"aria={field['aria']} "
+                            f"text={field['text'][:100]}"
+                        )
+
+            else:
+
+                result.append(
+                    "(no forms)"
                 )
 
-                output.append(
-                    body_text
+            result.append("")
+
+            # ------------------------------------------------
+            # LINKS
+            # ------------------------------------------------
+
+            result.append(
+                "=== LINKS ==="
+            )
+
+            visible_links = [
+                link
+                for link in links
+                if link.get("visible")
+            ]
+
+            for link in visible_links:
+
+                result.append(
+                    f"[{link['index']}] "
+                    f'text="{link["text"][:150]}" '
+                    f'href="{link["href"][:500]}"'
                 )
 
+            if not visible_links:
+
+                result.append(
+                    "(no visible links)"
+                )
+
+            result.append("")
+
+            # ------------------------------------------------
+            # DIALOGS
+            # ------------------------------------------------
+
+            result.append(
+                "=== DIALOGS ==="
+            )
+
+            if dialogs:
+
+                for dialog in dialogs:
+
+                    result.append(
+                        f"role={dialog['role']} "
+                        f'text="{dialog["text"][:1000]}"'
+                    )
+
+            else:
+
+                result.append(
+                    "(no dialogs)"
+                )
+
+            result.append("")
+
+            # ------------------------------------------------
+            # ACTIVE ELEMENT
+            # ------------------------------------------------
+
+            result.append(
+                "=== ACTIVE ELEMENT ==="
+            )
+
+            if active_element:
+
+                result.append(
+                    json.dumps(
+                        active_element,
+                        ensure_ascii=False,
+                    )
+                )
+
+            else:
+
+                result.append(
+                    "(none)"
+                )
+
+            result.append("")
+
+            # ------------------------------------------------
+            # AGENT HINT
+            # ------------------------------------------------
+
+            result.append(
+                "=== AGENT HINT ==="
+            )
+
+            result.append(
+                "Используй selector=... "
+                "для click/fill/press."
+            )
+
+            result.append(
+                "Для элементов с понятным текстом "
+                "можно использовать click_text."
+            )
+
+            result.append(
+                "Для неизвестной структуры сначала "
+                "используй inspect_page."
+            )
 
             return "\n".join(
-                output
-            )[:30000]
-
+                result
+            )[:50000]
 
         return await browser_operation(
             operation
@@ -1848,7 +1735,7 @@ async def browser_inspect():
 
 
 # ============================================================
-# 21. GET LINKS
+# LINKS
 # ============================================================
 
 async def browser_get_links():
@@ -1867,7 +1754,9 @@ async def browser_get_links():
                     el => ({
                         text:
                             (el.innerText || '').trim(),
-                        href: el.href
+
+                        href:
+                            el.href
                     })
                 ).filter(
                     x => x.href
@@ -1877,7 +1766,7 @@ async def browser_get_links():
 
             if not links:
 
-                return "❌ Ссылок не найдено"
+                return "Ссылок не найдено"
 
             result = []
 
@@ -1898,42 +1787,7 @@ async def browser_get_links():
 
 
 # ============================================================
-# 22. REF RESOLUTION
-# ============================================================
-
-async def get_ref_selector(
-    ref: str
-):
-
-    page = await get_current_page()
-
-    if agent_refs_url != page.url:
-
-        clear_agent_refs()
-
-        raise RuntimeError(
-            "Refs устарели: страница изменилась. "
-            "Сначала вызови inspect_page."
-        )
-
-
-    selector = agent_refs.get(
-        ref
-    )
-
-    if not selector:
-
-        raise ValueError(
-            f"Ref '{ref}' не найден. "
-            "Сначала вызови inspect_page."
-        )
-
-
-    return page, selector
-
-
-# ============================================================
-# 23. CLICK
+# CLICK
 # ============================================================
 
 async def browser_click(
@@ -1946,9 +1800,11 @@ async def browser_click(
 
             page = await get_current_page()
 
-            await page.locator(
+            locator = page.locator(
                 selector
-            ).first.click(
+            ).first
+
+            await locator.click(
                 timeout=15000
             )
 
@@ -1956,10 +1812,8 @@ async def browser_click(
                 500
             )
 
-            clear_agent_refs()
-
             return (
-                "✅ Клик выполнен\n"
+                "Клик выполнен\n"
                 f"Selector: {selector}\n"
                 f"URL: {page.url}"
             )
@@ -1970,48 +1824,7 @@ async def browser_click(
 
 
 # ============================================================
-# 24. CLICK REF
-# ============================================================
-
-async def browser_click_ref(
-    ref: str
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            await page.locator(
-                selector
-            ).first.click(
-                timeout=15000
-            )
-
-            await page.wait_for_timeout(
-                500
-            )
-
-            clear_agent_refs()
-
-            return (
-                "✅ Клик выполнен\n"
-                f"Ref: {ref}\n"
-                f"URL: {page.url}"
-            )
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 25. CLICK TEXT
+# CLICK TEXT
 # ============================================================
 
 async def browser_click_text(
@@ -2037,10 +1850,8 @@ async def browser_click_text(
                 500
             )
 
-            clear_agent_refs()
-
             return (
-                "✅ Клик по тексту выполнен\n"
+                "Клик по тексту выполнен\n"
                 f"Text: {text}\n"
                 f"URL: {page.url}"
             )
@@ -2051,7 +1862,7 @@ async def browser_click_text(
 
 
 # ============================================================
-# 26. FILL
+# FILL
 # ============================================================
 
 async def browser_fill(
@@ -2073,7 +1884,7 @@ async def browser_fill(
             )
 
             return (
-                "✅ Поле заполнено\n"
+                "Поле заполнено\n"
                 f"Selector: {selector}"
             )
 
@@ -2083,43 +1894,7 @@ async def browser_fill(
 
 
 # ============================================================
-# 27. FILL REF
-# ============================================================
-
-async def browser_fill_ref(
-    ref: str,
-    text: str,
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            await page.locator(
-                selector
-            ).first.fill(
-                text,
-                timeout=15000
-            )
-
-            return (
-                "✅ Поле заполнено\n"
-                f"Ref: {ref}"
-            )
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 28. FILL PLACEHOLDER
+# FILL PLACEHOLDER
 # ============================================================
 
 async def browser_fill_placeholder(
@@ -2141,7 +1916,7 @@ async def browser_fill_placeholder(
             )
 
             return (
-                "✅ Поле заполнено\n"
+                "Поле заполнено\n"
                 f"Placeholder: {placeholder}"
             )
 
@@ -2151,7 +1926,7 @@ async def browser_fill_placeholder(
 
 
 # ============================================================
-# 29. TYPE
+# TYPE
 # ============================================================
 
 async def browser_type(
@@ -2172,7 +1947,7 @@ async def browser_type(
                 timeout=15000
             )
 
-            return "✅ Текст введён"
+            return "Текст введён"
 
         return await browser_operation(
             operation
@@ -2180,7 +1955,7 @@ async def browser_type(
 
 
 # ============================================================
-# 30. PRESS
+# PRESS
 # ============================================================
 
 async def browser_press(
@@ -2201,10 +1976,8 @@ async def browser_press(
                 timeout=15000
             )
 
-            clear_agent_refs()
-
             return (
-                f"✅ Нажата клавиша: {key}"
+                f"Нажата клавиша: {key}"
             )
 
         return await browser_operation(
@@ -2213,45 +1986,7 @@ async def browser_press(
 
 
 # ============================================================
-# 31. PRESS REF
-# ============================================================
-
-async def browser_press_ref(
-    ref: str,
-    key: str,
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            await page.locator(
-                selector
-            ).first.press(
-                key,
-                timeout=15000
-            )
-
-            clear_agent_refs()
-
-            return (
-                f"✅ Нажата клавиша: {key}\n"
-                f"Ref: {ref}"
-            )
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 32. KEY
+# KEY
 # ============================================================
 
 async def browser_key(
@@ -2268,10 +2003,8 @@ async def browser_key(
                 key
             )
 
-            clear_agent_refs()
-
             return (
-                f"✅ Клавиша: {key}"
+                f"Клавиша: {key}"
             )
 
         return await browser_operation(
@@ -2280,7 +2013,7 @@ async def browser_key(
 
 
 # ============================================================
-# 33. WAIT
+# WAIT
 # ============================================================
 
 async def browser_wait(
@@ -2306,8 +2039,7 @@ async def browser_wait(
             )
 
             return (
-                f"✅ Ожидание "
-                f"{delay} мс"
+                f"Ожидание {delay} мс"
             )
 
         return await browser_operation(
@@ -2316,7 +2048,7 @@ async def browser_wait(
 
 
 # ============================================================
-# 34. WAIT SELECTOR
+# WAIT SELECTOR
 # ============================================================
 
 async def browser_wait_selector(
@@ -2330,6 +2062,14 @@ async def browser_wait_selector(
 
             page = await get_current_page()
 
+            timeout = max(
+                1000,
+                min(
+                    int(timeout),
+                    60000,
+                ),
+            )
+
             await page.locator(
                 selector
             ).wait_for(
@@ -2338,8 +2078,7 @@ async def browser_wait_selector(
             )
 
             return (
-                f"✅ Элемент найден: "
-                f"{selector}"
+                f"Элемент найден: {selector}"
             )
 
         return await browser_operation(
@@ -2348,7 +2087,7 @@ async def browser_wait_selector(
 
 
 # ============================================================
-# 35. SELECT
+# SELECT
 # ============================================================
 
 async def browser_select(
@@ -2370,7 +2109,7 @@ async def browser_select(
             )
 
             return (
-                f"✅ Выбрано: {result}"
+                f"Выбрано: {result}"
             )
 
         return await browser_operation(
@@ -2379,44 +2118,7 @@ async def browser_select(
 
 
 # ============================================================
-# 36. SELECT REF
-# ============================================================
-
-async def browser_select_ref(
-    ref: str,
-    value: str,
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            result = await page.locator(
-                selector
-            ).select_option(
-                value=value,
-                timeout=15000,
-            )
-
-            return (
-                f"✅ Выбрано\n"
-                f"Ref: {ref}\n"
-                f"Value: {result}"
-            )
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 37. CHECK
+# CHECK
 # ============================================================
 
 async def browser_check(
@@ -2435,7 +2137,7 @@ async def browser_check(
                 timeout=15000
             )
 
-            return "✅ Checkbox отмечен"
+            return "Checkbox отмечен"
 
         return await browser_operation(
             operation
@@ -2443,41 +2145,7 @@ async def browser_check(
 
 
 # ============================================================
-# 38. CHECK REF
-# ============================================================
-
-async def browser_check_ref(
-    ref: str
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            await page.locator(
-                selector
-            ).check(
-                timeout=15000
-            )
-
-            return (
-                f"✅ Checkbox отмечен\n"
-                f"Ref: {ref}"
-            )
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 39. UNCHECK
+# UNCHECK
 # ============================================================
 
 async def browser_uncheck(
@@ -2496,7 +2164,7 @@ async def browser_uncheck(
                 timeout=15000
             )
 
-            return "✅ Checkbox снят"
+            return "Checkbox снят"
 
         return await browser_operation(
             operation
@@ -2504,41 +2172,7 @@ async def browser_uncheck(
 
 
 # ============================================================
-# 40. UNCHECK REF
-# ============================================================
-
-async def browser_uncheck_ref(
-    ref: str
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            await page.locator(
-                selector
-            ).uncheck(
-                timeout=15000
-            )
-
-            return (
-                f"✅ Checkbox снят\n"
-                f"Ref: {ref}"
-            )
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 41. HOVER
+# HOVER
 # ============================================================
 
 async def browser_hover(
@@ -2557,7 +2191,7 @@ async def browser_hover(
                 timeout=15000
             )
 
-            return "✅ Наведение выполнено"
+            return "Наведение выполнено"
 
         return await browser_operation(
             operation
@@ -2565,7 +2199,7 @@ async def browser_hover(
 
 
 # ============================================================
-# 42. ATTRIBUTE
+# ATTRIBUTE
 # ============================================================
 
 async def browser_attribute(
@@ -2593,39 +2227,7 @@ async def browser_attribute(
 
 
 # ============================================================
-# 43. ATTRIBUTE REF
-# ============================================================
-
-async def browser_attribute_ref(
-    ref: str,
-    attribute: str,
-):
-
-    async with browser_lock:
-
-        async def operation():
-
-            page, selector = (
-                await get_ref_selector(
-                    ref
-                )
-            )
-
-            value = await page.locator(
-                selector
-            ).first.get_attribute(
-                attribute
-            )
-
-            return str(value)
-
-        return await browser_operation(
-            operation
-        )
-
-
-# ============================================================
-# 44. COUNT
+# COUNT
 # ============================================================
 
 async def browser_count(
@@ -2652,7 +2254,7 @@ async def browser_count(
 
 
 # ============================================================
-# 45. JAVASCRIPT
+# JAVASCRIPT
 # ============================================================
 
 async def browser_js(
@@ -2669,7 +2271,9 @@ async def browser_js(
                 expression
             )
 
-            return str(result)[:30000]
+            return str(
+                result
+            )[:30000]
 
         return await browser_operation(
             operation
@@ -2677,7 +2281,7 @@ async def browser_js(
 
 
 # ============================================================
-# 46. SCREENSHOT
+# SCREENSHOT
 # ============================================================
 
 async def browser_screenshot():
@@ -2711,7 +2315,7 @@ async def browser_screenshot():
 
 
 # ============================================================
-# 47. CONTENT
+# CONTENT
 # ============================================================
 
 async def browser_content():
@@ -2732,7 +2336,7 @@ async def browser_content():
 
 
 # ============================================================
-# 48. DSPY ASYNC BRIDGE
+# DSPY ASYNC BRIDGE
 # ============================================================
 
 def run_async_from_dspy(
@@ -2777,97 +2381,98 @@ def run_async_from_dspy(
 
 
 # ============================================================
-# 49. DSPY TOOLS
+# DSPY TOOLS
 # ============================================================
 
 def create_browser_tools():
 
     def tool_goto(url: str):
+
         return run_async_from_dspy(
             browser_goto(url)
         )
 
-
     def tool_back():
+
         return run_async_from_dspy(
             browser_back()
         )
 
-
     def tool_forward():
+
         return run_async_from_dspy(
             browser_forward()
         )
 
-
     def tool_reload():
+
         return run_async_from_dspy(
             browser_reload()
         )
 
-
     def tool_page_info():
+
         return run_async_from_dspy(
             browser_page_info()
         )
 
-
     def tool_inspect_page():
+
         return run_async_from_dspy(
             browser_inspect()
         )
 
-
     def tool_get_text(
         selector: str = "body"
     ):
-        return run_async_from_dspy(
-            browser_get_text(selector)
-        )
 
+        return run_async_from_dspy(
+            browser_get_text(
+                selector
+            )
+        )
 
     def tool_get_html(
         selector: str = "body"
     ):
+
         return run_async_from_dspy(
-            browser_get_html(selector)
+            browser_get_html(
+                selector
+            )
         )
 
-
     def tool_get_links():
+
         return run_async_from_dspy(
             browser_get_links()
         )
 
-
     def tool_click(
         selector: str
     ):
+
         return run_async_from_dspy(
-            browser_click(selector)
+            browser_click(
+                selector
+            )
         )
-
-
-    def tool_click_ref(
-        ref: str
-    ):
-        return run_async_from_dspy(
-            browser_click_ref(ref)
-        )
-
 
     def tool_click_text(
         text: str
     ):
-        return run_async_from_dspy(
-            browser_click_text(text)
-        )
 
+        return run_async_from_dspy(
+            browser_click_text(
+                text
+            )
+        )
 
     def tool_fill(
         selector: str,
         text: str,
     ):
+
         return run_async_from_dspy(
             browser_fill(
                 selector,
@@ -2875,23 +2480,11 @@ def create_browser_tools():
             )
         )
 
-
-    def tool_fill_ref(
-        ref: str,
-        text: str,
-    ):
-        return run_async_from_dspy(
-            browser_fill_ref(
-                ref,
-                text,
-            )
-        )
-
-
     def tool_fill_placeholder(
         placeholder: str,
         text: str,
     ):
+
         return run_async_from_dspy(
             browser_fill_placeholder(
                 placeholder,
@@ -2899,11 +2492,11 @@ def create_browser_tools():
             )
         )
 
-
     def tool_type(
         selector: str,
         text: str,
     ):
+
         return run_async_from_dspy(
             browser_type(
                 selector,
@@ -2911,11 +2504,11 @@ def create_browser_tools():
             )
         )
 
-
     def tool_press(
         selector: str,
         key: str,
     ):
+
         return run_async_from_dspy(
             browser_press(
                 selector,
@@ -2923,39 +2516,31 @@ def create_browser_tools():
             )
         )
 
-
-    def tool_press_ref(
-        ref: str,
-        key: str,
-    ):
-        return run_async_from_dspy(
-            browser_press_ref(
-                ref,
-                key,
-            )
-        )
-
-
     def tool_key(
         key: str
     ):
-        return run_async_from_dspy(
-            browser_key(key)
-        )
 
+        return run_async_from_dspy(
+            browser_key(
+                key
+            )
+        )
 
     def tool_wait(
         milliseconds: int = 1000
     ):
-        return run_async_from_dspy(
-            browser_wait(milliseconds)
-        )
 
+        return run_async_from_dspy(
+            browser_wait(
+                milliseconds
+            )
+        )
 
     def tool_wait_selector(
         selector: str,
         timeout: int = 10000,
     ):
+
         return run_async_from_dspy(
             browser_wait_selector(
                 selector,
@@ -2963,11 +2548,11 @@ def create_browser_tools():
             )
         )
 
-
     def tool_select(
         selector: str,
         value: str,
     ):
+
         return run_async_from_dspy(
             browser_select(
                 selector,
@@ -2975,63 +2560,41 @@ def create_browser_tools():
             )
         )
 
-
-    def tool_select_ref(
-        ref: str,
-        value: str,
-    ):
-        return run_async_from_dspy(
-            browser_select_ref(
-                ref,
-                value,
-            )
-        )
-
-
     def tool_check(
         selector: str
     ):
+
         return run_async_from_dspy(
-            browser_check(selector)
+            browser_check(
+                selector
+            )
         )
-
-
-    def tool_check_ref(
-        ref: str
-    ):
-        return run_async_from_dspy(
-            browser_check_ref(ref)
-        )
-
 
     def tool_uncheck(
         selector: str
     ):
+
         return run_async_from_dspy(
-            browser_uncheck(selector)
+            browser_uncheck(
+                selector
+            )
         )
-
-
-    def tool_uncheck_ref(
-        ref: str
-    ):
-        return run_async_from_dspy(
-            browser_uncheck_ref(ref)
-        )
-
 
     def tool_hover(
         selector: str
     ):
-        return run_async_from_dspy(
-            browser_hover(selector)
-        )
 
+        return run_async_from_dspy(
+            browser_hover(
+                selector
+            )
+        )
 
     def tool_attribute(
         selector: str,
         attribute: str,
     ):
+
         return run_async_from_dspy(
             browser_attribute(
                 selector,
@@ -3039,46 +2602,37 @@ def create_browser_tools():
             )
         )
 
-
-    def tool_attribute_ref(
-        ref: str,
-        attribute: str,
-    ):
-        return run_async_from_dspy(
-            browser_attribute_ref(
-                ref,
-                attribute,
-            )
-        )
-
-
     def tool_count(
         selector: str
     ):
-        return run_async_from_dspy(
-            browser_count(selector)
-        )
 
+        return run_async_from_dspy(
+            browser_count(
+                selector
+            )
+        )
 
     def tool_javascript(
         expression: str
     ):
+
         return run_async_from_dspy(
-            browser_js(expression)
+            browser_js(
+                expression
+            )
         )
 
-
     def tool_screenshot():
+
         return run_async_from_dspy(
             browser_screenshot()
         )
 
-
     def tool_content():
+
         return run_async_from_dspy(
             browser_content()
         )
-
 
     return [
 
@@ -3102,21 +2656,15 @@ def create_browser_tools():
 
         Tool(tool_click),
 
-        Tool(tool_click_ref),
-
         Tool(tool_click_text),
 
         Tool(tool_fill),
-
-        Tool(tool_fill_ref),
 
         Tool(tool_fill_placeholder),
 
         Tool(tool_type),
 
         Tool(tool_press),
-
-        Tool(tool_press_ref),
 
         Tool(tool_key),
 
@@ -3126,21 +2674,13 @@ def create_browser_tools():
 
         Tool(tool_select),
 
-        Tool(tool_select_ref),
-
         Tool(tool_check),
 
-        Tool(tool_check_ref),
-
         Tool(tool_uncheck),
-
-        Tool(tool_uncheck_ref),
 
         Tool(tool_hover),
 
         Tool(tool_attribute),
-
-        Tool(tool_attribute_ref),
 
         Tool(tool_count),
 
@@ -3154,7 +2694,7 @@ def create_browser_tools():
 
 
 # ============================================================
-# 50. AGNES LM
+# AGNES LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -3195,7 +2735,6 @@ class AgnesLM(dspy.LM):
 
         self.provider = "agnes-ai"
 
-
     def forward(
         self,
         prompt=None,
@@ -3225,17 +2764,14 @@ class AgnesLM(dspy.LM):
         )
 
         headers = {
-
             "Authorization":
                 f"Bearer {self.api_key}",
 
             "Content-Type":
                 "application/json",
-
         }
 
         payload = {
-
             "model":
                 self.model,
 
@@ -3253,23 +2789,26 @@ class AgnesLM(dspy.LM):
                     "max_tokens",
                     self.max_tokens,
                 ),
-
         }
 
-        if params.get("tools"):
+        if params.get(
+            "tools"
+        ):
 
             payload["tools"] = (
                 params["tools"]
             )
 
-        if params.get("tool_choice"):
+        if params.get(
+            "tool_choice"
+        ):
 
             payload["tool_choice"] = (
                 params["tool_choice"]
             )
 
         logger.info(
-            "🧠 → Agnes API"
+            "Agnes API request"
         )
 
         try:
@@ -3298,7 +2837,7 @@ class AgnesLM(dspy.LM):
             body = e.response.text[:2000]
 
             logger.error(
-                "❌ Agnes HTTP %s: %s",
+                "Agnes HTTP %s: %s",
                 e.response.status_code,
                 body,
             )
@@ -3312,7 +2851,7 @@ class AgnesLM(dspy.LM):
         except Exception as e:
 
             logger.exception(
-                "❌ Agnes API"
+                "Agnes API error"
             )
 
             raise RuntimeError(
@@ -3345,11 +2884,10 @@ class AgnesLM(dspy.LM):
         )
 
         logger.info(
-            "🧠 ← Agnes API"
+            "Agnes API response"
         )
 
         return [content]
-
 
     def __call__(
         self,
@@ -3366,7 +2904,7 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# 51. DSPY SIGNATURE
+# DSPY SIGNATURE
 # ============================================================
 
 class BrowserTask(Signature):
@@ -3374,73 +2912,29 @@ class BrowserTask(Signature):
     """
     Ты автономный браузерный агент.
 
-    Работай непосредственно через Camoufox.
-
-    ОСНОВНОЕ ПРАВИЛО:
-
-    После открытия или изменения страницы сначала
-    используй inspect_page.
-
-    inspect_page возвращает интерактивные элементы
-    с refs:
-
-        [e1]
-        [e2]
-        [e3]
-
-    Используй refs вместо сложных CSS-селекторов,
-    когда это возможно.
-
-    Доступные ref tools:
-
-        click_ref(ref)
-        fill_ref(ref, text)
-        press_ref(ref, key)
-        select_ref(ref, value)
-        check_ref(ref)
-        uncheck_ref(ref)
-        attribute_ref(ref, attribute)
+    Выполняй задачи пользователя непосредственно
+    через Camoufox.
 
     Правила:
 
     1. Для открытия сайта используй tool_goto.
-
-    2. После goto/reload/click/navigation снова
-       используй inspect_page.
-
-    3. Если структура неизвестна — inspect_page.
-
-    4. Для кнопок предпочитай click_ref.
-
-    5. Для полей предпочитай fill_ref.
-
-    6. Для select используй select_ref.
-
-    7. Для checkbox используй check_ref/uncheck_ref.
-
-    8. Для клавиш используй press_ref или key.
-
-    9. Не придумывай refs.
-       Используй только refs, которые вернул inspect_page.
-
-    10. Если получил ошибку "Refs устарели",
-        снова вызови inspect_page.
-
-    11. Не утверждай выполнение действия,
-        пока соответствующий tool не подтвердил его.
-
-    12. При ошибке меняй стратегию.
-
-    13. Можно использовать несколько tools.
-
-    14. Для динамических сайтов используй wait.
-
-    15. Сложные задачи исследуй самостоятельно.
-
-    16. Не выводи пользователю внутренний процесс
-        рассуждений и список tool calls.
-
-    17. В конце дай только итоговый ответ.
+    2. Если структура неизвестна — inspect_page.
+    3. Для чтения — get_text.
+    4. Для поиска элементов — inspect_page.
+    5. Для кнопок — click/click_text.
+    6. Для полей — fill/fill_placeholder.
+    7. Для клавиатуры — press/key.
+    8. Не утверждай выполнение действия,
+       пока tool не подтвердил его.
+    9. При ошибке меняй стратегию.
+    10. Можно использовать несколько tools.
+    11. Для динамических сайтов используй wait.
+    12. Сложные задачи исследуй самостоятельно.
+    13. После navigation снова используй inspect_page,
+        если DOM изменился.
+    14. Используй реальные selector из inspect_page,
+        а не выдумывай selector.
+    15. В конце дай только итоговый ответ.
     """
 
     question = InputField(
@@ -3453,7 +2947,7 @@ class BrowserTask(Signature):
 
 
 # ============================================================
-# 52. INIT DSPY
+# INIT DSPY
 # ============================================================
 
 def init_dspy():
@@ -3463,7 +2957,7 @@ def init_dspy():
     if not AGNES_API_KEY:
 
         logger.warning(
-            "⚠️ AGNES_API_KEY не задан"
+            "AGNES_API_KEY не задан"
         )
 
         return False
@@ -3495,13 +2989,13 @@ def init_dspy():
                 )
 
                 logger.info(
-                    "✅ Используется ReActV2"
+                    "Используется ReActV2"
                 )
 
             except Exception as e:
 
                 logger.warning(
-                    "⚠️ ReActV2 error: %s",
+                    "ReActV2 error: %s",
                     e,
                 )
 
@@ -3514,7 +3008,7 @@ def init_dspy():
                 )
 
                 logger.info(
-                    "↩️ Используется обычный ReAct"
+                    "Используется обычный ReAct"
                 )
 
         else:
@@ -3528,12 +3022,12 @@ def init_dspy():
             )
 
             logger.info(
-                "✅ Используется обычный ReAct"
+                "Используется обычный ReAct"
             )
 
         logger.info(
-            f"🧠 DSPy создан. "
-            f"Tools: {len(tools)}"
+            "DSPy создан. Tools: %s",
+            len(tools),
         )
 
         return True
@@ -3541,7 +3035,7 @@ def init_dspy():
     except Exception:
 
         logger.exception(
-            "❌ DSPy init error"
+            "DSPy init error"
         )
 
         dspy_agent_instance = None
@@ -3550,7 +3044,7 @@ def init_dspy():
 
 
 # ============================================================
-# 53. RUN AGENT
+# RUN AGENT
 # ============================================================
 
 def run_agent(
@@ -3560,7 +3054,7 @@ def run_agent(
     if not dspy_agent_instance:
 
         return (
-            "❌ DSPy агент не инициализирован"
+            "DSPy агент не инициализирован"
         )
 
     with agent_lock:
@@ -3568,7 +3062,8 @@ def run_agent(
         try:
 
             logger.info(
-                f"🧠 DSPy task: {question}"
+                "DSPy task: %s",
+                question,
             )
 
             result = (
@@ -3608,7 +3103,7 @@ def run_agent(
             if not answer:
 
                 return (
-                    "❌ Пустой ответ DSPy"
+                    "Пустой ответ DSPy"
                 )
 
             return answer
@@ -3616,17 +3111,17 @@ def run_agent(
         except Exception as e:
 
             logger.exception(
-                "❌ DSPy error"
+                "DSPy error"
             )
 
             return (
-                f"❌ Ошибка агента: "
+                f"Ошибка агента: "
                 f"{type(e).__name__}: {e}"
             )
 
 
 # ============================================================
-# 54. START
+# /START
 # ============================================================
 
 async def start(
@@ -3636,9 +3131,9 @@ async def start(
 
     await update.message.reply_text(
 
-        "👋 Привет!\n\n"
+        "Привет!\n\n"
 
-        "🦊 Camoufox + DSPy Browser Agent\n\n"
+        "Camoufox + DSPy Browser Agent\n\n"
 
         "Команды:\n"
 
@@ -3658,7 +3153,7 @@ async def start(
 
 
 # ============================================================
-# 55. CHECK
+# /CHECK
 # ============================================================
 
 async def check(
@@ -3669,7 +3164,7 @@ async def check(
     if not context.args:
 
         await update.message.reply_text(
-            "❌ Укажи URL:\n"
+            "Укажи URL:\n"
             "/check https://example.com"
         )
 
@@ -3678,13 +3173,13 @@ async def check(
     url = context.args[0]
 
     msg = await update.message.reply_text(
-        "⏳ Открываю..."
+        "Открываю..."
     )
 
     if not browser_ready:
 
         await msg.edit_text(
-            "❌ Camoufox не запущен"
+            "Camoufox не запущен"
         )
 
         return
@@ -3705,17 +3200,17 @@ async def check(
     except Exception as e:
 
         logger.exception(
-            "❌ /check"
+            "/check"
         )
 
         await msg.edit_text(
-            f"❌ Ошибка:\n"
+            f"Ошибка:\n"
             f"{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 56. SCREENSHOT
+# /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -3724,7 +3219,7 @@ async def screenshot(
 ):
 
     msg = await update.message.reply_text(
-        "📸 Делаю скриншот..."
+        "Делаю скриншот..."
     )
 
     try:
@@ -3738,7 +3233,7 @@ async def screenshot(
 
             await update.message.reply_photo(
                 photo=photo,
-                caption="📸 Текущая страница",
+                caption="Текущая страница",
             )
 
         await msg.delete()
@@ -3746,17 +3241,17 @@ async def screenshot(
     except Exception as e:
 
         logger.exception(
-            "❌ /screenshot"
+            "/screenshot"
         )
 
         await msg.edit_text(
-            f"❌ Ошибка:\n"
+            f"Ошибка:\n"
             f"{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 57. STATUS
+# /STATUS
 # ============================================================
 
 async def status(
@@ -3779,9 +3274,7 @@ async def status(
             title = await page.title()
 
         except Exception:
-
             pass
-
 
     status_text = (
 
@@ -3811,7 +3304,7 @@ async def status(
 
 
 # ============================================================
-# 58. COOKIES COMMAND
+# /COOKIES
 # ============================================================
 
 async def cookies_command(
@@ -3822,7 +3315,7 @@ async def cookies_command(
     if not browser_ready:
 
         await update.message.reply_text(
-            "❌ Camoufox не запущен"
+            "Camoufox не запущен"
         )
 
         return
@@ -3837,17 +3330,17 @@ async def cookies_command(
 
     await update.message.reply_text(
 
-        "🍪 Жду JSON-файл с cookies.\n\n"
+        "Жду JSON-файл с cookies.\n\n"
 
         "Отправь файл следующим сообщением.\n\n"
 
-        "❌ Для отмены: /cancel"
+        "Для отмены: /cancel"
 
     )
 
 
 # ============================================================
-# 59. CANCEL
+# /CANCEL
 # ============================================================
 
 async def cancel_cookies(
@@ -3866,7 +3359,7 @@ async def cancel_cookies(
         )
 
         await update.message.reply_text(
-            "❌ Загрузка cookies отменена."
+            "Загрузка cookies отменена."
         )
 
     else:
@@ -3877,7 +3370,7 @@ async def cancel_cookies(
 
 
 # ============================================================
-# 60. COOKIE FILE
+# COOKIE FILE
 # ============================================================
 
 async def cookies_file(
@@ -3911,7 +3404,7 @@ async def cookies_file(
     ):
 
         await update.message.reply_text(
-            "❌ Нужен именно JSON-файл."
+            "Нужен именно JSON-файл."
         )
 
         return
@@ -3921,7 +3414,7 @@ async def cookies_file(
     )
 
     msg = await update.message.reply_text(
-        "⏳ Загружаю cookies..."
+        "Загружаю cookies..."
     )
 
     temp_path = (
@@ -3956,16 +3449,22 @@ async def cookies_file(
             )
         )
 
-        loaded = result["loaded"]
+        loaded = result[
+            "loaded"
+        ]
 
-        total = result["total"]
+        total = result[
+            "total"
+        ]
 
-        errors = result["errors"]
+        errors = result[
+            "errors"
+        ]
 
         if loaded == 0:
 
             response = (
-                "❌ Не удалось загрузить "
+                "Не удалось загрузить "
                 "ни одной cookie.\n\n"
                 + "\n".join(
                     f"• {e}"
@@ -3979,9 +3478,9 @@ async def cookies_file(
 
                 "🍪 *Cookies обработаны!*\n\n"
 
-                f"✅ Загружено: `{loaded}`\n"
+                f"Загружено: `{loaded}`\n"
 
-                f"📦 Всего в файле: `{total}`"
+                f"Всего в файле: `{total}`"
 
             )
 
@@ -4012,18 +3511,18 @@ async def cookies_file(
     except json.JSONDecodeError:
 
         await msg.edit_text(
-            "❌ Файл не является "
+            "Файл не является "
             "корректным JSON."
         )
 
     except Exception as e:
 
         logger.exception(
-            "❌ Ошибка загрузки cookies"
+            "Ошибка загрузки cookies"
         )
 
         await msg.edit_text(
-            "❌ Ошибка загрузки cookies:\n\n"
+            "Ошибка загрузки cookies:\n\n"
             f"{str(e)[:2000]}"
         )
 
@@ -4045,7 +3544,7 @@ async def cookies_file(
 
 
 # ============================================================
-# 61. DSPY COMMAND
+# /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -4073,34 +3572,29 @@ async def dspy_command(
 
         return
 
-
     if not dspy_agent_instance:
 
         await update.message.reply_text(
-            "❌ DSPy не инициализирован"
+            "DSPy не инициализирован"
         )
 
         return
-
 
     if not browser_ready:
 
         await update.message.reply_text(
-            "❌ Camoufox не запущен"
+            "Camoufox не запущен"
         )
 
         return
-
 
     query = " ".join(
         context.args
     )
 
-
     msg = await update.message.reply_text(
         "🧠 DSPy управляет Camoufox..."
     )
-
 
     try:
 
@@ -4114,7 +3608,6 @@ async def dspy_command(
             query,
         )
 
-
         if len(answer) > 4000:
 
             answer = (
@@ -4122,14 +3615,12 @@ async def dspy_command(
                 + "..."
             )
 
-
         safe_answer = (
             escape_markdown(
                 answer,
                 version=2,
             )
         )
-
 
         await msg.edit_text(
 
@@ -4143,17 +3634,17 @@ async def dspy_command(
     except Exception as e:
 
         logger.exception(
-            "❌ /dspy"
+            "/dspy"
         )
 
         await msg.edit_text(
-            f"❌ Ошибка:\n"
+            f"Ошибка:\n"
             f"{str(e)[:1000]}"
         )
 
 
 # ============================================================
-# 62. TELEGRAM ERROR HANDLER
+# TELEGRAM ERROR HANDLER
 # ============================================================
 
 async def telegram_error_handler(
@@ -4162,13 +3653,13 @@ async def telegram_error_handler(
 ):
 
     logger.error(
-        "❌ Telegram error",
+        "Telegram error",
         exc_info=context.error,
     )
 
 
 # ============================================================
-# 63. MAIN
+# MAIN
 # ============================================================
 
 async def main():
@@ -4180,14 +3671,12 @@ async def main():
     )
 
     logger.info(
-        "🚀 Инициализация..."
+        "Инициализация..."
     )
-
 
     browser_ok = await init_browser()
 
     dspy_ok = init_dspy()
-
 
     app = (
         Application
@@ -4196,11 +3685,9 @@ async def main():
         .build()
     )
 
-
     app.add_error_handler(
         telegram_error_handler
     )
-
 
     # --------------------------------------------------------
     # COMMANDS
@@ -4213,14 +3700,12 @@ async def main():
         )
     )
 
-
     app.add_handler(
         CommandHandler(
             "check",
             check,
         )
     )
-
 
     app.add_handler(
         CommandHandler(
@@ -4229,14 +3714,12 @@ async def main():
         )
     )
 
-
     app.add_handler(
         CommandHandler(
             "status",
             status,
         )
     )
-
 
     app.add_handler(
         CommandHandler(
@@ -4245,7 +3728,6 @@ async def main():
         )
     )
 
-
     app.add_handler(
         CommandHandler(
             "cookies",
@@ -4253,14 +3735,12 @@ async def main():
         )
     )
 
-
     app.add_handler(
         CommandHandler(
             "cancel",
             cancel_cookies,
         )
     )
-
 
     # --------------------------------------------------------
     # JSON FILE
@@ -4273,18 +3753,15 @@ async def main():
         )
     )
 
-
     logger.info(
-        f"🦊 Camoufox: "
-        f"{'✅' if browser_ok else '❌'}"
+        "Camoufox: %s",
+        "OK" if browser_ok else "ERROR",
     )
 
-
     logger.info(
-        f"🧠 DSPy: "
-        f"{'✅' if dspy_ok else '❌'}"
+        "DSPy: %s",
+        "OK" if dspy_ok else "ERROR",
     )
-
 
     try:
 
@@ -4294,25 +3771,21 @@ async def main():
 
         await app.updater.start_polling()
 
-
         logger.info(
-            "🤖 Telegram бот запущен!"
+            "Telegram бот запущен!"
         )
-
 
         stop_signal = (
             asyncio.Event()
         )
 
-
         def signal_handler():
 
             logger.info(
-                "🛑 Получен сигнал остановки"
+                "Получен сигнал остановки"
             )
 
             stop_signal.set()
-
 
         try:
 
@@ -4337,7 +3810,6 @@ async def main():
 
             pass
 
-
         while not stop_signal.is_set():
 
             await asyncio.sleep(
@@ -4345,56 +3817,48 @@ async def main():
             )
 
             logger.info(
-                "💓 Bot alive"
+                "Bot alive"
             )
-
 
     except Exception as e:
 
         logger.exception(
-            f"❌ Main error: {e}"
+            "Main error: %s",
+            e,
         )
-
 
     finally:
 
         logger.info(
-            "🛑 Завершение..."
+            "Завершение..."
         )
-
 
         try:
 
             await app.updater.stop()
 
         except Exception:
-
             pass
-
 
         try:
 
             await app.stop()
 
         except Exception:
-
             pass
-
 
         try:
 
             await app.shutdown()
 
         except Exception:
-
             pass
-
 
         await close_browser()
 
 
 # ============================================================
-# 64. ENTRYPOINT
+# ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
