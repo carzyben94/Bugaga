@@ -1,85 +1,45 @@
-# ============================================================
-# cookies.py
-# ============================================================
+import requests
+import json
 
-X_COOKIES = [
-    {
-        "name": "__cuid",
-        "value": "55d2d7c5-4888-430a-b024-dd785da46ef4",
-        "domain": ".x.com",
-        "path": "/",
-    },
+# Встроенные куки прямо в коде
+COOKIES = {
+    "_ga_B9CY1C9VBC": "GS2.1.s1786752686$o1$g1$t1786752702$j44$l0$h0",
+    "_ga": "GA1.1.1821388155.1786752686",
+    "NID": "533=m1OjJ80EEpf6XPge09phLqkeY6YFt5ZtQ0r8Lvi9soijvNqXu5aqbc55UXOuuVEMoqc8IEqk1HU15tlMHdTrWhdJ3GOAMFZ2N8jAk3pbw8GhhbrQHB78yzFHIy-QPLe5lpADr7qARdA8Ih5GZTaRB9bG0-tb4yu6vB30_h6-W0yEgZfx97PZHqBKzDl2raZtyMSuK_8",
+    "guest_id_marketing": "v1%3A178675259654555167",
+    "guest_id_ads": "v1%3A178675259654555167",
+    "personalization_id": "\"v1_Rik8XnBCUdSu/NJcDKc1pg==\"",
+    "guest_id": "v1%3A178675259654555167",
+    "__cf_bm": "lNapyeWDHAGFzi1zEC11UFNALeUsLNOWvTIk4ARDm3E-1786752596.4689136-1.0.1.1-McWNqxm_1lFvpaWX0gsGaJLGY11TqAJU_LXsGgqBtQS8zY3RbZ3HO_Bin2U9shJQ1NPqWnccXHJ7Ijf1x6SxjJ0JI3YdtLoyEImdd55TKFYB8xB96Q17Dyy8yLN0K7ww",
+    "gt": "2088417578007839086",
+    "__cuid": "42d48fab-94e0-45ea-9597-2c1848c2567a",
+    "twid": "u%3D2075158859295997952",
+    "auth_token": "5839949e4d83685926213037f9c747f0ae5f0b75",
+    "ct0": "d9fe90fead05566aa72c02d54bade153d1e485366da157dea69dd6f60237a478c45f3ad131732aa8af0b4b240a99b712e4bca0005f13dd423a1110704bee8ab4e1ef5513d34b6dd7c2af5e8f987830d7",
+    "g_state": "{\"i_l\":1,\"i_ll\":1786752531634,\"i_b\":\"L8IFMpD6ZrVVSrl3gX7LFhlLLW27n9P9rM5W3Dno6Qs\",\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786752531634}",
+    "lang": "ru",
+    "IDE": "AHWqTUluuhD4Jbd4dOmxHHwp_vVpYOHyikeh27DDLve6O8f4aWsNoJ5wsdq9C8-7R1Y"
+}
 
-    {
-        "name": "personalization_id",
-        "value": "\"v1_VL5PDSWqcwv7LNBV75SiLA==\"",
-        "domain": ".x.com",
-        "path": "/",
-    },
+def get_session():
+    """Возвращает сессию requests с куками"""
+    session = requests.Session()
+    session.cookies.update(COOKIES)
+    return session
 
-    {
-        "name": "g_state",
-        "value": "{\"i_l\":0,\"i_ll\":1786493441069,\"i_b\":\"GK5KqYSRaGCT7CvSxBv3wqY6m7ne53iSPqkYW+ROGIo\",\"i_e\":{\"enable_itp_optimization\":24},\"i_et\":1786493441069}",
-        "domain": ".x.com",
-        "path": "/",
-    },
+def get_cookies():
+    """Возвращает словарь с куками"""
+    return COOKIES.copy()
 
-    {
-        "name": "lang",
-        "value": "ru",
-        "domain": ".x.com",
-        "path": "/",
-    },
-
-    {
-        "name": "dnt",
-        "value": "1",
-        "domain": ".x.com",
-        "path": "/",
-    },
-
-    {
-        "name": "guest_id",
-        "value": "v1%3A178661934178349765",
-        "domain": ".x.com",
-        "path": "/",
-    },
-
-    {
-        "name": "twid",
-        "value": "u%3D2075158859295997952",
-        "domain": ".x.com",
-        "path": "/",
-    },
-
-    {
-        "name": "auth_token",
-        "value": "c67259d770166a76598c693d9536c5356f521343",
-        "domain": ".x.com",
-        "path": "/",
-        "httpOnly": True,
-        "secure": True,
-    },
-
-    {
-        "name": "guest_id_ads",
-        "value": "v1%3A178661934178349765",
-        "domain": ".x.com",
-        "path": "/",
-    },
-
-    {
-        "name": "guest_id_marketing",
-        "value": "v1%3A178661934178349765",
-        "domain": ".x.com",
-        "path": "/",
-    },
-
-    {
-        "name": "ct0",
-        "value": "a7588aaf794885b9e039dc7b81874e17e2786d50a7ba5794412780256f819111535e58b52f13fd571176e7b3d3ceb79a95aa722288c8811a4cfb02ff4a9ecf2f36e0ab11032d6aab77df44902a0d2715",
-        "domain": ".x.com",
-        "path": "/",
-        "secure": True,
-    },
-]
+# Пример использования
+if __name__ == "__main__":
+    session = get_session()
+    
+    # Проверка доступа к X
+    try:
+        resp = session.get('https://x.com/home', timeout=10)
+        print(f"Статус: {resp.status_code}")
+        if resp.status_code == 200:
+            print("✅ Доступ к X.com есть!")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
