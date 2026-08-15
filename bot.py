@@ -1,10 +1,10 @@
-
 import os
 import asyncio
 import logging
 import time
 import signal
 import threading
+import json
 from typing import Optional
 
 import httpx
@@ -88,7 +88,6 @@ dspy_agent_instance = None
 
 main_event_loop = None
 
-# Защита от одновременного запуска нескольких DSPy задач
 agent_lock = threading.Lock()
 
 
@@ -1229,7 +1228,114 @@ async def browser_content():
 
 
 # ============================================================
-# 37. DSPY ASYNC BRIDGE
+# 37. LOAD COOKIES
+# ============================================================
+
+async def load_cookies(
+    cookies_data,
+):
+
+    global camoufox_context
+
+    if camoufox_context is None:
+        raise RuntimeError(
+            "Camoufox context отсутствует"
+        )
+
+    # Поддерживаем:
+    #
+    # [
+    #   {...},
+    #   {...}
+    # ]
+    #
+    # и:
+    #
+    # {
+    #   "cookies": [
+    #       {...}
+    #   ]
+    # }
+
+    if isinstance(cookies_data, dict):
+
+        if "cookies" in cookies_data:
+            cookies = cookies_data["cookies"]
+
+        else:
+            raise ValueError(
+                "JSON должен содержать поле 'cookies'"
+            )
+
+    elif isinstance(cookies_data, list):
+
+        cookies = cookies_data
+
+    else:
+
+        raise ValueError(
+            "JSON должен быть массивом cookies "
+            "или объектом с полем 'cookies'"
+        )
+
+    if not cookies:
+        raise ValueError(
+            "Список cookies пуст"
+        )
+
+    if not isinstance(cookies, list):
+        raise ValueError(
+            "Поле cookies должно быть массивом"
+        )
+
+    # Минимальная проверка структуры.
+    valid_cookies = []
+
+    for index, cookie in enumerate(cookies):
+
+        if not isinstance(cookie, dict):
+
+            logger.warning(
+                f"⚠️ Cookie #{index + 1} "
+                f"пропущена: не объект"
+            )
+
+            continue
+
+        if "name" not in cookie:
+            logger.warning(
+                f"⚠️ Cookie #{index + 1} "
+                f"пропущена: нет name"
+            )
+
+            continue
+
+        if "value" not in cookie:
+            logger.warning(
+                f"⚠️ Cookie #{index + 1} "
+                f"пропущена: нет value"
+            )
+
+            continue
+
+        valid_cookies.append(cookie)
+
+    if not valid_cookies:
+        raise ValueError(
+            "В JSON нет корректных cookies"
+        )
+
+    async with browser_lock:
+
+        await camoufox_context.add_cookies(
+            valid_cookies
+        )
+
+    return len(valid_cookies)
+
+
+# ============================================================
+# 38. DSPY ASYNC BRIDGE
 # ============================================================
 
 def run_async_from_dspy(coro):
@@ -1269,7 +1375,7 @@ def run_async_from_dspy(coro):
 
 
 # ============================================================
-# 38. DSPY TOOLS
+# 39. DSPY TOOLS
 # ============================================================
 
 def create_browser_tools():
@@ -1505,7 +1611,7 @@ def create_browser_tools():
 
 
 # ============================================================
-# 39. AGNES LM
+# 40. AGNES LM
 # ============================================================
 
 class AgnesLM(dspy.LM):
@@ -1657,7 +1763,7 @@ class AgnesLM(dspy.LM):
 
 
 # ============================================================
-# 40. DSPY SIGNATURE
+# 41. DSPY SIGNATURE
 # ============================================================
 
 class BrowserTask(Signature):
@@ -1702,7 +1808,7 @@ class BrowserTask(Signature):
 
 
 # ============================================================
-# 41. INIT DSPY
+# 42. INIT DSPY
 # ============================================================
 
 def init_dspy():
@@ -1754,7 +1860,7 @@ def init_dspy():
 
 
 # ============================================================
-# 42. RUN AGENT
+# 43. RUN AGENT
 # ============================================================
 
 def run_agent(
@@ -1816,7 +1922,7 @@ def run_agent(
 
 
 # ============================================================
-# 43. /START
+# 44. /START
 # ============================================================
 
 async def start(
@@ -1829,6 +1935,7 @@ async def start(
         "🦊 Camoufox + DSPy Browser Agent\n\n"
         "Команды:\n"
         "/check <url>\n"
+        "/cookies + JSON файл\n"
         "/dspy <задача>\n"
         "/status\n"
         "/screenshot"
@@ -1836,7 +1943,7 @@ async def start(
 
 
 # ============================================================
-# 44. /CHECK
+# 45. /CHECK
 # ============================================================
 
 async def check(
@@ -1892,7 +1999,110 @@ async def check(
 
 
 # ============================================================
-# 45. /SCREENSHOT
+# 46. /COOKIES
+# ============================================================
+
+async def cookies_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    document = update.message.document
+
+    if document is None:
+
+        await update.message.reply_text(
+            "🍪 Отправь JSON-файл вместе с командой /cookies\n\n"
+            "Пример:\n"
+            "/cookies + cookies.json"
+        )
+
+        return
+
+    filename = (
+        document.file_name
+        or ""
+    )
+
+    if not filename.lower().endswith(".json"):
+
+        await update.message.reply_text(
+            "❌ Нужен файл с расширением .json"
+        )
+
+        return
+
+    if not browser_ready:
+
+        await update.message.reply_text(
+            "❌ Camoufox не запущен"
+        )
+
+        return
+
+    msg = await update.message.reply_text(
+        "🍪 Загружаю cookies..."
+    )
+
+    try:
+
+        telegram_file = await document.get_file()
+
+        file_data = (
+            await telegram_file.download_as_bytearray()
+        )
+
+        # Ограничение размера JSON — 10 MB
+        if len(file_data) > 10 * 1024 * 1024:
+
+            raise ValueError(
+                "Файл слишком большой. "
+                "Максимальный размер: 10 MB"
+            )
+
+        try:
+
+            cookies_data = json.loads(
+                file_data.decode("utf-8")
+            )
+
+        except UnicodeDecodeError:
+
+            raise ValueError(
+                "JSON должен быть в UTF-8"
+            )
+
+        count = await load_cookies(
+            cookies_data
+        )
+
+        await msg.edit_text(
+            "✅ Cookies успешно загружены!\n\n"
+            f"🍪 Количество: {count}\n"
+            f"📁 Файл: {filename}\n\n"
+            "🦊 Cookies добавлены в текущий "
+            "Camoufox context."
+        )
+
+        logger.info(
+            f"🍪 Загружено cookies: {count} "
+            f"из {filename}"
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "❌ /cookies"
+        )
+
+        await msg.edit_text(
+            "❌ Не удалось загрузить cookies:\n\n"
+            f"{str(e)[:1500]}"
+        )
+
+
+# ============================================================
+# 47. /SCREENSHOT
 # ============================================================
 
 async def screenshot(
@@ -1929,7 +2139,7 @@ async def screenshot(
 
 
 # ============================================================
-# 46. /STATUS
+# 48. /STATUS
 # ============================================================
 
 async def status(
@@ -1978,7 +2188,7 @@ async def status(
 
 
 # ============================================================
-# 47. /DSPY
+# 49. /DSPY
 # ============================================================
 
 async def dspy_command(
@@ -1991,6 +2201,7 @@ async def dspy_command(
         await update.message.reply_text(
             "🧠 DSPy Browser Agent\n\n"
             "Примеры:\n\n"
+
             "/dspy открой https://example.com "
             "и покажи заголовок\n\n"
 
@@ -2066,7 +2277,7 @@ async def dspy_command(
 
 
 # ============================================================
-# 48. MAIN
+# 50. MAIN
 # ============================================================
 
 async def main():
@@ -2103,6 +2314,13 @@ async def main():
         CommandHandler(
             "check",
             check,
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "cookies",
+            cookies_command,
         )
     )
 
@@ -2219,7 +2437,7 @@ async def main():
 
 
 # ============================================================
-# 49. ENTRYPOINT
+# 51. ENTRYPOINT
 # ============================================================
 
 if __name__ == "__main__":
