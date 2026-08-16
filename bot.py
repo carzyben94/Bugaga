@@ -6,9 +6,7 @@ import signal
 import threading
 import json
 import re
-import base64
 from typing import Optional
-from datetime import datetime
 
 import httpx
 
@@ -52,11 +50,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 AGNES_API_KEY = os.environ.get("AGNES_API_KEY")
-
-# GitHub Settings
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO = os.environ.get("GITHUB_REPO")  # e.g., "username/repo-name"
-GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN не задан!")
@@ -664,6 +657,26 @@ async def browser_content():
 # ============================================================
 # ADVANCED INSPECTOR 2.0
 # ============================================================
+#
+# New:
+# - compact page map
+# - full element detail
+# - iframe/frame context
+# - open Shadow DOM traversal
+# - label/control relationships
+# - aria relationships
+# - actionability / hit-test
+# - dynamic DOM fingerprint
+# - SPA/navigation hints
+# - optional event-listener hints
+# - BEFORE/AFTER snapshots + diff
+# - configurable detail limits
+#
+# NOTE:
+# Browser JS cannot reliably enumerate arbitrary listeners installed
+# by frameworks. The inspector therefore reports observable DOM/ARIA
+# relationships and listener attributes where available, rather than
+# pretending it has complete JS event-listener visibility.
 
 INSPECTOR_JS = r"""
 ({
@@ -1933,155 +1946,6 @@ async def browser_inspect_diff(
 
 
 # ============================================================
-# GITHUB LOGGING & MEMORY
-# ============================================================
-
-GITHUB_MEMORY_FILE = "agent_memory.json"
-
-def format_agent_report(question: str, result, answer: str) -> str:
-    """Форматирует историю DSPy в читаемый Markdown."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [
-        f"# Agent Report",
-        f"**Date:** {timestamp}",
-        f"**Task:** {question}",
-        f"**Final Answer:** {answer}",
-        "",
-        "## Execution History",
-        ""
-    ]
-    
-    history = getattr(result, "history", [])
-    if not history:
-        lines.append("*No history available (DSPy didn't record steps).*")
-        return "\n".join(lines)
-        
-    for i, step in enumerate(history, 1):
-        lines.append(f"### Step {i}")
-        
-        thought = getattr(step, "thought", None) or getattr(step, "rationale", "No thought")
-        action = getattr(step, "action", "Unknown")
-        action_input = getattr(step, "action_input", getattr(step, "action_kwargs", {}))
-        observation = getattr(step, "observation", "No observation")
-        
-        lines.append(f"**Thought:** {thought}")
-        lines.append(f"**Action:** `{action}`")
-        
-        if isinstance(action_input, dict):
-            input_str = json.dumps(action_input, indent=2, ensure_ascii=False)
-            lines.append(f"**Input:**\n```json\n{input_str}\n```")
-        else:
-            lines.append(f"**Input:** `{action_input}`")
-            
-        obs_str = str(observation)
-        if len(obs_str) > 3000:
-            obs_str = obs_str[:3000] + "\n... [truncated]"
-        lines.append(f"**Observation:**\n```\n{obs_str}\n```")
-        lines.append("")
-        
-    return "\n".join(lines)
-
-
-async def save_log_to_github(content: str, question: str):
-    """Отправляет Markdown-отчет в репозиторий через GitHub API."""
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        logger.warning("GitHub logging disabled: GITHUB_TOKEN or GITHUB_REPO not set")
-        return None
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_q = re.sub(r'[^\w\s-]', '', question)[:30].strip().replace(' ', '_')
-    if not safe_q:
-        safe_q = "task"
-    
-    filename = f"logs/{timestamp}_{safe_q}.md"
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{filename}"
-    
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    
-    payload = {
-        "message": f"Agent log: {question[:50]}",
-        "content": base64.b64encode(content.encode('utf-8')).decode('utf-8'),
-        "branch": GITHUB_BRANCH
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.put(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            file_url = data.get("content", {}).get("html_url")
-            logger.info(f"Log saved to GitHub: {file_url}")
-            return file_url
-    except httpx.HTTPStatusError as e:
-        logger.error(f"GitHub API error: {e.response.status_code} - {e.response.text[:500]}")
-    except Exception as e:
-        logger.exception("Failed to save log to GitHub")
-    
-    return None
-
-
-async def load_memory_from_github() -> list:
-    """Скачивает актуальную память (Playbook) с GitHub."""
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return []
-
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_MEMORY_FILE}?ref={GITHUB_BRANCH}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(url, headers=headers)
-            if response.status_code == 404:
-                return []
-            response.raise_for_status()
-            
-            content_b64 = response.json().get("content", "")
-            content = base64.b64decode(content_b64).decode('utf-8')
-            return json.loads(content)
-    except Exception as e:
-        logger.warning(f"Не удалось загрузить память с GitHub: {e}")
-        return []
-
-
-async def save_memory_to_github(memory_data: list, reason: str = "Agent updated memory") -> str:
-    """Перезаписывает файл памяти на GitHub."""
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return "GitHub not configured"
-
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_MEMORY_FILE}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    
-    sha = None
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            get_resp = await client.get(url + f"?ref={GITHUB_BRANCH}", headers=headers)
-            if get_resp.status_code == 200:
-                sha = get_resp.json().get("sha")
-    except Exception:
-        pass
-
-    payload = {
-        "message": reason,
-        "content": base64.b64encode(json.dumps(memory_data, indent=2, ensure_ascii=False).encode('utf-8')).decode('utf-8'),
-        "branch": GITHUB_BRANCH,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.put(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json().get("content", {}).get("html_url", "Saved")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения памяти: {e}")
-        return str(e)
-
-
-# ============================================================
 # DSPY ASYNC BRIDGE
 # ============================================================
 
@@ -2206,24 +2070,6 @@ def create_browser_tools():
     def tool_content():
         return run_async_from_dspy(browser_content())
 
-    def tool_save_memory(domain: str, rule: str):
-        """
-        Сохраняет новое правило в долговременную память.
-        Используй это, если нашел нестандартный способ обхода защиты, 
-        закрытия сложного попапа или специфичный селектор для известного сайта.
-        domain: домен сайта (например, 'github.com') или 'global'
-        rule: четкое правило, как действовать в будущем.
-        """
-        async def _save():
-            memory = await load_memory_from_github()
-            if not any(m['domain'] == domain and m['rule'] == rule for m in memory):
-                memory.append({"domain": domain, "rule": rule, "tags": []})
-                url = await save_memory_to_github(memory, f"Agent added rule for {domain}")
-                return f"Правило сохранено в память: {url}"
-            return "Такое правило уже есть в памяти."
-            
-        return run_async_from_dspy(_save())
-
     return [
         Tool(tool_goto),
         Tool(tool_back),
@@ -2254,7 +2100,6 @@ def create_browser_tools():
         Tool(tool_javascript),
         Tool(tool_screenshot),
         Tool(tool_content),
-        Tool(tool_save_memory),
     ]
 
 
@@ -2369,26 +2214,27 @@ class BrowserTask(Signature):
     """
     Автономный браузерный агент.
 
-    СТРОГИЕ ПРАВИЛА РАБОТЫ:
-    1. ВСЕГДА начинай с tool_inspect_page(mode="map"), чтобы получить карту DOM.
-    2. АНАЛИЗИРУЙ 'state' элементов из карты. 
-       ЗАПРЕЩЕНО кликать по элементам, где visible=False, enabled=False или covered=True.
-    3. САМОКОРРЕКЦИЯ: Если инструмент (клик, fill) вернул ошибку или Timeout, 
-       НЕМЕДЛЕННО вызови tool_inspect_page заново. DOM мог измениться (SPA, модалки, реклама).
-    4. Используй 'selector' или 'semanticLocator' ТОЛЬКО из карты инспектора. Не выдумывай селекторы.
-    5. Для сложных форм сначала найди форму через inspect, затем заполни поля по их label/placeholder.
-    6. Если застрял (3 одинаковых действия подряд), остановись и верни то, что видишь на экране.
-    7. Учитывай frame index и Shadow DOM, если они есть в карте.
-    8. В конце дай четкий итог: что было сделано, финальный URL и статус (успех/провал).
-    
-    ВАЖНО: В поле 'memory_context' переданы твои прошлые успешные стратегии.
-    ОБЯЗАТЕЛЬНО учитывай их при планировании действий.
-    Если ты нашел новый полезный паттерн, используй tool_save_memory.
+    Стратегия Inspector 2.0:
+
+    1. Если дан URL — tool_goto.
+    2. Для неизвестной страницы сначала tool_inspect_page(mode="map").
+    3. Map используй для выбора нужного элемента.
+    4. Если нужна точность — tool_inspect_page(mode="full").
+    5. Предпочитай semantic locators.
+    6. Не кликай disabled/invisible/covered элементы.
+    7. После значимого действия проверяй новое состояние.
+    8. Если locator не сработал — не повторяй бесконечно,
+       сначала повторный inspect.
+    9. Учитывай frame index и Shadow DOM.
+    10. Для SPA ориентируйся на URL + fingerprint + новое UI.
+    11. Не выдумывай содержимое.
+    12. Никогда не утверждай действие выполненным,
+        если browser tool его не подтвердил.
+    13. В конце дай краткий итог.
     """
 
     question = InputField(desc="Задача пользователя")
-    memory_context = InputField(desc="Извлеченные правила из долговременной памяти (Playbook)")
-    answer = OutputField(desc="Краткий итоговый результат и статус выполнения")
+    answer = OutputField(desc="Краткий итоговый результат")
 
 
 def init_dspy():
@@ -2439,16 +2285,13 @@ def init_dspy():
         return False
 
 
-def run_agent(question: str, memory_context: str = "Память пуста."):
+def run_agent(question: str):
     if not dspy_agent_instance:
-        return None, "DSPy агент не инициализирован"
+        return "DSPy агент не инициализирован"
 
     with agent_lock:
         try:
-            result = dspy_agent_instance(
-                question=question,
-                memory_context=memory_context
-            )
+            result = dspy_agent_instance(question=question)
 
             answer = getattr(result, "answer", None)
 
@@ -2459,11 +2302,11 @@ def run_agent(question: str, memory_context: str = "Память пуста."):
                 answer = str(result)
 
             answer = str(answer).strip()
-            return result, answer or "Пустой ответ DSPy"
+            return answer or "Пустой ответ DSPy"
 
         except Exception as e:
             logger.exception("DSPy error")
-            return None, f"Ошибка агента: {type(e).__name__}: {e}"
+            return f"Ошибка агента: {type(e).__name__}: {e}"
 
 
 # ============================================================
@@ -2718,51 +2561,25 @@ async def dspy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = " ".join(context.args)
     msg = await update.message.reply_text(
-        "🧠 Загружаю память и запускаю агента..."
+        "🧠 DSPy управляет Camoufox..."
     )
 
     try:
-        # 1. Загружаем память с GitHub
-        memory_data = await load_memory_from_github()
-        
-        # 2. Формируем текст памяти
-        memory_text = "Память пуста."
-        if memory_data:
-            rules = [f"- [{m.get('domain', 'global')}] {m.get('rule', '')}" for m in memory_data]
-            memory_text = "\n".join(rules)
-
         loop = asyncio.get_running_loop()
 
-        result, answer = await loop.run_in_executor(
+        answer = await loop.run_in_executor(
             None,
-            lambda: run_agent(query, memory_text)
+            run_agent,
+            query,
         )
 
-        answer_str = str(answer)[:4000]
-        safe_answer = escape_markdown(answer_str, version=2)
+        answer = answer[:4000]
+        safe_answer = escape_markdown(answer, version=2)
 
         await msg.edit_text(
             "✅ *Результат:*\n\n" + safe_answer,
             parse_mode="MarkdownV2",
         )
-        
-        # Фоновая отправка на GitHub
-        if result:
-            async def github_logger_task():
-                report = format_agent_report(query, result, answer_str)
-                file_url = await save_log_to_github(report, query)
-                if file_url:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text=f"📁 *История агента сохранена:*\n{escape_markdown(file_url, version=2)}",
-                            parse_mode="MarkdownV2",
-                            disable_web_page_preview=True
-                        )
-                    except Exception as e:
-                        logger.warning(f"Не удалось отправить ссылку на GitHub в Telegram: {e}")
-
-            asyncio.create_task(github_logger_task())
 
     except Exception as e:
         logger.exception("/dspy")
