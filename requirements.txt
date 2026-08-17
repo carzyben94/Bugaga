@@ -4,3 +4,4 @@ httpx>=0.28.1
 dspy-ai==3.3.0b1
 playwright==1.53.0
 camoufox[geoip]==0.4.11
+PyGithub==2.5.0
