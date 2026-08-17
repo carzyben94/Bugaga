@@ -12,18 +12,17 @@ logger = logging.getLogger(__name__)
 
 # ─── Конфигурация ───────────────────────────────────────────────
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ORCA_API_KEY = os.environ.get("ORCAROUTER_API_KEY")
-MODEL_NAME = "qwen/qwen3.8-27b-free"  # ← Проверьте точное название через /models
+# Ключ TokenRouter API (вшит прямо в код)
+TOKENROUTER_API_KEY = "sk-38bccoegrP4tGuLq7GgO7BT1b61oAaoQnZxUw7MkDbuEuycN"
+MODEL_NAME = "qwen/qwen3.8-max-free"  # ← Обновлено
 
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен!")
-if not ORCA_API_KEY:
-    raise ValueError("❌ ORCAROUTER_API_KEY не установлен!")
 
-# ─── Клиент Orca Router (OpenAI-совместимый) ───────────────────
+# ─── Клиент TokenRouter (OpenAI-совместимый) ───────────────────
 client = AsyncOpenAI(
-    base_url="https://api.orcarouter.ai/v1",
-    api_key=ORCA_API_KEY,
+    base_url="https://api.tokenrouter.com/v1",
+    api_key=TOKENROUTER_API_KEY,
 )
 
 SYSTEM_PROMPT = "Ты полезный и дружелюбный ассистент в Telegram. Отвечай кратко и по делу."
@@ -32,7 +31,7 @@ SYSTEM_PROMPT = "Ты полезный и дружелюбный ассисте�
 # ─── Хендлеры ──────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"👋 Привет! Я работаю на модели *{MODEL_NAME}* через Orca Router AI.\n\n"
+        f"👋 Привет! Я работаю на модели *{MODEL_NAME}* через TokenRouter.\n\n"
         "Просто напиши мне сообщение!\n"
         "/models — список доступных моделей",
         parse_mode="Markdown"
@@ -60,7 +59,7 @@ async def models(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текстовых сообщений через Orca Router"""
+    """Обработка текстовых сообщений через TokenRouter"""
     user_text = update.message.text.strip()
     if not user_text:
         return
@@ -88,7 +87,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(chunk)
 
     except Exception as e:
-        logger.error(f"Ошибка Orca Router API: {e}", exc_info=True)
+        logger.error(f"Ошибка TokenRouter API: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка при генерации ответа:\n{e}")
 
 
