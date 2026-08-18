@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
 # TokenRouter (ключ вшит, как ты просил)
-TOKENROUTER_API_KEY = "REDACTED"
+TOKENROUTER_API_KEY = "sk-38bccoegrP4tGuLq7GgO7BT1b61oAaoQnZxUw7MkDbuEuycN"
 TOKENROUTER_BASE_URL = "https://api.tokenrouter.com/v1"
 MODEL_NAME = "qwen/qwen3.8-max-free"
 
